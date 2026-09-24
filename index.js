@@ -1,14 +1,6 @@
 
 
-const { 
-    Client, 
-    GatewayIntentBits, 
-    EmbedBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    ComponentType 
-} = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -40,69 +32,52 @@ client.on('messageCreate', async (message) => {
     };
 
     if (command === 'role-casino') {
-        if (!message.member.permissions.has('Administrator')) return message.reply('❌ אין לך הרשאות מנהל לבצע פקודה זו.');
+        if (!message.member.permissions.has('Administrator')) return message.reply('❌ No admin perms.');
         const role = message.mentions.roles.first();
-        if (!role) return message.reply('❌ נא תייג את הרול שברצונך להגדיר. דוגמה: `$role-casino @CasinoStaff`');
+        if (!role) return message.reply('❌ Mention a role.');
         casinoRole = role.id;
-        return message.reply(`✅ הרול המורשה לקזינו עודכן בהצלחה ל: **${role.name}**`);
+        return message.reply(`✅ Role set to: **${role.name}**`);
     }
 
     if (command === 'addmoney') {
-        if (!hasCasinoAccess()) return message.reply('❌ פקודה זו חסומה עבורך. רק מנהלי קזינו מורשים להשתמש בה.');
-        
+        if (!hasCasinoAccess()) return message.reply('❌ Staff only.');
         const target = message.mentions.users.first();
-        const type = args[0] ? args[0].toLowerCase() : null;
-        const amount = parseInt(args[1]);
-
+        const type = args[1] ? args[1].toLowerCase() : null;
+        const amount = parseInt(args[2]);
         if (!target || !type || isNaN(amount) || amount <= 0 || (type !== 'cash' && type !== 'bank')) {
-            return message.reply('❌ מבנה פקודה לא תקין! יש לכתוב: `$addmoney @user [cash/bank] [amount]`');
+            return message.reply('❌ Use: `$addmoney @user [cash/bank] [amount]`');
         }
-
         const data = getUserData(target.id);
         data[type] += amount;
-
-        return message.reply(`✅ בהצלחה הוסרו **${amount.toLocaleString()}** ${serverCurrency} לתוך ה-${type === 'cash' ? 'מזומן' : 'בנק'} של ${target.username}.`);
+        return message.reply(`✅ Added **${amount.toLocaleString()}** ${serverCurrency} to ${target.username}'s ${type}.`);
     }
 
     if (command === 'setcurrency') {
-        if (!hasCasinoAccess()) return message.reply('❌ פקודה זו חסומה עבורך.');
+        if (!hasCasinoAccess()) return message.reply('❌ Staff only.');
         const newCurrency = args[0];
-        if (!newCurrency) return message.reply('❌ נא ספק אמוג\'י או סימון למטבע החדש.');
+        if (!newCurrency) return message.reply('❌ Provide an emoji.');
         serverCurrency = newCurrency;
-        return message.reply(`✅ המטבע של השרת עודכן בהצלחה ל: ${serverCurrency}`);
+        return message.reply(`✅ Currency set to: ${serverCurrency}`);
     }
 
     if (command === 'bal' || command === 'balance') {
         const targetUser = message.mentions.users.first() || message.author;
         const data = getUserData(targetUser.id);
         const total = data.cash + data.bank;
-
         const embed = new EmbedBuilder()
             .setAuthor({ name: targetUser.username, iconURL: targetUser.displayAvatarURL() })
             .setDescription(`Use the \`top\` command to view your rank.\n\n• **Money Out:** ${data.cash.toLocaleString()} ${serverCurrency}\n• **Bank Money:** ${data.bank.toLocaleString()} ${serverCurrency}\n• **Total Money:** ${total.toLocaleString()} ${serverCurrency}`)
             .setColor('#10a3de');
-
         return message.reply({ embeds: [embed] });
     }
 
     if (command === 'cf' || command === 'chickenfight') {
         const data = getUserData(message.author.id);
         let betInput = args[0];
-        let bet = 0;
-
-        if (!betInput) return message.reply('❌ נא לציין סכום הימור. דוגמה: `$cf 100` או `$cf all`');
-        if (betInput.toLowerCase() === 'all') {
-            bet = data.cash;
-        } else {
-            bet = parseInt(betInput);
-        }
-
-        if (isNaN(bet) || bet <= 0) return message.reply('❌ סכום הימור לא תקין.');
-        if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף במזומן (Money Out) עבור הימור זה.');
-
-        const winChance = 0.52; 
-        const isWin = Math.random() < winChance;
-
+        let bet = betInput && betInput.toLowerCase() === 'all' ? data.cash : parseInt(betInput);
+        if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
+        if (data.cash < bet) return message.reply('❌ Not enough cash.');
+        const isWin = Math.random() < 0.52;
         if (isWin) {
             data.cash += bet;
             const embed = new EmbedBuilder()
@@ -123,137 +98,86 @@ client.on('messageCreate', async (message) => {
     if (command === 'hilo' || command === 'high-low') {
         const data = getUserData(message.author.id);
         const bet = parseInt(args[0]);
-
-        if (isNaN(bet) || bet <= 0) return message.reply('❌ נא לציין סכום הימור תקין. דוגמה: `$hilo 500`');
-        if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף במזומן.');
-
+        if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
+        if (data.cash < bet) return message.reply('❌ Not enough cash.');
         let card1 = Math.floor(Math.random() * 13) + 1;
         let card2 = Math.floor(Math.random() * 13) + 1;
-
-        if (Math.random() < 0.05) { 
-            card2 = card1 > 7 ? Math.floor(Math.random() * (card1 - 1)) + 1 : Math.floor(Math.random() * (14 - card1)) + card1;
-        }
-
+        if (Math.random() < 0.05) card2 = card1 > 7 ? Math.floor(Math.random() * (card1 - 1)) + 1 : Math.floor(Math.random() * (14 - card1)) + card1;
         const embed = new EmbedBuilder()
             .setTitle('🎲 Higher or Lower 🎲')
             .setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` ❓\n\n**Higher:** -\n**Same:** 8x\n**Lower:** 1.1x`)
             .setColor('#8e44ad');
-
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('higher').setLabel('Higher').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId('same').setLabel('Same').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('lower').setLabel('Lower').setStyle(ButtonStyle.Primary)
         );
-
         const reply = await message.reply({ embeds: [embed], components: [row] });
         const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 30000 });
-
         collector.on('collect', async (i) => {
-            if (i.user.id !== message.author.id) return i.reply({ content: '❌ זה לא המשחק שלך!', ephemeral: true });
+            if (i.user.id !== message.author.id) return;
             collector.stop();
-
-            let won = false;
-            let multiplier = 1;
-
-            if (i.customId === 'higher' && card2 > card1) { won = true; multiplier = 1.5; }
-            if (i.customId === 'lower' && card2 < card1) { won = true; multiplier = 1.1; }
-            if (i.customId === 'same' && card2 === card1) { won = true; multiplier = 8; }
-
-            const updatedEmbed = new EmbedBuilder()
-                .setTitle('🎲 Higher or Lower - Result 🎲')
-                .setColor(won ? '#2ecc71' : '#e74c3c');
-
+            let won = (i.customId === 'higher' && card2 > card1) || (i.customId === 'lower' && card2 < card1) || (i.customId === 'same' && card2 === card1);
+            let mul = i.customId === 'same' ? 8 : (i.customId === 'higher' ? 1.5 : 1.1);
+            const resEmbed = new EmbedBuilder().setTitle('🎲 Higher or Lower - Result 🎲').setColor(won ? '#2ecc71' : '#e74c3c');
             if (won) {
-                const winAmount = Math.floor(bet * multiplier);
-                data.cash += (winAmount - bet);
-                updatedEmbed.setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` **${card2}**\n\n🎉 ניצחת! קיבלת **${winAmount.toLocaleString()}** ${serverCurrency}`);
+                const winAmt = Math.floor(bet * mul);
+                data.cash += (winAmt - bet);
+                resEmbed.setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` **${card2}**\n\n🎉 Won **${winAmt.toLocaleString()}** ${serverCurrency}`);
             } else {
                 data.cash -= bet;
-                updatedEmbed.setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` **${card2}**\n\n💥 הפסדת את ההימור בסך **${bet.toLocaleString()}** ${serverCurrency}`);
+                resEmbed.setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` **${card2}**\n\n💥 Lost **${bet.toLocaleString()}** ${serverCurrency}`);
             }
-
-            await i.update({ embeds: [updatedEmbed], components: [] });
+            await i.update({ embeds: [resEmbed], components: [] });
         });
     }
 
     if (command === 'bj' || command === 'blackjack') {
         const data = getUserData(message.author.id);
         const bet = parseInt(args[0]);
-
-        if (isNaN(bet) || bet <= 0) return message.reply('❌ נא לציין סכום הימור תקין. דוגמה: `$bj 1000`');
-        if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף במזומן.');
-
-        const drawCard = () => {
-            const cards = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
-            const card = cards[Math.floor(Math.random() * cards.length)];
-            let val = parseInt(card);
-            if (['J','Q','K'].includes(card)) val = 10;
-            if (card === 'A') val = 11;
-            return { display: card, value: val };
+        if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
+        if (data.cash < bet) return message.reply('❌ Not enough cash.');
+        const draw = () => {
+            const c = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'][Math.floor(Math.random() * 13)];
+            return { display: c, value: ['J','Q','K'].includes(c) ? 10 : (c === 'A' ? 11 : parseInt(c)) };
         };
-
-        let playerHand = [drawCard(), drawCard()];
-        let dealerHand = [drawCard(), drawCard()];
-
-        const getHandValue = (hand) => {
-            let sum = hand.reduce((a, b) => a + b.value, 0);
-            let aces = hand.filter(c => c.display === 'A').length;
-            while (sum > 21 && aces > 0) { sum -= 10; aces--; }
-            return sum;
+        let pHand = [draw(), draw()], dHand = [draw(), draw()];
+        const val = (h) => {
+            let s = h.reduce((a, b) => a + b.value, 0), aces = h.filter(c => c.display === 'A').length;
+            while (s > 21 && aces > 0) { s -= 10; aces--; }
+            return s;
         };
-
-        if (Math.random() < 0.51) {
-            while (getHandValue(playerHand) < 15) {
-                playerHand = [drawCard(), drawCard()];
+        if (Math.random() < 0.51) { while (val(pHand) < 15) pHand = [draw(), draw()]; }
+        const makeEmbed = (end = false, txt = '') => new EmbedBuilder()
+            .setAuthor({ name: `${message.author.username}'s Game` }).setTitle('🃏 Blackjack 🃏')
+            .setDescription(`**Your Hand**\n${pHand.map(c => `\`${c.display}\``).join(', ')}\nValue: **${val(pHand)}**\n\n**Dealer**\n${end ? dHand.map(c => `\`${c.display}\``).join(', ') : `\`${dHand[0].display}\`, 🟥`}\nValue: **${end ? val(dHand) : dHand[0].value}**\n\n${txt}`)
+            .setColor(end ? '#f1c40f' : '#10a3de');
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('hit').setLabel('Hit').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('stand').setLabel('Stand').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('double').setLabel('Double').setStyle(ButtonStyle.Danger)
+        );
+        const reply = await message.reply({ embeds: [makeEmbed()], components: [row] });
+        const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
+        collector.on('collect', async (i) => {
+            if (i.user.id !== message.author.id) return;
+            if (i.customId === 'hit') {
+                pHand.push(draw());
+                if (val(pHand) > 21) {
+                    collector.stop();
+                    data.cash -= bet;
+                    return i.update({ embeds: [makeEmbed(true, '💥 Bust! Lost.')], components: [] });
+                }
+                return i.update({ embeds: [makeEmbed()] });
             }
-        }
+            if (i.customId === 'stand') {
+                collector.stop();
+                while (val(dHand) < 17) dHand.push(draw());
+                let p = val(pHand), d = val(dHand), msg = '';
 
-        const makeEmbed = (ended = false, statusText = '') => {
-            return new EmbedBuilder()
-                .setAuthor({ name: `${message.author.username}'s Game` })
-                .setTitle('🃏 Blackjack 🃏')
-                .setDescription(`**Your Hand**\n${playerHand.map(c => `\`${c.display}\``).join(', ')}\nValue: **${getHandValue(playerHand)}**\n\n**Dealer**\n${ended ? dealerHand.map(c => `\`${c.display}\``).join(', ') : `\`${dealerHand[0].display}\`, 🟥`}\nValue: **${ended ? getHandValue(dealerHand) : dealerHand[0].value}**\n\n${statusText}`)
-
-.setColor(ended ? '#f1c40f' : '#10a3de');
-};
-const row = new ActionRowBuilder().addComponents(
-new ButtonBuilder().setCustomId('hit').setLabel('Hit').setStyle(ButtonStyle.Primary),
-new ButtonBuilder().setCustomId('stand').setLabel('Stand').setStyle(ButtonStyle.Success),
-new ButtonBuilder().setCustomId('double').setLabel('Double').setStyle(ButtonStyle.Danger),
-new ButtonBuilder().setCustomId('split').setLabel('Split').setStyle(ButtonStyle.Secondary).setDisabled(playerHand[0].display !== playerHand[1].display)
-);
-const reply = await message.reply({ embeds: [makeEmbed()], components: [row] });
-const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
-collector.on('collect', async (i) => {
-if (i.user.id !== message.author.id) return i.reply({ content: '❌ לא המשחק שלך!', ephemeral: true });
-let pVal = getHandValue(playerHand);
-if (i.customId === 'hit') {
-playerHand.push(drawCard());
-pVal = getHandValue(playerHand);
-if (pVal > 21) {
-collector.stop();
-data.cash -= bet;
-return i.update({ embeds: [makeEmbed(true, '💥 עברת את 21! הפסדת.')], components: [] });
-}
-return i.update({ embeds: [makeEmbed()] });
-}
-if (i.customId === 'stand') {
-collector.stop();
-let dVal = getHandValue(dealerHand);
-while (dVal < 17) {
-dealerHand.push(drawCard());
-dVal = getHandValue(dealerHand);
-}
-let msg = '';
-if (dVal > 21 || pVal > dVal) {
-data.cash += bet;
-msg = 🎉 ניצחת והרווחת ${bet.toLocaleString()} ${serverCurrency}!;
-} else if (pVal < dVal) {
-data.cash -= bet;
-msg = ❌ הדילר ניצח. הפסדת ${bet.toLocaleString()} ${serverCurrency}.;
-} else {
-msg = '👔 תיקו! הכסף חזר אליך.';
-}
+if (d > 21 || p > d) { data.cash += bet; msg = 🎉 Won ${bet.toLocaleString()} ${serverCurrency}!; }
+else if (p < d) { data.cash -= bet; msg = ❌ Dealer won. Lost ${bet.toLocaleString()} ${serverCurrency}.; }
+else msg = '👔 Push!';
 return i.update({ embeds: [makeEmbed(true, msg)], components: [] });
 }
 });
@@ -261,89 +185,64 @@ return i.update({ embeds: [makeEmbed(true, msg)], components: [] });
 if (command === 'mines') {
 const data = getUserData(message.author.id);
 const bet = parseInt(args[0]);
-if (isNaN(bet) || bet <= 0) return message.reply('❌ נא לציין סכום הימור תקין. דוגמה: $mines 500');
-if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף.');
-let board = Array(9).fill('safe');
-let mine1 = Math.floor(Math.random() * 9);
-let mine2 = Math.floor(Math.random() * 9);
-while(mine1 === mine2) { mine2 = Math.floor(Math.random() * 9); }
-board[mine1] = 'mine';
-board[mine2] = 'mine';
-let profit = 0;
-let revealedCount = 0;
-const getGridRows = (ended = false) => {
-const rows = [];
+if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
+if (data.cash < bet) return message.reply('❌ Not enough cash.');
+let board = Array(9).fill('safe'), m1 = Math.floor(Math.random() * 9), m2 = Math.floor(Math.random() * 9);
+while(m1 === m2) m2 = Math.floor(Math.random() * 9);
+board[m1] = board[m2] = 'mine';
+let profit = 0, rev = 0;
+const getRows = (end = false) => {
+const r = [];
 for (let i = 0; i < 3; i++) {
 const row = new ActionRowBuilder();
 for (let j = 0; j < 3; j++) {
-const index = i * 3 + j;
-const btn = new ButtonBuilder().setCustomId(mine_${index}).setLabel('⬛').setStyle(ButtonStyle.Secondary);
-if (ended) {
-btn.setDisabled(true);
-btn.setLabel(board[index] === 'mine' ? '💥' : '💎');
+const idx = i * 3 + j;
+const b = new ButtonBuilder().setCustomId(m_${idx}).setLabel('⬛').setStyle(ButtonStyle.Secondary);
+if (end) b.setDisabled(true).setLabel(board[idx] === 'mine' ? '💥' : '💎');
+row.addComponents(b);
 }
-row.addComponents(btn);
+r.push(row);
 }
-rows.push(row);
-}
-const cashoutRow = new ActionRowBuilder().addComponents(
-new ButtonBuilder().setCustomId('cashout').setLabel('Cashout').setStyle(ButtonStyle.Success).setDisabled(revealedCount === 0 || ended)
-);
-rows.push(cashoutRow);
-return rows;
+r.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('co').setLabel('Cashout').setStyle(ButtonStyle.Success).setDisabled(rev === 0 || end)));
+return r;
 };
-const embed = new EmbedBuilder()
-.setTitle('💣 Mines Game 💣')
-.setDescription(**Betting:** ${bet.toLocaleString()} ${serverCurrency}\n\nClick the buttons to reveal rewards. Avoid the 2 hidden mines!)
-.setFields({ name: Profit: ${profit} ${serverCurrency}, value: '\u200B' })
-.setColor('#e67e22');
-const reply = await message.reply({ embeds: [embed], components: getGridRows() });
+const embed = new EmbedBuilder().setTitle('💣 Mines 💣').setDescription(**Betting:** ${bet.toLocaleString()} ${serverCurrency}).setFields({ name: Profit: ${profit} ${serverCurrency}, value: '\u200B' }).setColor('#e67e22');
+const reply = await message.reply({ embeds: [embed], components: getGridRows ? getGridRows() : getRows() });
 const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 collector.on('collect', async (i) => {
-if (i.user.id !== message.author.id) return i.reply({ content: '❌ לא המשחק שלך!', ephemeral: true });
-if (i.customId === 'cashout') {
+if (i.user.id !== message.author.id) return;
+if (i.customId === 'co') {
 collector.stop();
 data.cash += profit;
-const winEmbed = new EmbedBuilder().setTitle('💰 Cashout Success! 💰').setDescription(משכת בהצלחה את הרווחים בסך **${profit.toLocaleString()}** ${serverCurrency}!).setColor('#2ecc71');
-return i.update({ embeds: [winEmbed], components: getGridRows(true) });
+return i.update({ embeds: [new EmbedBuilder().setTitle('💰 Cashout! 💰').setDescription(Won **${profit.toLocaleString()}** ${serverCurrency}).setColor('#2ecc71')], components: getRows(true) });
 }
-const index = parseInt(i.customId.split('_')[1]);
-if (board[index] === 'mine') {
+const idx = parseInt(i.customId.split('_')[1]);
+if (board[idx] === 'mine') {
 collector.stop();
 data.cash -= bet;
-const loseEmbed = new EmbedBuilder().setTitle('💥 BOOM! 💥').setDescription(פגעת במוקש! הפסדת את כל ההימור בסך **${bet.toLocaleString()}** ${serverCurrency}.).setColor('#e74c3c');
-return i.update({ embeds: [loseEmbed], components: getGridRows(true) });
+return i.update({ embeds: [new EmbedBuilder().setTitle('💥 BOOM! 💥').setDescription(Lost **${bet.toLocaleString()}** ${serverCurrency}).setColor('#e74c3c')], components: getRows(true) });
 } else {
-revealedCount++;
+rev++;
 profit += Math.floor(bet * 0.35);
-const nextEmbed = new EmbedBuilder()
-.setTitle('💣 Mines Game 💣')
-.setDescription(**Betting:** ${bet.toLocaleString()} ${serverCurrency})
-.setFields({ name: Profit: ${profit} ${serverCurrency}, value: 'נחשפה משבצת בטוחה! המשך או לחץ Cashout' })
-.setColor('#e67e22');
-return i.update({ embeds: [nextEmbed], components: getGridRows() });
+const next = new EmbedBuilder().setTitle('💣 Mines 💣').setDescription(**Betting:** ${bet.toLocaleString()} ${serverCurrency}).setFields({ name: Profit: ${profit} ${serverCurrency}, value: '💎 Safe!' }).setColor('#e67e22');
+return i.update({ embeds: [next], components: getRows() });
 }
 });
 }
 if (command === 'poker' || command === 'texas') {
 const data = getUserData(message.author.id);
 const bet = parseInt(args[0]);
-if (isNaN(bet) || bet <= 0) return message.reply('❌ נא לציין סכום הימור תקין עבור פוקר.');
-if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף.');
-const suits = ['♠️', '♥️', '♦️', '♣️'];
-const values = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
-const draw = () => ({ val: values[Math.floor(Math.random()*13)], suit: suits[Math.floor(Math.random()*4)] });
-let playerHand = [draw(), draw()];
-let botHand = [draw(), draw()];
-let communityCards = [draw(), draw(), draw(), draw(), draw()];
-const embed = new EmbedBuilder()
-.setTitle('🃏 Texas Hold'em (vs Bot) 🃏')
-.setDescription(**Your Hand:** \[${playerHand[0].val}${playerHand[0].suit}]` `[${playerHand[1].val}${playerHand[1].suit}]`
+if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
+if (data.cash < bet) return message.reply('❌ Not enough cash.');
+const s = ['♠️', '♥️', '♦️', '♣️'], v = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const d = () => ({ val: v[Math.floor(Math.random()*13)], suit: s[Math.floor(Math.random()*4)] });
+let pHand = [d(), d()], bHand = [d(), d()], comm = [d(), d(), d(), d(), d()];
+const embed = new EmbedBuilder().setTitle('🃏 Texas Hold'em 🃏')
+.setDescription(**Your Hand:** \[${pHand[0].val}${pHand[0].suit}]` `[${pHand[1].val}${pHand[1].suit}]`
 Bot Hand: `[❓]` `[❓]`
-Community Cards: `[${communityCards[0].val}${communityCards[0].suit}]` `[${communityCards[1].val}${communityCards[1].suit}]` `[${communityCards[2].val}${communityCards[2].suit}]` `[${communityCards[3].val}${communityCards[3].suit}]` `[${communityCards[4].val}${communityCards[4].suit}]``)
-.setColor('#1abc9c');
+Community: ${comm.map(c => \[${c.val}${c.suit}]`).join(' ')}).setColor('#1abc9c');
 const row = new ActionRowBuilder().addComponents(
-new ButtonBuilder().setCustomId('call').setLabel('Play Hand / Call').setStyle(ButtonStyle.Success),
+new ButtonBuilder().setCustomId('call').setLabel('Call').setStyle(ButtonStyle.Success),
 new ButtonBuilder().setCustomId('fold').setLabel('Fold').setStyle(ButtonStyle.Danger)
 );
 const reply = await message.reply({ embeds: [embed], components: [row] });
@@ -351,22 +250,13 @@ const collector = reply.createMessageComponentCollector({ componentType: Compone
 collector.on('collect', async (i) => {
 if (i.user.id !== message.author.id) return;
 collector.stop();
-if (i.customId === 'fold') {
-data.cash -= Math.floor(bet / 2);
-return i.update({ content: 🏳️ פרשת מהמשחק. הפסדת חצי מסכום ההימור שלך: ${Math.floor(bet / 2)} ${serverCurrency}, embeds: [], components: [] });
-}
-const playerWins = Math.random() < 0.53;
-const resultEmbed = new EmbedBuilder();
-if (playerWins) {
-data.cash += bet;
-resultEmbed.setTitle('🎉 ניצחת ביד! 🎉')
-.setDescription(הבוט הראה: \[${botHand[0].val}${botHand[0].suit}]` `[${botHand[1].val}${botHand[1].suit}]`
-יש לך יד חזקה יותר! הרווחת ${bet.toLocaleString()} ${serverCurrency}.) .setColor('#2ecc71'); } else { data.cash -= bet; resultEmbed.setTitle('❌ הבוט ניצח! ❌') .setDescription(הבוט הראה: `[${botHand[0].val}${botHand[0].suit}]` `[${botHand[1].val}${botHand[1].suit}]`
-לבוט היה שילוב חזק יותר. הפסדת ${bet.toLocaleString()} ${serverCurrency}.`)
-.setColor('#e74c3c');
-}
-await i.update({ embeds: [resultEmbed], components: [] });
+if (i.customId === 'fold') { data.cash -= Math.floor(bet / 2); return i.update({ content: 🏳️ Folded. Lost: ${Math.floor(bet / 2)} ${serverCurrency}, embeds: [], components: [] }); }
+const win = Math.random() < 0.53;
+const res = new EmbedBuilder();
+if (win) { data.cash += bet; res.setTitle('🎉 You Won! 🎉').setDescription(Bot held: \[${bHand[0].val}${bHand[0].suit}]` `[${bHand[1].val}${bHand[1].suit}]`\nWon ${bet.toLocaleString()} ${serverCurrency}).setColor('#2ecc71'); } else { data.cash -= bet; res.setTitle('❌ Bot Won! ❌').setDescription(Bot held: `[${bHand[0].val}${bHand[0].suit}]` `[${bHand[1].val}${bHand[1].suit}]`\nLost ${bet.toLocaleString()} ${serverCurrency}`).setColor('#e74c3c'); }
+await i.update({ embeds: [res], components: [] });
 });
 }
 });
 client.login(process.env.DISCORD_TOKEN);
+ האם המשחקים החדשים מגיבים בצורה חלק
