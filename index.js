@@ -1,6 +1,4 @@
-אני בונה לך את הקוד המלא והמעודכן עבור index.js אחד לאחד לפי כל הבקשות והעיצובים מהתמונות.
-הקוד כולל את כל המשחקים, המערכות, המעריכים הויזואליים (Embeds והכפתורים של דיסקורד v14), בקרת הרשאות הניהול, ואחוזי הזכייה שביקשת (כולל ה"טריק" ב-Chicken Fight).
-## הנה הקוד המלא – תעתיק אותו ותדביק בתוך קובץ index.js שלך:
+
 
 const { 
     Client, 
@@ -19,8 +17,8 @@ const client = new Client({
         GatewayIntentBits.GuildMembers
     ]
 });
-const PREFIX = '$';let balances = {}; let casinoRole = null; let serverCurrency = '💸'; // ברירת מחדל, ניתן לשינוי בפקודה
-// פונקציית עזר לקבלת מידע על משתמשfunction getUserData(userId) {
+const PREFIX = '$';let balances = {}; let casinoRole = null; let serverCurrency = '💸'; 
+function getUserData(userId) {
     if (!balances[userId]) balances[userId] = { cash: 0, bank: 0 };
     return balances[userId];
 }
@@ -35,18 +33,12 @@ client.on('messageCreate', async (message) => {
     const args = message.content.slice(PREFIX.length).trim().split(/ +/);
     const command = args.shift().toLowerCase();
 
-    // בדיקת הרשאות מיוחדות לניהול קזינו (עבור פקודות צוות)
     const hasCasinoAccess = () => {
         if (message.member.permissions.has('Administrator')) return true;
         if (casinoRole && message.member.roles.cache.has(casinoRole)) return true;
         return false;
     };
 
-    // ==========================================
-    // פקודות ניהול (רק למי שיש רול קזינו או אדמין)
-    // ==========================================
-
-    // הגדרת הרול של הנהלת הקזינו
     if (command === 'role-casino') {
         if (!message.member.permissions.has('Administrator')) return message.reply('❌ אין לך הרשאות מנהל לבצע פקודה זו.');
         const role = message.mentions.roles.first();
@@ -55,14 +47,12 @@ client.on('messageCreate', async (message) => {
         return message.reply(`✅ הרול המורשה לקזינו עודכן בהצלחה ל: **${role.name}**`);
     }
 
-    // הוספת כסף למשתמש (בנק או מזומן)
     if (command === 'addmoney') {
         if (!hasCasinoAccess()) return message.reply('❌ פקודה זו חסומה עבורך. רק מנהלי קזינו מורשים להשתמש בה.');
         
-        // מבנה פקודה: $addmoney @user cash/bank 1000
         const target = message.mentions.users.first();
-        const type = args[1] ? args[1].toLowerCase() : null;
-        const amount = parseInt(args[2]);
+        const type = args[0] ? args[0].toLowerCase() : null;
+        const amount = parseInt(args[1]);
 
         if (!target || !type || isNaN(amount) || amount <= 0 || (type !== 'cash' && type !== 'bank')) {
             return message.reply('❌ מבנה פקודה לא תקין! יש לכתוב: `$addmoney @user [cash/bank] [amount]`');
@@ -74,20 +64,14 @@ client.on('messageCreate', async (message) => {
         return message.reply(`✅ בהצלחה הוסרו **${amount.toLocaleString()}** ${serverCurrency} לתוך ה-${type === 'cash' ? 'מזומן' : 'בנק'} של ${target.username}.`);
     }
 
-    // שינוי האמוג'י / מטבע של השרת
     if (command === 'setcurrency') {
         if (!hasCasinoAccess()) return message.reply('❌ פקודה זו חסומה עבורך.');
         const newCurrency = args[0];
-        if (!newCurrency) return message.reply('❌ נא ספק אמוג'י או סימון למטבע החדש.');
+        if (!newCurrency) return message.reply('❌ נא ספק אמוג\'י או סימון למטבע החדש.');
         serverCurrency = newCurrency;
         return message.reply(`✅ המטבע של השרת עודכן בהצלחה ל: ${serverCurrency}`);
     }
 
-    // ==========================================
-    // פקודות לכולם (ממברים)
-    // ==========================================
-
-    // בדיקת יתרת חשבון (Balance) - לפי העיצוב בתמונה שלך
     if (command === 'bal' || command === 'balance') {
         const targetUser = message.mentions.users.first() || message.author;
         const data = getUserData(targetUser.id);
@@ -101,7 +85,6 @@ client.on('messageCreate', async (message) => {
         return message.reply({ embeds: [embed] });
     }
 
-    // משחק קרב תרנגולים (Chicken Fight)
     if (command === 'cf' || command === 'chickenfight') {
         const data = getUserData(message.author.id);
         let betInput = args[0];
@@ -117,7 +100,6 @@ client.on('messageCreate', async (message) => {
         if (isNaN(bet) || bet <= 0) return message.reply('❌ סכום הימור לא תקין.');
         if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף במזומן (Money Out) עבור הימור זה.');
 
-        // חישוב סיכויים: ויזואלית מציג 51% סיכוי, אבל אמיתית מאחורי הקלעים יש לו 52% לנצח
         const winChance = 0.52; 
         const isWin = Math.random() < winChance;
 
@@ -138,7 +120,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // משחק גבוה או נמוך (Hi-Lo) - בדיוק לפי העיצוב בתמונה
     if (command === 'hilo' || command === 'high-low') {
         const data = getUserData(message.author.id);
         const bet = parseInt(args[0]);
@@ -149,7 +130,6 @@ client.on('messageCreate', async (message) => {
         let card1 = Math.floor(Math.random() * 13) + 1;
         let card2 = Math.floor(Math.random() * 13) + 1;
 
-        // התאמת אחוזים לטובת השחקן ב-3% עד 5% מהרגיל (מעלה סיכוי שהקלף הבא יזרום עם הניחוש)
         if (Math.random() < 0.05) { 
             card2 = card1 > 7 ? Math.floor(Math.random() * (card1 - 1)) + 1 : Math.floor(Math.random() * (14 - card1)) + card1;
         }
@@ -196,7 +176,6 @@ client.on('messageCreate', async (message) => {
         });
     }
 
-    // משחק בלאקג'ק (Blackjack) עם כפתורים ואחוז זכייה מובנה של 51% לטובת השחקן
     if (command === 'bj' || command === 'blackjack') {
         const data = getUserData(message.author.id);
         const bet = parseInt(args[0]);
@@ -204,7 +183,6 @@ client.on('messageCreate', async (message) => {
         if (isNaN(bet) || bet <= 0) return message.reply('❌ נא לציין סכום הימור תקין. דוגמה: `$bj 1000`');
         if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף במזומן.');
 
-        // יצירת חפיסת קלפים פשוטה
         const drawCard = () => {
             const cards = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
             const card = cards[Math.floor(Math.random() * cards.length)];
@@ -214,26 +192,28 @@ client.on('messageCreate', async (message) => {
             return { display: card, value: val };
         };
 
+        let playerHand = [drawCard(), drawCard()];
+        let dealerHand = [drawCard(), drawCard()];
 
-let playerHand = [drawCard(), drawCard()];
-let dealerHand = [drawCard(), drawCard()];
-// הבטחת 51% סיכוי של שחקן לנצח על ידי שיפור היד ההתחלתית במקרה הצורך
-if (Math.random() < 0.51) {
-while ((playerHand[0].value + playerHand[1].value) < 15) {
-playerHand = [drawCard(), drawCard()];
-}
-}
-const getHandValue = (hand) => {
-let sum = hand.reduce((a, b) => a + b.value, 0);
-let aces = hand.filter(c => c.display === 'A').length;
-while (sum > 21 && aces > 0) { sum -= 10; aces--; }
-return sum;
-};
-const makeEmbed = (ended = false, statusText = '') => {
-return new EmbedBuilder()
-.setAuthor({ name: ${message.author.username}'s Game })
-.setTitle('🃏 Blackjack 🃏')
-.setDescription(**Your Hand**\n${playerHand.map(c => `${c.display}`).join(', ')}\nValue: **${getHandValue(playerHand)}**\n\n**Dealer**\n${ended ? dealerHand.map(c => `${c.display}`).join(', ') : `${dealerHand[0].display}`, 🟥}\nValue: **${ended ? getHandValue(dealerHand) : dealerHand[0].value}**\n\n${statusText})
+        const getHandValue = (hand) => {
+            let sum = hand.reduce((a, b) => a + b.value, 0);
+            let aces = hand.filter(c => c.display === 'A').length;
+            while (sum > 21 && aces > 0) { sum -= 10; aces--; }
+            return sum;
+        };
+
+        if (Math.random() < 0.51) {
+            while (getHandValue(playerHand) < 15) {
+                playerHand = [drawCard(), drawCard()];
+            }
+        }
+
+        const makeEmbed = (ended = false, statusText = '') => {
+            return new EmbedBuilder()
+                .setAuthor({ name: `${message.author.username}'s Game` })
+                .setTitle('🃏 Blackjack 🃏')
+                .setDescription(`**Your Hand**\n${playerHand.map(c => `\`${c.display}\``).join(', ')}\nValue: **${getHandValue(playerHand)}**\n\n**Dealer**\n${ended ? dealerHand.map(c => `\`${c.display}\``).join(', ') : `\`${dealerHand[0].display}\`, 🟥`}\nValue: **${ended ? getHandValue(dealerHand) : dealerHand[0].value}**\n\n${statusText}`)
+
 .setColor(ended ? '#f1c40f' : '#10a3de');
 };
 const row = new ActionRowBuilder().addComponents(
@@ -278,13 +258,11 @@ return i.update({ embeds: [makeEmbed(true, msg)], components: [] });
 }
 });
 }
-// משחק מוקשים (Mines) בעיצוב נקי עם לוח של 3x3 כפתורים
 if (command === 'mines') {
 const data = getUserData(message.author.id);
 const bet = parseInt(args[0]);
 if (isNaN(bet) || bet <= 0) return message.reply('❌ נא לציין סכום הימור תקין. דוגמה: $mines 500');
 if (data.cash < bet) return message.reply('❌ אין לך מספיק כסף.');
-// לוח מוקשים פשוט בגודל 3x3, מתוכם 2 מוקשים רנדומליים
 let board = Array(9).fill('safe');
 let mine1 = Math.floor(Math.random() * 9);
 let mine2 = Math.floor(Math.random() * 9);
@@ -308,7 +286,6 @@ row.addComponents(btn);
 }
 rows.push(row);
 }
-// הוספת כפתור ה-Cashout בשורה נפרדת
 const cashoutRow = new ActionRowBuilder().addComponents(
 new ButtonBuilder().setCustomId('cashout').setLabel('Cashout').setStyle(ButtonStyle.Success).setDisabled(revealedCount === 0 || ended)
 );
@@ -338,7 +315,7 @@ const loseEmbed = new EmbedBuilder().setTitle('💥 BOOM! 💥').setDescription(
 return i.update({ embeds: [loseEmbed], components: getGridRows(true) });
 } else {
 revealedCount++;
-profit += Math.floor(bet * 0.35); // רווח של 35% על כל משבצת בטוחה שנחשפת
+profit += Math.floor(bet * 0.35);
 const nextEmbed = new EmbedBuilder()
 .setTitle('💣 Mines Game 💣')
 .setDescription(**Betting:** ${bet.toLocaleString()} ${serverCurrency})
@@ -348,7 +325,6 @@ return i.update({ embeds: [nextEmbed], components: getGridRows() });
 }
 });
 }
-// משחק טקסס הולדם (Texas Hold'em) - נגד הבוט, קלפים בעיצוב תואם
 if (command === 'poker' || command === 'texas') {
 const data = getUserData(message.author.id);
 const bet = parseInt(args[0]);
@@ -379,7 +355,6 @@ if (i.customId === 'fold') {
 data.cash -= Math.floor(bet / 2);
 return i.update({ content: 🏳️ פרשת מהמשחק. הפסדת חצי מסכום ההימור שלך: ${Math.floor(bet / 2)} ${serverCurrency}, embeds: [], components: [] });
 }
-// קביעת מנצח רנדומלי (הטיה קלה של 3% לטובת השחקן לפי הדרישה הכללית)
 const playerWins = Math.random() < 0.53;
 const resultEmbed = new EmbedBuilder();
 if (playerWins) {
@@ -394,17 +369,4 @@ await i.update({ embeds: [resultEmbed], components: [] });
 });
 }
 });
-// החלפת הטוקן לשימוש במשתנה סביבה מאובטח ב-Render
 client.login(process.env.DISCORD_TOKEN);
-
-
-### מה לעשות עכשיו?
-1. **הדבק את הקוד** ב-`index.js` שלך בגיטהאב ושמור אותו (**Commit**).
-2. הבוט ב-**Render** יתעדכן ויבצע בנייה מחדש (האור הירוק יופיע מחדש).
-3. כנס לשרת הדיסקורד ותתחיל להריץ פקודות: `$bal`, `$mines 100`, `$bj 500`, `$cf all`.
-
-<FollowUp>
-תעדכן אותי – האם **הקוד עלה בהצלחה** ב-Render והאם כל המשחקים החדשים **מגיבים לך פיקס** בדיסקורד?
-</FollowUp>
-
-
