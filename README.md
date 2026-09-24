@@ -311,3 +311,4 @@ return message.reply({ embeds: [embed], components: [row] });
 });
 // משיכת הטוקן בצורה מאובטחת מהגדרות השרת
 client.login(process.env.DISCORD_TOKEN);
+.
