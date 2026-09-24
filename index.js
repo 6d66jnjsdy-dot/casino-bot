@@ -42,8 +42,8 @@ client.on('messageCreate', async (message) => {
     if (command === 'addmoney') {
         if (!hasCasinoAccess()) return message.reply('❌ Staff only.');
         const target = message.mentions.users.first();
-        const type = args[1] ? args[1].toLowerCase() : null;
-        const amount = parseInt(args[2]);
+        const type = args[0] ? args[0].toLowerCase() : null;
+        const amount = parseInt(args[1]);
         if (!target || !type || isNaN(amount) || amount <= 0 || (type !== 'cash' && type !== 'bank')) {
             return message.reply('❌ Use: `$addmoney @user [cash/bank] [amount]`');
         }
@@ -77,6 +77,7 @@ client.on('messageCreate', async (message) => {
         let bet = betInput && betInput.toLowerCase() === 'all' ? data.cash : parseInt(betInput);
         if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
         if (data.cash < bet) return message.reply('❌ Not enough cash.');
+        
         const isWin = Math.random() < 0.52;
         if (isWin) {
             data.cash += bet;
@@ -100,12 +101,14 @@ client.on('messageCreate', async (message) => {
         const bet = parseInt(args[0]);
         if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
         if (data.cash < bet) return message.reply('❌ Not enough cash.');
+        
         let card1 = Math.floor(Math.random() * 13) + 1;
         let card2 = Math.floor(Math.random() * 13) + 1;
         if (Math.random() < 0.05) card2 = card1 > 7 ? Math.floor(Math.random() * (card1 - 1)) + 1 : Math.floor(Math.random() * (14 - card1)) + card1;
+        
         const embed = new EmbedBuilder()
             .setTitle('🎲 Higher or Lower 🎲')
-            .setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` ❓\n\n**Higher:** -\n**Same:** 8x\n**Lower:** 1.1x`)
+            .setDescription(`**Betting Amount:** ${bet.toLocaleString()}\n\n\`1:\` ${card1}\n\`2:\` ❓\n\n**Higher:** 1.5x\n**Same:** 8x\n**Lower:** 1.1x`)
             .setColor('#8e44ad');
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('higher').setLabel('Higher').setStyle(ButtonStyle.Primary),
@@ -114,6 +117,7 @@ client.on('messageCreate', async (message) => {
         );
         const reply = await message.reply({ embeds: [embed], components: [row] });
         const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 30000 });
+        
         collector.on('collect', async (i) => {
             if (i.user.id !== message.author.id) return;
             collector.stop();
@@ -137,6 +141,7 @@ client.on('messageCreate', async (message) => {
         const bet = parseInt(args[0]);
         if (isNaN(bet) || bet <= 0) return message.reply('❌ Invalid bet.');
         if (data.cash < bet) return message.reply('❌ Not enough cash.');
+        
         const draw = () => {
             const c = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'][Math.floor(Math.random() * 13)];
             return { display: c, value: ['J','Q','K'].includes(c) ? 10 : (c === 'A' ? 11 : parseInt(c)) };
@@ -148,17 +153,19 @@ client.on('messageCreate', async (message) => {
             return s;
         };
         if (Math.random() < 0.51) { while (val(pHand) < 15) pHand = [draw(), draw()]; }
+        
         const makeEmbed = (end = false, txt = '') => new EmbedBuilder()
             .setAuthor({ name: `${message.author.username}'s Game` }).setTitle('🃏 Blackjack 🃏')
             .setDescription(`**Your Hand**\n${pHand.map(c => `\`${c.display}\``).join(', ')}\nValue: **${val(pHand)}**\n\n**Dealer**\n${end ? dHand.map(c => `\`${c.display}\``).join(', ') : `\`${dHand[0].display}\`, 🟥`}\nValue: **${end ? val(dHand) : dHand[0].value}**\n\n${txt}`)
             .setColor(end ? '#f1c40f' : '#10a3de');
+            
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('hit').setLabel('Hit').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('stand').setLabel('Stand').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('double').setLabel('Double').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('stand').setLabel('Stand').setStyle(ButtonStyle.Success)
         );
         const reply = await message.reply({ embeds: [makeEmbed()], components: [row] });
         const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
+        
         collector.on('collect', async (i) => {
             if (i.user.id !== message.author.id) return;
             if (i.customId === 'hit') {
@@ -173,10 +180,10 @@ client.on('messageCreate', async (message) => {
             if (i.customId === 'stand') {
                 collector.stop();
                 while (val(dHand) < 17) dHand.push(draw());
-                let p = val(pHand), d = val(dHand), msg = '';
+                let pVal = val(pHand), dVal = val(dHand), msg = '';
 
-if (d > 21 || p > d) { data.cash += bet; msg = 🎉 Won ${bet.toLocaleString()} ${serverCurrency}!; }
-else if (p < d) { data.cash -= bet; msg = ❌ Dealer won. Lost ${bet.toLocaleString()} ${serverCurrency}.; }
+if (dVal > 21 || pVal > dVal) { data.cash += bet; msg = 🎉 Won ${bet.toLocaleString()} ${serverCurrency}!; }
+else if (pVal < dVal) { data.cash -= bet; msg = ❌ Dealer won. Lost ${bet.toLocaleString()} ${serverCurrency}.; }
 else msg = '👔 Push!';
 return i.update({ embeds: [makeEmbed(true, msg)], components: [] });
 }
@@ -207,7 +214,7 @@ r.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('co'
 return r;
 };
 const embed = new EmbedBuilder().setTitle('💣 Mines 💣').setDescription(**Betting:** ${bet.toLocaleString()} ${serverCurrency}).setFields({ name: Profit: ${profit} ${serverCurrency}, value: '\u200B' }).setColor('#e67e22');
-const reply = await message.reply({ embeds: [embed], components: getGridRows ? getGridRows() : getRows() });
+const reply = await message.reply({ embeds: [embed], components: getRows() });
 const collector = reply.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 collector.on('collect', async (i) => {
 if (i.user.id !== message.author.id) return;
@@ -259,4 +266,3 @@ await i.update({ embeds: [res], components: [] });
 }
 });
 client.login(process.env.DISCORD_TOKEN);
- האם המשחקים החדשים מגיבים בצורה חלק
