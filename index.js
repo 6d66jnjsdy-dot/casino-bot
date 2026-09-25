@@ -22,6 +22,21 @@ const PORT = process.env.PORT || 10000;
 app.get("/", (_, res) => res.send("Casino Bot is Online 24/7!"));
 app.listen(PORT, "0.0.0.0", () => console.log(`Web server running on port ${PORT}`));
 
+/* ================= CRASH PROTECTION (IMPORTANT) =================
+   Without this, ANY error thrown inside an async button/collector
+   handler (a game click, a timeout callback, a Discord API hiccup,
+   an expired interaction, etc.) becomes an "unhandled promise
+   rejection". Node.js kills the ENTIRE process by default when that
+   happens — which is exactly what looked like "the bot crashes and
+   resets" whenever someone played $mines or $gm. Now it just gets
+   logged instead of taking the whole bot down. */
+process.on("unhandledRejection", (reason) => {
+  console.error("⚠️ Unhandled promise rejection (bot stayed alive):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("⚠️ Uncaught exception (bot stayed alive):", err);
+});
+
 /* ============================ BOT ============================= */
 const client = new Client({
   intents: [
@@ -762,38 +777,49 @@ async function mines(message, args, user) {
   const c = msg.createMessageComponentCollector({ time: 120000 });
 
   c.on("collect", async i => {
-    if (i.user.id !== message.author.id) return i.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    if (finished) return;
-    const a = i.customId.split(":")[2];
+    try {
+      if (i.user.id !== message.author.id) return i.reply({ content: "❌ This isn't your game.", ephemeral: true });
+      if (finished) return;
+      const a = i.customId.split(":")[2];
 
-    if (a === "cash") {
-      if (!revealed.size) return i.reply({ content: "❌ Reveal a tile first.", ephemeral: true });
-      finished = true;
-      c.stop();
-      const p = Math.floor(bet * mult());
-      user.cash += p;
-      saveData();
-      return i.update({ embeds: [minesEmbed(`🎉 You cashed out and won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
-    }
+      if (a === "cash") {
+        if (!revealed.size) return i.reply({ content: "❌ Reveal a tile first.", ephemeral: true });
+        finished = true;
+        c.stop();
+        const p = Math.floor(bet * mult());
+        user.cash += p;
+        saveData();
+        return i.update({ embeds: [minesEmbed(`🎉 You cashed out and won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
+      }
 
-    const idx = Number(a);
-    if (idx === bomb) {
-      finished = true;
-      c.stop();
-      saveData();
-      return i.update({ embeds: [minesEmbed(`💥 You hit a bomb! Lost **${money(bet)}** ${db.currency}.\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_LOSE)], components: rows(true) });
-    }
+      const idx = Number(a);
+      if (idx === bomb) {
+        finished = true;
+        c.stop();
+        saveData();
+        return i.update({ embeds: [minesEmbed(`💥 You hit a bomb! Lost **${money(bet)}** ${db.currency}.\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_LOSE)], components: rows(true) });
+      }
 
-    revealed.add(idx);
-    if (revealed.size === 15) {
-      finished = true;
-      c.stop();
-      const p = Math.floor(bet * 8.9);
-      user.cash += p;
-      saveData();
-      return i.update({ embeds: [minesEmbed(`🎉 Board cleared! You won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
+      revealed.add(idx);
+      if (revealed.size === 15) {
+        finished = true;
+        c.stop();
+        const p = Math.floor(bet * 8.9);
+        user.cash += p;
+        saveData();
+        return i.update({ embeds: [minesEmbed(`🎉 Board cleared! You won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
+      }
+      return i.update({ embeds: [minesEmbed("Pick another tile or cash out.")], components: rows() });
+    } catch (e) {
+      console.error("Mines error:", e);
+      if (!finished) {
+        finished = true;
+        c.stop();
+        user.cash += bet;
+        saveData();
+      }
+      await message.channel.send({ embeds: [embed(`⚠️ Something went wrong, your bet of **${money(bet)}** ${db.currency} was refunded.`, COLOR_LOSE)] }).catch(() => {});
     }
-    return i.update({ embeds: [minesEmbed("Pick another tile or cash out.")], components: rows() });
   });
 
   c.on("end", async () => {
@@ -891,48 +917,59 @@ async function goldmine(message, args, user) {
   const c = msg.createMessageComponentCollector({ time: 150000 });
 
   c.on("collect", async i => {
-    if (i.user.id !== message.author.id) return i.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    if (finished) return;
-    const a = i.customId.split(":")[2];
+    try {
+      if (i.user.id !== message.author.id) return i.reply({ content: "❌ This isn't your game.", ephemeral: true });
+      if (finished) return;
+      const a = i.customId.split(":")[2];
 
-    if (a === "cash") {
-      finished = true;
-      c.stop();
-      const p = Math.floor(bet * mult);
-      user.cash += p;
-      saveData();
-      return i.update({ embeds: [goldmineEmbed(`🎉 You cashed out and won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
-    }
-
-    const idx = Number(a), t = board[idx];
-    if (t.type === "bomb") {
-      finished = true;
-      c.stop();
-      saveData();
-      return i.update({ embeds: [goldmineEmbed(`💥 You hit a bomb! Lost **${money(bet)}** ${db.currency}.\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_LOSE)], components: rows(true) });
-    }
-
-    if (t.type === "map") {
-      revealed.add(idx);
-      const pool = shuffle([...Array(24).keys()].filter(x => !revealed.has(x) && board[x].type !== "bomb")).slice(0, 3);
-      for (const x of pool) {
-        revealed.add(x);
-        if (board[x].type === "treasure") mult *= board[x].mult;
+      if (a === "cash") {
+        finished = true;
+        c.stop();
+        const p = Math.floor(bet * mult);
+        user.cash += p;
+        saveData();
+        return i.update({ embeds: [goldmineEmbed(`🎉 You cashed out and won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
       }
-    } else {
-      revealed.add(idx);
-      mult *= t.mult;
-    }
 
-    if (revealed.size >= 12) {
-      finished = true;
-      c.stop();
-      const p = Math.floor(bet * mult);
-      user.cash += p;
-      saveData();
-      return i.update({ embeds: [goldmineEmbed(`🎉 All safe tiles found! You won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
+      const idx = Number(a), t = board[idx];
+      if (t.type === "bomb") {
+        finished = true;
+        c.stop();
+        saveData();
+        return i.update({ embeds: [goldmineEmbed(`💥 You hit a bomb! Lost **${money(bet)}** ${db.currency}.\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_LOSE)], components: rows(true) });
+      }
+
+      if (t.type === "map") {
+        revealed.add(idx);
+        const pool = shuffle([...Array(24).keys()].filter(x => !revealed.has(x) && board[x].type !== "bomb")).slice(0, 3);
+        for (const x of pool) {
+          revealed.add(x);
+          if (board[x].type === "treasure") mult *= board[x].mult;
+        }
+      } else {
+        revealed.add(idx);
+        mult *= t.mult;
+      }
+
+      if (revealed.size >= 12) {
+        finished = true;
+        c.stop();
+        const p = Math.floor(bet * mult);
+        user.cash += p;
+        saveData();
+        return i.update({ embeds: [goldmineEmbed(`🎉 All safe tiles found! You won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
+      }
+      return i.update({ embeds: [goldmineEmbed("Pick another tile or cash out.")], components: rows() });
+    } catch (e) {
+      console.error("Goldmine error:", e);
+      if (!finished) {
+        finished = true;
+        c.stop();
+        user.cash += bet;
+        saveData();
+      }
+      await message.channel.send({ embeds: [embed(`⚠️ Something went wrong, your bet of **${money(bet)}** ${db.currency} was refunded.`, COLOR_LOSE)] }).catch(() => {});
     }
-    return i.update({ embeds: [goldmineEmbed("Pick another tile or cash out.")], components: rows() });
   });
 
   c.on("end", async () => {
