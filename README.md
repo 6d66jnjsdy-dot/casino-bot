@@ -1,120 +1,34 @@
-🎰 Casino Bot — README
+# 🎰 Discord Casino & Economy Bot
 
-1. Install
+An advanced, feature-rich Discord casino and economy bot featuring popular games, a robust currency system, 1v1 multiplayer games (like Texas Hold'em), and full button-based interactive UI.
 
-npm install discord.js express
+---
 
-2. Environment variable
+## ✨ Key Features
 
-Create an environment variable named exactly:
+* **💰 Full Economy System:** Work, crime, and robbery commands, fund transfers (`pay`), deposits/withdrawals, and leaderboards (`leaderboard`).
+* **🃏 Immersive Casino Games:**
+  * **Blackjack (`$bj`)** – Visual card distribution, Double option, and enhanced payout for Naturals (23.4% chance).
+  * **Cockfight (`$cf`)** – Compact chicken fight starting at 55% win rate and increasing with wins.
+  * **Mines (`$mines`)** – 3x3 grid with gems and dynamic profit multipliers.
+  * **Goldmine (`$gm`)** – Wide board with bombs, hidden treasures, and maps.
+  * **Texas Hold'em (`$texas`)** – 1v1 poker game against another player with secret private cards sent via Direct Message (DM).
+  * Other games: Higher/Lower (`$hl`), Coinflip (`$ht`), Slots (`$slots`), Roulette (`$roulette`), Wheel (`$wheel`), Crash (`$crash`), and daily Summer wheel (`$summer`).
+* **🛠️ Admin Tools:** Full control to add/remove money, set authorized casino roles, configure designated game rooms, and set up a logging channel for all activities.
 
-DISCORD_TOKEN
+---
 
-Put your Discord bot token there. Do not put the token directly into index.js or upload it to GitHub.
+## ⚙️ System Requirements
 
-3. Run
+* **Node.js** (Version 16.x or higher recommended)
+* **discord.js** (Version 14)
+* **express** (To keep the bot alive 24/7)
 
-node index.js
+---
 
-For Render/Railway, the bot starts the small HTTP server automatically and uses the platform PORT when provided.
+## 🚀 Installation & Setup
 
-4. First Discord setup
-
-Use these commands in this order:
-
-$casinorole @CasinoAdmin
-$roomgame #casino
-$log-channel #casino-logs
-
-• $casinorole controls casino-admin commands.
-• $roomgame restricts games to the selected channel(s). Use $roomgame clear to remove the restriction.
-• $log-channel sends detailed casino logs to a channel. Use $log-channel off to disable.
-
-5. Prediction feed
-
-For a casino admin:
-
-$predict
-
-This enables private prediction DMs for that admin. The feed can include hidden Mines/Goldmine layouts and Roulette/Slots results before the public result is shown.
-
-Disable it with:
-
-$predict off
-
-6. Money commands
-
-$bal
-$deposit 5000
-$deposit half
-$deposit all
-$withdraw 5000
-$withdraw half
-$withdraw all
-$pay @user 5000
-$pay @user half
-$pay @user all
-
-Every casino game accepts:
-
-<exact amount>
-half
-all
-
-Minimum bet: 175.
-
-7. Admin money commands
-
-$addmoney cash @user 100000
-$addmoney bank @user 100000
-$remove-money cash @user 100000
-$remove-money bank @user 100000
-$addmoney-role cash @role 100000
-$addmoney-role bank @role 100000
-$reset-economy
-
-$reset-economy sets stored cash and bank balances to zero.
-
-8. Games
-
-$bj 1000
-$cf half
-$hl all
-$ht 5000
-$mines 1000
-$gm half
-$slots all
-$roulette 1000 red
-$roulette 1000 17
-$wheel 1000
-$crash half
-
-Dice and Money Tower were removed.
-
-9. Daily Summer wheel
-
-$summer
-
-One spin per 24 hours. Prizes:
-
-• 1,750,000 — 45%
-• 25,000,000 — 30%
-• 65,000,000 — 15%
-• 100,000,000 JACKPOT — 5%
-
-10. Visual style
-
-The embeds/buttons use the same general texture as the reference screenshots:
-
-• dark casino panel
-• purple accent
-• blue action buttons
-• green Cashout/win buttons
-• red bomb/loss buttons
-• large spaced Blackjack layout
-
-Discord itself does not allow a bot embed to set a custom full-background texture like an image-based game UI, so the styling is matched using Discord’s supported embeds and buttons.
-
-11. Important
-
-Keep data.json persistent on your hosting platform if you want balances/configuration to survive restarts. If your host has ephemeral storage, use persistent storage or a database.
+1. Clone or download the project files to your local directory.
+2. Install the required dependencies using your terminal:
+   ```bash
+   npm install discord.js express
