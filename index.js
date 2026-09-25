@@ -178,7 +178,9 @@ function disabledRow(row) {
 }
 
 function validBet(message, args) {
-  const bet = Number(args[0]);
+  const user = getUser(message.author.id);
+  const bet =
+    (args[0] || "").toLowerCase() === "all" ? user.cash : Number(args[0]);
 
   if (!Number.isFinite(bet) || bet < MIN_BET) {
     message.reply({
@@ -191,8 +193,6 @@ function validBet(message, args) {
     });
     return null;
   }
-
-  const user = getUser(message.author.id);
 
   if (bet > user.cash) {
     message.reply({
@@ -260,7 +260,8 @@ client.on("messageCreate", async (message) => {
               "`$crime` — risk it for more cash (4 min cooldown)",
               "`$rob @user` — try to steal cash from someone (8 min cooldown)",
               "`$bal [@user]` — check a balance",
-              "`$deposit <amount>` / `$withdraw <amount>` — move money to/from your bank",
+              "`$deposit`/`$dep` and `$withdraw`/`$with` `<amount|all>` — move money to/from your bank",
+              "`$pay @user <amount|all>` — send cash to another player",
               "`$lb` / `$top` — richest players",
               "`$top cash` — players with the most cash out on hand",
               "",
@@ -276,6 +277,13 @@ client.on("messageCreate", async (message) => {
               "`$mines <amount>` — Mines (3x3, 1 bomb)",
               "`$mt <amount>` — Money Tower",
               "`$gm <amount>` — Goldmine",
+              "`$slots <amount>` — Slot Machine",
+              "`$roulette <amount> <color/number>` — Roulette",
+              "`$dice <amount> <over/under/seven>` — Dice",
+              "`$wheel <amount>` — Wheel of Fortune",
+              "`$crash <amount>` — Crash",
+              "`$info` — full rules & payouts for every game",
+              "(any game accepts `all` instead of an amount to bet everything)",
               "",
               "**🛠️ Admin / Casino Role**",
               "`$addmoney cash/bank @user <amount>` — add funds",
@@ -315,8 +323,8 @@ client.on("messageCreate", async (message) => {
 
     /* ---------- DEPOSIT / WITHDRAW ---------- */
 
-    if (command === "deposit") {
-      const amount = args[0] === "all" ? user.cash : Number(args[0]);
+    if (["deposit", "dep"].includes(command)) {
+      const amount = (args[0] || "").toLowerCase() === "all" ? user.cash : Number(args[0]);
 
       if (!Number.isFinite(amount) || amount <= 0 || amount > user.cash) {
         return message.reply({
@@ -345,8 +353,8 @@ client.on("messageCreate", async (message) => {
       });
     }
 
-    if (command === "withdraw") {
-      const amount = args[0] === "all" ? user.bank : Number(args[0]);
+    if (["withdraw", "with", "wd"].includes(command)) {
+      const amount = (args[0] || "").toLowerCase() === "all" ? user.bank : Number(args[0]);
 
       if (!Number.isFinite(amount) || amount <= 0 || amount > user.bank) {
         return message.reply({
@@ -369,6 +377,51 @@ client.on("messageCreate", async (message) => {
             `Successfully withdrew **${money(
               amount
             )}** ${db.currency} from your bank account.`,
+            COLOR_WIN
+          )
+        ]
+      });
+    }
+
+    /* ---------- PAY ---------- */
+
+    if (command === "pay") {
+      const target = message.mentions.users.first();
+      const amount =
+        (args[1] || "").toLowerCase() === "all" ? user.cash : Number(args[1]);
+
+      if (!target || target.id === message.author.id) {
+        return message.reply({
+          embeds: [
+            embed("❌ Usage: `$pay @user <amount>`", COLOR_LOSE)
+          ]
+        });
+      }
+
+      if (!Number.isFinite(amount) || amount <= 0 || amount > user.cash) {
+        return message.reply({
+          embeds: [
+            embed(
+              "❌ Enter a valid amount you actually have in cash (or use `all`).",
+              COLOR_LOSE
+            )
+          ]
+        });
+      }
+
+      const flooredAmount = Math.floor(amount);
+      const targetUser = getUser(target.id);
+
+      user.cash -= flooredAmount;
+      targetUser.cash += flooredAmount;
+      saveData();
+
+      return message.reply({
+        embeds: [
+          embed(
+            `✅ Sent **${money(
+              flooredAmount
+            )}** ${db.currency} to <@${target.id}>.`,
             COLOR_WIN
           )
         ]
@@ -754,6 +807,32 @@ client.on("messageCreate", async (message) => {
     if (["gm", "goldmine"].includes(command)) {
       return goldmine(message, args, user);
     }
+
+    if (["slots", "slot"].includes(command)) {
+      return slots(message, args, user);
+    }
+
+    if (["roulette", "rl"].includes(command)) {
+      return roulette(message, args, user);
+    }
+
+    if (["dice"].includes(command)) {
+      return dice(message, args, user);
+    }
+
+    if (["wheel"].includes(command)) {
+      return wheel(message, args, user);
+    }
+
+    if (["crash"].includes(command)) {
+      return crash(message, args, user);
+    }
+
+    /* ---------- INFO ---------- */
+
+    if (command === "info") {
+      return message.reply({ embeds: [buildInfoEmbed()] });
+    }
   } catch (error) {
     console.error("Command error:", error);
     message
@@ -795,11 +874,30 @@ const CARD_VALUES = [
 ];
 
 const TEN_VALUE_CARDS = ["10", "J", "Q", "K"];
-const SUITS = ["♠️", "♥️", "♦️", "♣️"];
+
+// Real Unicode playing-card glyphs (renders as an actual card face on most
+// platforms), ordered A,2,3,4,5,6,7,8,9,10,J,Q,K — matching CARD_VALUES.
+const CARD_GLYPHS = {
+  "♠": ["🂡", "🂢", "🂣", "🂤", "🂥", "🂦", "🂧", "🂨", "🂩", "🂪", "🂫", "🂭", "🂮"],
+  "♥": ["🂱", "🂲", "🂳", "🂴", "🂵", "🂶", "🂷", "🂸", "🂹", "🂺", "🂻", "🂽", "🂾"],
+  "♦": ["🃁", "🃂", "🃃", "🃄", "🃅", "🃆", "🃇", "🃈", "🃉", "🃊", "🃋", "🃍", "🃎"],
+  "♣": ["🃑", "🃒", "🃓", "🃔", "🃕", "🃖", "🃗", "🃘", "🃙", "🃚", "🃛", "🃝", "🃞"]
+};
+const SUIT_KEYS = ["♠", "♥", "♦", "♣"];
+const CARD_BACK = "🂠";
+
+function rankIndex(value) {
+  return CARD_VALUES.findIndex((c) => c[0] === value);
+}
+
+function makeCard(value, number) {
+  const suit = SUIT_KEYS[random(0, 3)];
+  return { value, number, glyph: CARD_GLYPHS[suit][rankIndex(value)] };
+}
 
 function drawStandardCard() {
   const [value, number] = CARD_VALUES[random(0, CARD_VALUES.length - 1)];
-  return { value, number, suit: SUITS[random(0, 3)] };
+  return makeCard(value, number);
 }
 
 // Slightly favours low/mid cards so the player busts less often.
@@ -814,7 +912,7 @@ function drawPlayerCard() {
   ];
 
   const [value, number] = pool[random(0, pool.length - 1)];
-  return { value, number, suit: SUITS[random(0, 3)] };
+  return makeCard(value, number);
 }
 
 // Slightly favours high cards so the dealer busts a bit more often.
@@ -830,7 +928,7 @@ function drawDealerCard() {
   ];
 
   const [value, number] = pool[random(0, pool.length - 1)];
-  return { value, number, suit: SUITS[random(0, 3)] };
+  return makeCard(value, number);
 }
 
 function handValue(hand) {
@@ -846,7 +944,7 @@ function handValue(hand) {
 }
 
 function handText(hand) {
-  return hand.map((card) => `${card.value}${card.suit}`).join(" ");
+  return hand.map((card) => card.glyph).join(" ");
 }
 
 function dealPlayerHand() {
@@ -855,10 +953,7 @@ function dealPlayerHand() {
     const ten = TEN_VALUE_CARDS[random(0, TEN_VALUE_CARDS.length - 1)];
     const tenCard = CARD_VALUES.find((c) => c[0] === ten);
 
-    const cards = [
-      { value: "A", number: 11, suit: SUITS[random(0, 3)] },
-      { value: tenCard[0], number: tenCard[1], suit: SUITS[random(0, 3)] }
-    ];
+    const cards = [makeCard("A", 11), makeCard(tenCard[0], tenCard[1])];
 
     return shuffle(cards);
   }
@@ -1306,12 +1401,16 @@ async function cockfight(message, args, user) {
 
   user.cash -= bet;
 
-  const yours = random(55, 82);
-  const enemy = random(55, 82);
-  const win = yours > enemy || (yours === enemy && Math.random() < 0.5);
+  if (user.cfStreak === undefined) user.cfStreak = 55;
+  const yours = user.cfStreak;
+
+  const win = Math.random() * 100 < yours;
 
   if (win) {
     user.cash += bet * 2;
+    user.cfStreak = Math.min(82, user.cfStreak + 1);
+  } else {
+    user.cfStreak = 55;
   }
 
   saveData();
@@ -1340,7 +1439,7 @@ async function cockfight(message, args, user) {
    MINES ($mines) — 3x3 grid, 1 bomb, 8 safe tiles
    ============================================================ */
 
-const MINES_MULTIPLIERS = [1.1, 1.2, 1.4, 1.6, 2, 2.6, 3.6, 8];
+const MINES_MULTIPLIERS = [1.1, 1.4, 1.8, 2.1, 2.8, 4.2, 6.2, 8.9];
 
 async function mines(message, args, user) {
   const bet = validBet(message, args);
@@ -1354,7 +1453,7 @@ async function mines(message, args, user) {
   let finished = false;
 
   function multiplier() {
-    return MINES_MULTIPLIERS[Math.max(0, revealed.size - 1)] || 8;
+    return MINES_MULTIPLIERS[Math.max(0, revealed.size - 1)] || 8.9;
   }
 
   function tileRows(endGame = false) {
@@ -1368,7 +1467,7 @@ async function mines(message, args, user) {
         const isBomb = index === bomb;
         const isRevealed = revealed.has(index);
 
-        let label = "❔";
+        let label = "🔲";
         let style = ButtonStyle.Secondary;
 
         if (endGame && isBomb) {
@@ -1492,7 +1591,7 @@ async function mines(message, args, user) {
       finished = true;
       collector.stop();
 
-      const payout = bet * 8;
+      const payout = bet * MINES_MULTIPLIERS[MINES_MULTIPLIERS.length - 1];
       user.cash += payout;
       saveData();
 
@@ -1721,35 +1820,39 @@ async function moneyTower(message, args, user) {
 }
 
 /* ============================================================
-   GOLDMINE ($gm) — 4x5 grid, bombs + treasure tiles + a map
-   tile that reveals 3 random safe tiles for free.
+   GOLDMINE ($gm) — 24 tiles, 12 bombs, fixed treasure counts,
+   plus a map tile that reveals 3 random safe tiles for free.
    ============================================================ */
 
-const GOLDMINE_SIZE = 20;
-const GOLDMINE_BOMBS = 5;
+const GOLDMINE_SIZE = 24;
+const GOLDMINE_BOMBS = 12;
 
-const GOLDMINE_TREASURES = [
-  { key: "rock", emoji: "🪨", mult: 1.1, weight: 50 },
-  { key: "coin", emoji: "🪙", mult: 2, weight: 30 },
-  { key: "diamond", emoji: "💎", mult: 3.5, weight: 15 },
-  { key: "lantern", emoji: "🏮", mult: 15, weight: 5 }
+// Exact counts (not random weights) — totals 12 non-bomb tiles.
+const GOLDMINE_TREASURE_COUNTS = [
+  { key: "rock", emoji: "🪨", mult: 1.2, count: 4 },
+  { key: "coin", emoji: "🪙", mult: 2.5, count: 3 },
+  { key: "diamond", emoji: "💎", mult: 3.5, count: 2 },
+  { key: "moneybag", emoji: "💰", mult: 6.5, count: 1 },
+  { key: "lantern", emoji: "🏮", mult: 20, count: 1 }
 ];
 
 function buildGoldmineBoard() {
   const indices = shuffle([...Array(GOLDMINE_SIZE).keys()]);
   const board = new Array(GOLDMINE_SIZE);
+  let cursor = 0;
 
-  const bombTiles = indices.slice(0, GOLDMINE_BOMBS);
-  const mapTile = indices[GOLDMINE_BOMBS];
-  const treasureTiles = indices.slice(GOLDMINE_BOMBS + 1);
-
+  const bombTiles = indices.slice(cursor, cursor + GOLDMINE_BOMBS);
+  cursor += GOLDMINE_BOMBS;
   for (const i of bombTiles) board[i] = { type: "bomb" };
-  board[mapTile] = { type: "map" };
 
-  for (const i of treasureTiles) {
-    const t = weightedPick(GOLDMINE_TREASURES);
-    board[i] = { type: "treasure", ...t };
+  for (const def of GOLDMINE_TREASURE_COUNTS) {
+    const tiles = indices.slice(cursor, cursor + def.count);
+    cursor += def.count;
+    for (const i of tiles) board[i] = { type: "treasure", ...def };
   }
+
+  const mapTile = indices[cursor];
+  board[mapTile] = { type: "map" };
 
   return board;
 }
@@ -1771,7 +1874,7 @@ async function goldmine(message, args, user) {
     const isRevealed = revealed.has(index);
 
     if (endGame && tile.type === "bomb") return "💣";
-    if (!isRevealed) return "❔";
+    if (!isRevealed) return "🔲";
     if (tile.type === "map") return "🗺️";
     return tile.emoji;
   }
@@ -1787,34 +1890,38 @@ async function goldmine(message, args, user) {
 
   function buildRows(endGame = false) {
     const rows = [];
+    let index = 0;
 
-    for (let r = 0; r < 4; r++) {
+    for (let r = 0; r < 5; r++) {
+      const isLastRow = r === 4;
+      const countThisRow = isLastRow ? GOLDMINE_SIZE - index : 5;
       const buttons = [];
 
-      for (let c = 0; c < 5; c++) {
-        const index = r * 5 + c;
+      for (let c = 0; c < countThisRow; c++) {
+        const i = index;
+        index++;
 
         buttons.push(
           new ButtonBuilder()
-            .setCustomId(`gm:${message.author.id}:${index}`)
-            .setLabel(tileLabel(index, endGame))
-            .setStyle(tileStyle(index, endGame))
-            .setDisabled(revealed.has(index) || endGame)
+            .setCustomId(`gm:${message.author.id}:${i}`)
+            .setLabel(tileLabel(i, endGame))
+            .setStyle(tileStyle(i, endGame))
+            .setDisabled(revealed.has(i) || endGame)
+        );
+      }
+
+      if (isLastRow) {
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(`gm:${message.author.id}:cash`)
+            .setLabel("💰 Cashout")
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(revealed.size === 0 || endGame)
         );
       }
 
       rows.push(new ActionRowBuilder().addComponents(buttons));
     }
-
-    rows.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`gm:${message.author.id}:cash`)
-          .setLabel("💰 Cashout")
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(revealed.size === 0 || endGame)
-      )
-    );
 
     return rows;
   }
@@ -1822,7 +1929,8 @@ async function goldmine(message, args, user) {
   function gameEmbed() {
     return embed(
       `⛏️ Dig for treasure! Avoid the bombs.\n\n` +
-        `🪨 x1.1  🪙 x2  💎 x3.5  🏮 x15  🗺️ reveals 3 safe tiles\n\n` +
+        `🪨 x1.2  🪙 x2.5  💎 x3.5  💰 x6.5  🏮 x20  🗺️ reveals 3 safe tiles\n\n` +
+        `Bombs: **${GOLDMINE_BOMBS}/${GOLDMINE_SIZE}**\n` +
         `Tiles found: **${revealed.size}**\n` +
         `Multiplier: **${
           Math.round(currentMultiplier * 100) / 100
@@ -1989,6 +2097,414 @@ async function goldmine(message, args, user) {
       })
       .catch(() => {});
   });
+}
+
+/* ============================================================
+   SLOTS ($slots)
+   ============================================================ */
+
+const SLOT_SYMBOLS = [
+  { emoji: "🍒", weight: 30, triple: 3 },
+  { emoji: "🍋", weight: 25, triple: 4 },
+  { emoji: "🍊", weight: 20, triple: 5 },
+  { emoji: "🍇", weight: 15, triple: 6 },
+  { emoji: "⭐", weight: 8, triple: 10 },
+  { emoji: "7️⃣", weight: 2, triple: 20 }
+];
+
+function spinReel() {
+  return weightedPick(SLOT_SYMBOLS);
+}
+
+async function slots(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
+
+  user.cash -= bet;
+
+  const reels = [spinReel(), spinReel(), spinReel()];
+  const [a, b, c] = reels;
+
+  let multiplier = 0;
+  let resultLine;
+
+  if (a.emoji === b.emoji && b.emoji === c.emoji) {
+    multiplier = a.triple;
+    resultLine = `🎉 Jackpot! Triple ${a.emoji}!`;
+  } else if (a.emoji === b.emoji || b.emoji === c.emoji || a.emoji === c.emoji) {
+    multiplier = 1.2;
+    resultLine = "🙂 Small win — two matching symbols.";
+  } else {
+    resultLine = "❌ No match.";
+  }
+
+  const payout = Math.floor(bet * multiplier);
+  if (payout > 0) user.cash += payout;
+  saveData();
+
+  return message.reply({
+    embeds: [
+      embed(
+        `[ ${a.emoji} | ${b.emoji} | ${c.emoji} ]\n\n` +
+          `${resultLine}\n` +
+          (payout > 0
+            ? `+You won **${money(payout)}** ${db.currency}!`
+            : `-You lost **${money(bet)}** ${db.currency}.`),
+        payout > 0 ? COLOR_WIN : COLOR_LOSE,
+        "🎰 Slots 🎰"
+      )
+    ]
+  });
+}
+
+/* ============================================================
+   ROULETTE ($roulette <amount> <red/black/green/number>)
+   ============================================================ */
+
+const ROULETTE_RED = new Set([
+  1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36
+]);
+
+function rouletteColor(n) {
+  if (n === 0) return "green";
+  return ROULETTE_RED.has(n) ? "red" : "black";
+}
+
+async function roulette(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
+
+  const choiceRaw = (args[1] || "").toLowerCase();
+  const isNumberBet = /^\d+$/.test(choiceRaw);
+
+  if (
+    !isNumberBet &&
+    !["red", "black", "green"].includes(choiceRaw)
+  ) {
+    // Nothing has been deducted from cash yet at this point.
+    return message.reply({
+      embeds: [
+        embed(
+          "❌ Usage: `$roulette <amount> <red/black/green/0-36>`",
+          COLOR_LOSE
+        )
+      ]
+    });
+  }
+
+  if (isNumberBet && (Number(choiceRaw) < 0 || Number(choiceRaw) > 36)) {
+    return message.reply({
+      embeds: [embed("❌ Numbers must be between 0 and 36.", COLOR_LOSE)]
+    });
+  }
+
+  user.cash -= bet;
+
+  const result = random(0, 36);
+  const color = rouletteColor(result);
+
+  let win = false;
+  let multiplier = 0;
+
+  if (isNumberBet && Number(choiceRaw) === result) {
+    win = true;
+    multiplier = 30;
+  } else if (!isNumberBet && choiceRaw === color) {
+    win = true;
+    multiplier = color === "green" ? 14 : 2;
+  }
+
+  const payout = win ? Math.floor(bet * multiplier) : 0;
+  if (payout > 0) user.cash += payout;
+  saveData();
+
+  return message.reply({
+    embeds: [
+      embed(
+        `🎯 Landed on **${result}** (${color})\n\n` +
+          (win
+            ? `+You won **${money(payout)}** ${db.currency}!`
+            : `-You lost **${money(bet)}** ${db.currency}.`),
+        win ? COLOR_WIN : COLOR_LOSE,
+        "🎡 Roulette 🎡"
+      )
+    ]
+  });
+}
+
+/* ============================================================
+   DICE ($dice <amount> <over/under/seven>)
+   Two dice, sum 2-12.
+   ============================================================ */
+
+async function dice(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
+
+  const choice = (args[1] || "").toLowerCase();
+
+  if (!["over", "under", "seven"].includes(choice)) {
+    // Nothing has been deducted from cash yet at this point.
+    return message.reply({
+      embeds: [
+        embed(
+          "❌ Usage: `$dice <amount> <over/under/seven>` (over = 8-12, under = 2-6, seven = exactly 7)",
+          COLOR_LOSE
+        )
+      ]
+    });
+  }
+
+  user.cash -= bet;
+
+  const die1 = random(1, 6);
+  const die2 = random(1, 6);
+  const sum = die1 + die2;
+
+  const win =
+    (choice === "over" && sum >= 8) ||
+    (choice === "under" && sum <= 6) ||
+    (choice === "seven" && sum === 7);
+
+  const multiplier = choice === "seven" ? 5 : 2;
+  const payout = win ? Math.floor(bet * multiplier) : 0;
+  if (payout > 0) user.cash += payout;
+  saveData();
+
+  return message.reply({
+    embeds: [
+      embed(
+        `🎲 You rolled: **${die1} + ${die2} = ${sum}**\n\n` +
+          (win
+            ? `+You won **${money(payout)}** ${db.currency}!`
+            : `-You lost **${money(bet)}** ${db.currency}.`),
+        win ? COLOR_WIN : COLOR_LOSE,
+        "🎲 Dice 🎲"
+      )
+    ]
+  });
+}
+
+/* ============================================================
+   WHEEL OF FORTUNE ($wheel)
+   ============================================================ */
+
+const WHEEL_SEGMENTS = [
+  { mult: 0, weight: 38, label: "💀 Bust" },
+  { mult: 1.2, weight: 25, label: "🙂 1.2x" },
+  { mult: 1.5, weight: 17, label: "😀 1.5x" },
+  { mult: 2, weight: 12, label: "😃 2x" },
+  { mult: 5, weight: 6, label: "🤑 5x" },
+  { mult: 10, weight: 2, label: "🏆 10x" }
+];
+
+async function wheel(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
+
+  user.cash -= bet;
+
+  const result = weightedPick(WHEEL_SEGMENTS);
+  const payout = Math.floor(bet * result.mult);
+  if (payout > 0) user.cash += payout;
+  saveData();
+
+  return message.reply({
+    embeds: [
+      embed(
+        `🎡 The wheel lands on... **${result.label}**\n\n` +
+          (payout > 0
+            ? `+You won **${money(payout)}** ${db.currency}!`
+            : `-You lost **${money(bet)}** ${db.currency}.`),
+        payout > 0 ? COLOR_WIN : COLOR_LOSE,
+        "🎡 Wheel of Fortune 🎡"
+      )
+    ]
+  });
+}
+
+/* ============================================================
+   CRASH ($crash) — multiplier climbs every tick, cash out
+   before it crashes or lose everything.
+   ============================================================ */
+
+function rollCrashPoint() {
+  // Slightly player-favoured crash-point distribution, floored at 1.02x.
+  const r = Math.random();
+  const point = 0.98 / (1 - r * 0.94);
+  return Math.max(1.02, Math.round(point * 100) / 100);
+}
+
+async function crash(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
+
+  user.cash -= bet;
+  saveData();
+
+  const crashPoint = rollCrashPoint();
+  let multiplier = 1;
+  let finished = false;
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`cr:cash:${message.author.id}`)
+      .setLabel("💰 Cashout")
+      .setStyle(ButtonStyle.Success)
+  );
+
+  function gameEmbed() {
+    return embed(
+      `📈 Multiplier: **${multiplier.toFixed(2)}x**\n` +
+        `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
+        `Bet: **${money(bet)}** ${db.currency}\n\n` +
+        `Cash out before it crashes!`,
+      COLOR_NEUTRAL,
+      "🚀 Crash 🚀"
+    );
+  }
+
+  const msg = await message.reply({
+    embeds: [gameEmbed()],
+    components: [row]
+  });
+
+  const collector = msg.createMessageComponentCollector({ time: 30000 });
+
+  const interval = setInterval(async () => {
+    if (finished) return;
+
+    multiplier = Math.round(multiplier * 1.15 * 100) / 100;
+
+    if (multiplier >= crashPoint) {
+      finished = true;
+      clearInterval(interval);
+      collector.stop();
+      saveData();
+
+      await msg
+        .edit({
+          embeds: [
+            embed(
+              `💥 Crashed at **${crashPoint.toFixed(
+                2
+              )}x**!\n\nYou lost **${money(bet)}** ${db.currency}.`,
+              COLOR_LOSE,
+              "🚀 Crash 🚀"
+            )
+          ],
+          components: [disabledRow(row)]
+        })
+        .catch(() => {});
+      return;
+    }
+
+    await msg.edit({ embeds: [gameEmbed()], components: [row] }).catch(() => {});
+  }, 1500);
+
+  collector.on("collect", async (interaction) => {
+    if (interaction.user.id !== message.author.id) {
+      return interaction.reply({
+        content: "❌ This isn't your game.",
+        ephemeral: true
+      });
+    }
+
+    if (finished) return;
+
+    finished = true;
+    clearInterval(interval);
+    collector.stop();
+
+    const payout = Math.floor(bet * multiplier);
+    user.cash += payout;
+    saveData();
+
+    await interaction.update({
+      embeds: [
+        embed(
+          `💰 Cashed out at **${multiplier.toFixed(
+            2
+          )}x**!\n\nPayout: **${money(payout)}** ${db.currency}.`,
+          COLOR_WIN,
+          "🚀 Crash 🚀"
+        )
+      ],
+      components: [disabledRow(row)]
+    });
+  });
+
+  collector.on("end", async () => {
+    if (finished) return;
+
+    finished = true;
+    clearInterval(interval);
+    user.cash += bet;
+    saveData();
+
+    await msg
+      .edit({
+        embeds: [
+          embed(
+            `⏰ Timed out.\nReturned **${money(bet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
+            "🚀 Crash 🚀"
+          )
+        ],
+        components: [disabledRow(row)]
+      })
+      .catch(() => {});
+  });
+}
+
+/* ============================================================
+   $INFO — full rules for every game
+   ============================================================ */
+
+function buildInfoEmbed() {
+  const lines = [
+    `**🃏 Blackjack — \`$bj <amount>\`**`,
+    `~20% instant blackjack (2.5x). Otherwise Hit/Stand/Double, win pays 2x.`,
+    "",
+    `**🐔 Cockfight — \`$cf <amount>\`**`,
+    `Your win chance starts at 55% and climbs +1% per win (up to 82%). A loss resets it to 55%. Win pays 2x.`,
+    "",
+    `**🎲 Higher or Lower — \`$hl <amount>\`**`,
+    `Guess higher, lower, or the same on a 1–100 roll. Same always pays 25x; Higher/Lower scale with the odds.`,
+    "",
+    `**🍀 CoinFlip — \`$ht <amount>\`**`,
+    `50/50, pays 2x.`,
+    "",
+    `**💣 Mines — \`$mines <amount>\`**`,
+    `3x3 grid, 1 bomb. Multipliers: 1.1x, 1.4x, 1.8x, 2.1x, 2.8x, 4.2x, 6.2x, 8.9x. Cash out anytime.`,
+    "",
+    `**💰 Money Tower — \`$mt <amount>\`**`,
+    `5 levels, 3 tiles each (1 bomb). Level payouts: 1.5x, 2.1x, 2.3x, 3.6x, 7.6x.`,
+    "",
+    `**⛏️ Goldmine — \`$gm <amount>\`**`,
+    `24 tiles, 12 bombs. 🪨 x1.2, 🪙 x2.5, 💎 x3.5, 💰 x6.5, 🏮 x20. One 🗺️ reveals 3 free safe tiles. Multipliers compound.`,
+    "",
+    `**🎰 Slots — \`$slots <amount>\`**`,
+    `3 reels. Triple 7️⃣ 20x, ⭐ 10x, 🍇 6x, 🍊 5x, 🍋 4x, 🍒 3x. Any 2 matching pays 1.2x.`,
+    "",
+    `**🎡 Roulette — \`$roulette <amount> <red/black/green/0-36>\`**`,
+    `Color bets pay 2x (green pays 14x); an exact number pays 30x.`,
+    "",
+    `**🎲 Dice — \`$dice <amount> <over/under/seven>\`**`,
+    `Two dice. Over (8-12) or Under (2-6) pays 2x; exactly Seven pays 5x.`,
+    "",
+    `**🎡 Wheel of Fortune — \`$wheel <amount>\`**`,
+    `Spin for 0x, 1.2x, 1.5x, 2x, 5x or a rare 10x jackpot.`,
+    "",
+    `**🚀 Crash — \`$crash <amount>\`**`,
+    `A multiplier climbs every 1.5s — hit Cashout before it crashes or lose your bet.`,
+    "",
+    `_Every game accepts \`all\` instead of an amount to bet all your cash. Minimum bet: ${money(
+      MIN_BET
+    )} ${db.currency}._`
+  ];
+
+  return embed(lines.join("\n"), COLOR_INFO, "📖 Casino Bot — Game Rules");
 }
 
 /* ============================================================
