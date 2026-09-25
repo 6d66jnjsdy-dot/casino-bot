@@ -6,27 +6,27 @@ const {
     ButtonBuilder,
     ButtonStyle,
     PermissionFlagsBits
-} = require('discord.js');
+} = require("discord.js");
 
-const express = require('express');
+const express = require("express");
 
-// ==========================================
-// 1. Render Web Server
-// ==========================================
+// ===============================
+// RENDER WEB SERVER
+// ===============================
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-app.get('/', (req, res) => {
-    res.send('Casino Bot is Online 24/7!');
+app.get("/", (req, res) => {
+    res.send("Casino Bot is Online 24/7!");
 });
 
-app.listen(port, () => {
-    console.log(`Web server listening on port ${port}`);
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Web server running on port ${PORT}`);
 });
 
-// ==========================================
-// 2. Discord Client
-// ==========================================
+// ===============================
+// DISCORD
+// ===============================
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -36,77 +36,70 @@ const client = new Client({
     ]
 });
 
-// ==========================================
-// 3. Temporary Database
-// ==========================================
+// ===============================
+// DATABASE
+// ===============================
 const db = {
     users: {},
-    currency: '💸',
+    currency: "💸",
     casinoRole: null
 };
 
-function getUserData(userId) {
-    if (!db.users[userId]) {
-        db.users[userId] = {
+const PREFIX = "$";
+const MIN_BET = 150;
+
+function getUser(id) {
+    if (!db.users[id]) {
+        db.users[id] = {
             cash: 1000,
             bank: 0
         };
     }
 
-    return db.users[userId];
+    return db.users[id];
 }
 
-function hasManagerPermission(message) {
+function isManager(message) {
     if (!message.member) return false;
 
-    if (
+    return (
         message.member.permissions.has(
             PermissionFlagsBits.Administrator
+        ) ||
+        (
+            db.casinoRole &&
+            message.member.roles.cache.has(db.casinoRole)
         )
-    ) {
-        return true;
-    }
-
-    if (
-        db.casinoRole &&
-        message.member.roles.cache.has(db.casinoRole)
-    ) {
-        return true;
-    }
-
-    return false;
+    );
 }
 
-// ==========================================
-// Blackjack
-// ==========================================
+// ===============================
+// DECK
+// ===============================
 function createDeck() {
-    const suits = ['♠️', '♥️', '♦️', '♣️'];
+    const suits = ["♠️", "♥️", "♦️", "♣️"];
 
-    const values = [
-        { name: '2', value: 2 },
-        { name: '3', value: 3 },
-        { name: '4', value: 4 },
-        { name: '5', value: 5 },
-        { name: '6', value: 6 },
-        { name: '7', value: 7 },
-        { name: '8', value: 8 },
-        { name: '9', value: 9 },
-        { name: '10', value: 10 },
-        { name: 'J', value: 10 },
-        { name: 'Q', value: 10 },
-        { name: 'K', value: 10 },
-        { name: 'A', value: 11 }
+    const cards = [
+        ["2", 2],
+        ["3", 3],
+        ["4", 4],
+        ["5", 5],
+        ["6", 6],
+        ["7", 7],
+        ["8", 8],
+        ["9", 9],
+        ["10", 10],
+        ["J", 10],
+        ["Q", 10],
+        ["K", 10],
+        ["A", 11]
     ];
 
     const deck = [];
 
     for (const suit of suits) {
-        for (const val of values) {
-            deck.push({
-                ...val,
-                suit
-            });
+        for (const [name, value] of cards) {
+            deck.push({ name, value, suit });
         }
     }
 
@@ -118,14 +111,14 @@ function createDeck() {
     return deck;
 }
 
-function calculateHand(hand) {
+function handValue(hand) {
     let value = hand.reduce(
         (sum, card) => sum + card.value,
         0
     );
 
     let aces = hand.filter(
-        card => card.name === 'A'
+        card => card.name === "A"
     ).length;
 
     while (value > 21 && aces > 0) {
@@ -136,13 +129,10 @@ function calculateHand(hand) {
     return value;
 }
 
-// ==========================================
-// Commands
-// ==========================================
-const PREFIX = '$';
-const minBet = 150;
-
-client.on('messageCreate', async (message) => {
+// ===============================
+// MESSAGE HANDLER
+// ===============================
+client.on("messageCreate", async message => {
     if (
         message.author.bot ||
         !message.content.startsWith(PREFIX)
@@ -153,74 +143,74 @@ client.on('messageCreate', async (message) => {
     const args = message.content
         .slice(PREFIX.length)
         .trim()
-        .split(/ +/);
+        .split(/\s+/);
 
     const command = args.shift()?.toLowerCase();
-    const userId = message.author.id;
+    const user = getUser(message.author.id);
 
-    // ==========================================
-    // Currency
-    // ==========================================
-    if (command === 'currency') {
-        if (!hasManagerPermission(message)) {
+    // ===============================
+    // CURRENCY
+    // ===============================
+    if (command === "currency") {
+        if (!isManager(message)) {
             return message.reply(
                 "❌ You don't have permission to use this command."
             );
         }
 
-        const newEmoji = args[0];
-
-        if (!newEmoji) {
+        if (!args[0]) {
             return message.reply(
                 `Usage: ${PREFIX}currency [emoji]`
             );
         }
 
-        db.currency = newEmoji;
+        db.currency = args[0];
 
         return message.reply(
-            `✅ Currency icon has been changed to ${db.currency} across the whole bot!`
+            `✅ Currency changed to ${db.currency}`
         );
     }
 
-    // ==========================================
-    // Casino Role
-    // ==========================================
-    if (command === 'casino') {
+    // ===============================
+    // CASINO ROLE
+    // ===============================
+    if (command === "casino") {
         if (
             !message.member.permissions.has(
                 PermissionFlagsBits.Administrator
             )
         ) {
             return message.reply(
-                "❌ Only Server Admins can set the Casino Role."
+                "❌ Only Server Admins can use this."
             );
         }
 
-        if (args[0] === 'role') {
+        if (args[0]?.toLowerCase() === "role") {
             const role =
                 message.mentions.roles.first() ||
                 message.guild.roles.cache.get(args[1]);
 
             if (!role) {
                 return message.reply(
-                    `Usage: ${PREFIX}casino role [@Role or RoleID]`
+                    `Usage: ${PREFIX}casino role @Role`
                 );
             }
 
             db.casinoRole = role.id;
 
             return message.reply(
-                `✅ Casino management access granted to role: **${role.name}**`
+                `✅ Casino management access granted to **${role.name}**`
             );
         }
     }
 
-    // ==========================================
-    // Add Money
-    // ==========================================
-    if (command === 'addmoney') {
-        if (!hasManagerPermission(message)) {
+    // ===============================
+    // ADD MONEY
+    // $addmoney cash @user 500
+    // $addmoney bank @user 500
+    // ===============================
+    if (command === "addmoney") {
+        if (!isManager(message)) {
             return message.reply("❌ Access Denied.");
         }
 
@@ -228,160 +218,67 @@ client.on('messageCreate', async (message) => {
 
         const target =
             message.mentions.users.first() ||
-            message.guild.members.cache.get(args[1])?.user;
+            message.guild.members.cache
+                .get(args[1])
+                ?.user;
 
-        const amount = parseInt(args[2]);
+        const amount = Number(args[2]);
 
         if (
-            !['cash', 'bank'].includes(type) ||
+            !["cash", "bank"].includes(type) ||
             !target ||
-            isNaN(amount) ||
+            !Number.isInteger(amount) ||
             amount <= 0
         ) {
             return message.reply(
-                `Usage: ${PREFIX}addmoney [cash/bank] [@user] [amount]`
+                `Usage: ${PREFIX}addmoney cash/bank @user amount`
             );
         }
 
-        const targetData = getUserData(target.id);
+        const targetData = getUser(target.id);
 
-        if (type === 'cash') {
-            targetData.cash += amount;
-        } else {
-            targetData.bank += amount;
-        }
+        targetData[type] += amount;
 
         return message.reply(
-            `✅ Successfully added **${amount.toLocaleString()}** ${db.currency} to ${target.username}'s ${type}.`
+            `✅ Added **${amount.toLocaleString()}** ${db.currency} to **${target.username}** ${type}.`
         );
     }
 
-    // ==========================================
-    // Deposit
-    // ==========================================
+    // ===============================
+    // BALANCE
+    // ===============================
     if (
-        command === 'dep' ||
-        command === 'deposit'
-    ) {
-        const user = getUserData(userId);
-
-        let amount = args[0];
-
-        if (amount === 'all') {
-            amount = user.cash;
-        } else {
-            amount = parseInt(amount);
-        }
-
-        if (
-            isNaN(amount) ||
-            amount <= 0 ||
-            user.cash < amount
-        ) {
-            return message.reply(
-                "Invalid amount or insufficient cash."
-            );
-        }
-
-        user.cash -= amount;
-        user.bank += amount;
-
-        const embed = new EmbedBuilder()
-            .setAuthor({
-                name: message.author.username,
-                iconURL: message.author.displayAvatarURL()
-            })
-            .setColor('#2ecc71')
-            .setDescription(
-                `Successfully deposited **${amount.toLocaleString()}** ${db.currency} to your bank account.`
-            );
-
-        return message.reply({
-            embeds: [embed]
-        });
-    }
-
-    // ==========================================
-    // Withdraw
-    // ==========================================
-    if (
-        command === 'with' ||
-        command === 'withdraw'
-    ) {
-        const user = getUserData(userId);
-
-        let amount = args[0];
-
-        if (amount === 'all') {
-            amount = user.bank;
-        } else {
-            amount = parseInt(amount);
-        }
-
-        if (
-            isNaN(amount) ||
-            amount <= 0 ||
-            user.bank < amount
-        ) {
-            return message.reply(
-                "Invalid amount or insufficient bank balance."
-            );
-        }
-
-        user.bank -= amount;
-        user.cash += amount;
-
-        const embed = new EmbedBuilder()
-            .setAuthor({
-                name: message.author.username,
-                iconURL: message.author.displayAvatarURL()
-            })
-            .setColor('#2ecc71')
-            .setDescription(
-                `Successfully withdrew **${amount.toLocaleString()}** ${db.currency} from your bank account.`
-            );
-
-        return message.reply({
-            embeds: [embed]
-        });
-    }
-
-    // ==========================================
-    // Balance
-    // ==========================================
-    if (
-        command === 'bal' ||
-        command === 'balance'
+        command === "bal" ||
+        command === "balance"
     ) {
         const target =
             message.mentions.users.first() ||
             message.author;
 
-        const user = getUserData(target.id);
+        const data = getUser(target.id);
 
         const embed = new EmbedBuilder()
             .setAuthor({
                 name: `${target.username}'s Balance`,
                 iconURL: target.displayAvatarURL()
             })
-            .setColor('#f1c40f')
+            .setColor("#f1c40f")
             .addFields(
                 {
-                    name: '💵 Cash',
-                    value: `${user.cash.toLocaleString()} ${db.currency}`,
+                    name: "💵 Cash",
+                    value: `${data.cash.toLocaleString()} ${db.currency}`,
                     inline: true
                 },
                 {
-                    name: '🏦 Bank',
-                    value: `${user.bank.toLocaleString()} ${db.currency}`,
+                    name: "🏦 Bank",
+                    value: `${data.bank.toLocaleString()} ${db.currency}`,
                     inline: true
                 },
                 {
-                    name: '📊 Total',
+                    name: "📊 Total",
                     value: `**${(
-                        user.cash + user.bank
-                    ).toLocaleString()}** ${db.currency}`,
-                    inline: false
+                        data.cash + data.bank
+                    ).toLocaleString()}** ${db.currency}`
                 }
             );
 
@@ -390,87 +287,134 @@ client.on('messageCreate', async (message) => {
         });
     }
 
-    // ==========================================
-    // Leaderboard
-    // ==========================================
+    // ===============================
+    // DEPOSIT
+    // ===============================
     if (
-        command === 'lb' ||
-        command === 'leaderboard'
+        command === "dep" ||
+        command === "deposit"
     ) {
-        const sub = args[0]?.toLowerCase();
+        let amount =
+            args[0]?.toLowerCase() === "all"
+                ? user.cash
+                : Number(args[0]);
 
-        let sorted = Object.keys(db.users).map(id => ({
-            id,
-            cash: db.users[id].cash,
-            bank: db.users[id].bank,
-            total:
-                db.users[id].cash +
-                db.users[id].bank
-        }));
-
-        if (sub === 'cash') {
-            sorted.sort(
-                (a, b) => b.cash - a.cash
-            );
-        } else {
-            sorted.sort(
-                (a, b) => b.total - a.total
+        if (
+            !Number.isInteger(amount) ||
+            amount <= 0 ||
+            amount > user.cash
+        ) {
+            return message.reply(
+                "❌ Invalid amount or insufficient cash."
             );
         }
 
-        let description = '';
+        user.cash -= amount;
+        user.bank += amount;
 
-        for (
-            let i = 0;
-            i < Math.min(sorted.length, 10);
-            i++
+        return message.reply({
+            embeds: [
+                new EmbedBuilder()
+                    .setColor("#2ecc71")
+                    .setDescription(
+                        `Successfully deposited **${amount.toLocaleString()}** ${db.currency} to your bank account.`
+                    )
+            ]
+        });
+    }
+
+    // ===============================
+    // WITHDRAW
+    // ===============================
+    if (
+        command === "with" ||
+        command === "withdraw"
+    ) {
+        let amount =
+            args[0]?.toLowerCase() === "all"
+                ? user.bank
+                : Number(args[0]);
+
+        if (
+            !Number.isInteger(amount) ||
+            amount <= 0 ||
+            amount > user.bank
         ) {
-            const userObj =
+            return message.reply(
+                "❌ Invalid amount or insufficient bank balance."
+            );
+        }
+
+        user.bank -= amount;
+        user.cash += amount;
+
+        return message.reply({
+            embeds: [
+                new EmbedBuilder()
+                    .setColor("#2ecc71")
+                    .setDescription(
+                        `Successfully withdrew **${amount.toLocaleString()}** ${db.currency} from your bank account.`
+                    )
+            ]
+        });
+    }
+
+    // ===============================
+    // LEADERBOARD
+    // ===============================
+    if (
+        command === "lb" ||
+        command === "leaderboard"
+    ) {
+        const sorted = Object.entries(db.users)
+            .map(([id, data]) => ({
+                id,
+                total: data.cash + data.bank
+            }))
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 10);
+
+        let text = "";
+
+        for (let i = 0; i < sorted.length; i++) {
+            const member =
                 await client.users
                     .fetch(sorted[i].id)
                     .catch(() => null);
 
-            if (!userObj) continue;
+            if (!member) continue;
 
-            const amount =
-                sub === 'cash'
-                    ? sorted[i].cash
-                    : sorted[i].total;
-
-            description +=
-                `**#${i + 1}** | ${userObj.username} - ${amount.toLocaleString()} ${db.currency}\n`;
+            text +=
+                `**#${i + 1}** ${member.username} — ${sorted[i].total.toLocaleString()} ${db.currency}\n`;
         }
 
-        const embed = new EmbedBuilder()
-            .setTitle(
-                `🏆 Rich Leaderboard (${sub === 'cash' ? 'Top Cash' : 'Top Total'})`
-            )
-            .setColor('#f1c40f')
-            .setDescription(
-                description || 'No players yet.'
-            );
-
         return message.reply({
-            embeds: [embed]
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle("🏆 Leaderboard")
+                    .setColor("#f1c40f")
+                    .setDescription(
+                        text || "No players yet."
+                    )
+            ]
         });
     }
 
-    // ==========================================
+    // ==================================================
     // BLACKJACK
-    // ==========================================
+    // ==================================================
     if (
-        command === 'bj' ||
-        command === 'blackjack'
+        command === "bj" ||
+        command === "blackjack"
     ) {
-        const user = getUserData(userId);
-        const bet = parseInt(args[0]);
+        const bet = Number(args[0]);
 
         if (
-            isNaN(bet) ||
-            bet < minBet
+            !Number.isInteger(bet) ||
+            bet < MIN_BET
         ) {
             return message.reply(
-                `❌ Minimum bet for Blackjack is **${minBet}** ${db.currency}.`
+                `❌ Minimum bet is **${MIN_BET}** ${db.currency}.`
             );
         }
 
@@ -486,57 +430,39 @@ client.on('messageCreate', async (message) => {
 
         const deck = createDeck();
 
-        let playerHand;
-        let dealerHand;
+        const playerHand = [
+            deck.pop(),
+            deck.pop()
+        ];
 
-        if (Math.random() < 0.20) {
-            playerHand = [
-                {
-                    name: 'A',
-                    value: 11,
-                    suit: '♥️'
-                },
-                {
-                    name: '10',
-                    value: 10,
-                    suit: '♠️'
-                }
-            ];
+        const dealerHand = [
+            deck.pop(),
+            deck.pop()
+        ];
 
-            dealerHand = [
-                deck.pop(),
-                deck.pop()
-            ];
-        } else {
-            playerHand = [
-                deck.pop(),
-                deck.pop()
-            ];
+        function blackjackEmbed(showDealer = false) {
+            const playerValue =
+                handValue(playerHand);
 
-            dealerHand = [
-                deck.pop(),
-                deck.pop()
-            ];
-        }
+            const dealerValue =
+                handValue(dealerHand);
 
-        const getStatusEmbed = (
-            finished = false
-        ) => {
-            const pVal =
-                calculateHand(playerHand);
+            const playerCards =
+                playerHand
+                    .map(
+                        c =>
+                            `[${c.name}${c.suit}]`
+                    )
+                    .join(", ");
 
-            const dVal =
-                calculateHand(dealerHand);
-
-            const dealerString = finished
+            const dealerCards = showDealer
                 ? dealerHand
                       .map(
                           c =>
                               `[${c.name}${c.suit}]`
                       )
-                      .join(', ') +
-                  `\n\nValue: **${dVal}**`
-                : `[${dealerHand[0].name}${dealerHand[0].suit}], [?]\n\nValue: **${dealerHand[0].value}**`;
+                      .join(", ")
+                : `[${dealerHand[0].name}${dealerHand[0].suit}], [?]`;
 
             return new EmbedBuilder()
                 .setAuthor({
@@ -544,91 +470,107 @@ client.on('messageCreate', async (message) => {
                     iconURL:
                         message.author.displayAvatarURL()
                 })
-                .setTitle(
-                    '🃏 Blackjack 🃏'
-                )
-                .setColor('#f1c40f')
+                .setTitle("🃏 Blackjack 🃏")
+                .setColor("#f1c40f")
                 .addFields(
                     {
-                        name: 'Your Hand',
+                        name: "Your Hand",
                         value:
-                            playerHand
-                                .map(
-                                    c =>
-                                        `**${c.name}**`
-                                )
-                                .join(', ') +
-                            `\n\nValue: **${pVal}**`,
-                        inline: false
+                            `${playerCards}\n\nValue: **${playerValue}**`
                     },
                     {
-                        name: 'Dealer',
-                        value: dealerString,
-                        inline: false
+                        name: "Dealer",
+                        value:
+                            `${dealerCards}\n\nValue: **${
+                                showDealer
+                                    ? dealerValue
+                                    : dealerHand[0].value
+                            }**`
                     }
                 );
-        };
+        }
 
         const row =
-            new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('hit')
-                        .setLabel('Hit')
-                        .setStyle(
-                            ButtonStyle.Primary
-                        ),
+            new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId("bj_hit")
+                    .setLabel("Hit")
+                    .setStyle(
+                        ButtonStyle.Primary
+                    ),
 
-                    new ButtonBuilder()
-                        .setCustomId('stand')
-                        .setLabel('Stand')
-                        .setStyle(
-                            ButtonStyle.Success
-                        ),
+                new ButtonBuilder()
+                    .setCustomId("bj_stand")
+                    .setLabel("Stand")
+                    .setStyle(
+                        ButtonStyle.Success
+                    ),
 
-                    new ButtonBuilder()
-                        .setCustomId('double')
-                        .setLabel('Double')
-                        .setStyle(
-                            ButtonStyle.Danger
-                        )
-                );
+                new ButtonBuilder()
+                    .setCustomId("bj_double")
+                    .setLabel("Double")
+                    .setStyle(
+                        ButtonStyle.Danger
+                    )
+            );
 
         const msg =
             await message.reply({
                 embeds: [
-                    getStatusEmbed()
+                    blackjackEmbed()
                 ],
                 components: [row]
             });
 
-        const filter =
-            i => i.user.id === userId;
-
         const collector =
             msg.createMessageComponentCollector({
-                filter,
+                filter:
+                    i =>
+                        i.user.id ===
+                        message.author.id,
                 time: 60000
             });
 
         collector.on(
-            'collect',
-            async i => {
-                await i.deferUpdate();
+            "collect",
+            async interaction => {
+                await interaction.deferUpdate();
 
                 if (
-                    i.customId === 'double'
+                    interaction.customId ===
+                    "bj_hit"
+                ) {
+                    playerHand.push(
+                        deck.pop()
+                    );
+
+                    if (
+                        handValue(
+                            playerHand
+                        ) >= 21
+                    ) {
+                        collector.stop(
+                            "finished"
+                        );
+                    } else {
+                        await msg.edit({
+                            embeds: [
+                                blackjackEmbed()
+                            ]
+                        });
+                    }
+
+                    return;
+                }
+
+                if (
+                    interaction.customId ===
+                    "bj_double"
                 ) {
                     if (
                         user.cash < bet
                     ) {
-                        return message.followUp(
-                            {
-                                content:
-                                    "Not enough cash to double!",
-                                ephemeral: true
-                            }
-                        );
+                        return;
                     }
 
                     user.cash -= bet;
@@ -639,60 +581,53 @@ client.on('messageCreate', async (message) => {
                     );
 
                     collector.stop(
-                        'double'
+                        "double"
                     );
 
                     return;
                 }
 
                 if (
-                    i.customId === 'hit'
-                ) {
-                    playerHand.push(
-                        deck.pop()
-                    );
-
-                    if (
-                        calculateHand(
-                            playerHand
-                        ) > 21
-                    ) {
-                        collector.stop(
-                            'bust'
-                        );
-                    } else {
-                        await msg.edit({
-                            embeds: [
-                                getStatusEmbed()
-                            ]
-                        });
-                    }
-
-                    return;
-                }
-
-                if (
-                    i.customId === 'stand'
+                    interaction.customId ===
+                    "bj_stand"
                 ) {
                     collector.stop(
-                        'stand'
+                        "stand"
                     );
                 }
             }
         );
 
         collector.on(
-            'end',
-            async (
-                collected,
-                reason
-            ) => {
+            "end",
+            async (_, reason) => {
+                if (reason === "time") {
+                    user.cash += totalBet;
+
+                    return msg.edit({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setColor(
+                                    "#95a5a6"
+                                )
+                                .setTitle(
+                                    "⏰ Blackjack Timed Out"
+                                )
+                                .setDescription(
+                                    `Your **${totalBet.toLocaleString()}** ${db.currency} bet was returned.`
+                                )
+                        ],
+                        components: []
+                    });
+                }
+
                 if (
-                    reason === 'stand' ||
-                    reason === 'double'
+                    reason === "stand" ||
+                    reason === "double" ||
+                    reason === "finished"
                 ) {
                     while (
-                        calculateHand(
+                        handValue(
                             dealerHand
                         ) < 17
                     ) {
@@ -702,79 +637,48 @@ client.on('messageCreate', async (message) => {
                     }
                 }
 
-                const pVal =
-                    calculateHand(
-                        playerHand
-                    );
+                const player =
+                    handValue(playerHand);
 
-                const dVal =
-                    calculateHand(
-                        dealerHand
-                    );
+                const dealer =
+                    handValue(dealerHand);
 
-                const finalEmbed =
-                    getStatusEmbed(true);
+                let payout = 0;
+                let text = "";
 
-                let winAmount = 0;
-                let outcomeMessage = '';
-
-                if (pVal > 21) {
-                    outcomeMessage =
+                if (player > 21) {
+                    text =
                         `❌ You busted and lost **${totalBet.toLocaleString()}** ${db.currency}`;
-                } else if (dVal > 21) {
-                    winAmount =
+                } else if (dealer > 21) {
+                    payout =
                         totalBet * 2;
 
-                    outcomeMessage =
-                        `🎉 Dealer busted! You won **${winAmount.toLocaleString()}** ${db.currency}`;
-                } else if (pVal > dVal) {
-                    winAmount =
+                    text =
+                        `🎉 Dealer busted! You won **${payout.toLocaleString()}** ${db.currency}`;
+                } else if (player > dealer) {
+                    payout =
                         totalBet * 2;
 
-                    if (
-                        pVal === 21 &&
-                        playerHand.length === 2
-                    ) {
-                        winAmount =
-                            Math.floor(
-                                totalBet * 2.5
-                            );
-                    }
+                    text =
+                        `🎉 You won **${payout.toLocaleString()}** ${db.currency}`;
+                } else if (player === dealer) {
+                    payout = totalBet;
 
-                    outcomeMessage =
-                        `🎉 You won! You got **${winAmount.toLocaleString()}** ${db.currency}`;
-                } else if (pVal < dVal) {
-                    if (
-                        dVal - pVal === 1 &&
-                        Math.random() < 0.3
-                    ) {
-                        winAmount =
-                            totalBet;
-
-                        outcomeMessage =
-                            `🤝 Saved by luck! It's a Tie. Your bet of **${totalBet.toLocaleString()}** ${db.currency} was returned.`;
-                    } else {
-                        outcomeMessage =
-                            `❌ You lost **${totalBet.toLocaleString()}** ${db.currency}`;
-                    }
-                } else {
-                    winAmount =
-                        totalBet;
-
-                    outcomeMessage =
+                    text =
                         `🤝 It's a Tie! Returned **${totalBet.toLocaleString()}** ${db.currency}`;
+                } else {
+                    text =
+                        `❌ You lost **${totalBet.toLocaleString()}** ${db.currency}`;
                 }
 
-                user.cash += winAmount;
+                user.cash += payout;
 
-                finalEmbed.setDescription(
-                    outcomeMessage
-                );
+                const finalEmbed =
+                    blackjackEmbed(true)
+                        .setDescription(text);
 
                 await msg.edit({
-                    embeds: [
-                        finalEmbed
-                    ],
+                    embeds: [finalEmbed],
                     components: []
                 });
             }
@@ -783,26 +687,22 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    // ==========================================
+    // ==================================================
     // COCKFIGHT
-    // ==========================================
+    // ==================================================
     if (
-        command === 'cf' ||
-        command === 'cockfight' ||
-        command === 'chickenfight'
+        command === "cf" ||
+        command === "cockfight" ||
+        command === "chickenfight"
     ) {
-        const user =
-            getUserData(userId);
-
-        const bet =
-            parseInt(args[0]);
+        const bet = Number(args[0]);
 
         if (
-            isNaN(bet) ||
-            bet < minBet
+            !Number.isInteger(bet) ||
+            bet < MIN_BET
         ) {
             return message.reply(
-                `❌ Minimum bet is **${minBet}** ${db.currency}.`
+                `❌ Minimum bet is **${MIN_BET}** ${db.currency}.`
             );
         }
 
@@ -819,67 +719,58 @@ client.on('messageCreate', async (message) => {
                 Math.random() * 28
             ) + 55;
 
-        const isWin =
+        const win =
             Math.random() <
             strength / 100;
 
-        const embed =
-            new EmbedBuilder()
-                .setAuthor({
-                    name: message.author.username,
-                    iconURL:
-                        message.author.displayAvatarURL()
-                });
+        if (win) {
+            const payout = bet * 2;
 
-        if (isWin) {
-            const winAmt =
-                bet * 2;
+            user.cash += payout;
 
-            user.cash += winAmt;
-
-            embed
-                .setColor('#2ecc71')
-                .setDescription(
-                    `Your chicken won the fight, you won **${bet.toLocaleString()}** ${db.currency} 🐓!\n\n**Your chicken's strength (chance of winning):** ${strength}%\nYou now have **${user.cash.toLocaleString()}** ${db.currency}`
-                );
-        } else {
-            embed
-                .setColor('#e74c3c')
-                .setDescription(
-                    `Your chicken lost the fight... You lost **${bet.toLocaleString()}** ${db.currency} 🐓.`
-                );
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#2ecc71")
+                        .setDescription(
+                            `Your chicken won the fight! You won **${payout.toLocaleString()}** ${db.currency} 🐓!\n\n**Your chicken's strength:** ${strength}%`
+                        )
+                ]
+            });
         }
 
         return message.reply({
-            embeds: [embed]
+            embeds: [
+                new EmbedBuilder()
+                    .setColor("#e74c3c")
+                    .setDescription(
+                        `Your chicken lost the fight... You lost **${bet.toLocaleString()}** ${db.currency} 🐓.`
+                    )
+            ]
         });
     }
 
-    // ==========================================
+    // ==================================================
     // COINFLIP
-    // ==========================================
+    // ==================================================
     if (
-        command === 'ht' ||
-        command === 'coinflip'
+        command === "ht" ||
+        command === "coinflip"
     ) {
-        const user =
-            getUserData(userId);
-
         const choice =
             args[0]?.toLowerCase();
 
-        const bet =
-            parseInt(args[1]);
+        const bet = Number(args[1]);
 
         if (
-            !['heads', 'tails'].includes(
+            !["heads", "tails"].includes(
                 choice
             ) ||
-            isNaN(bet) ||
-            bet < minBet
+            !Number.isInteger(bet) ||
+            bet < MIN_BET
         ) {
             return message.reply(
-                `Usage: ${PREFIX}ht [heads/tails] [amount] (Min bet: ${minBet})`
+                `Usage: ${PREFIX}ht heads/tails amount\nMinimum: ${MIN_BET}`
             );
         }
 
@@ -893,61 +784,51 @@ client.on('messageCreate', async (message) => {
 
         const result =
             Math.random() < 0.5
-                ? 'heads'
-                : 'tails';
+                ? "heads"
+                : "tails";
 
-        const embed =
-            new EmbedBuilder()
-                .setAuthor({
-                    name: message.author.username,
-                    iconURL:
-                        message.author.displayAvatarURL()
-                });
+        if (choice === result) {
+            const payout = bet * 2;
 
-        if (
-            choice === result
-        ) {
-            user.cash += bet * 2;
+            user.cash += payout;
 
-            embed
-                .setColor('#2ecc71')
-                .setDescription(
-                    `🪙 The coin landed on **${result}**! You won **${(
-                        bet * 2
-                    ).toLocaleString()}** ${db.currency}.`
-                );
-        } else {
-            embed
-                .setColor('#e74c3c')
-                .setDescription(
-                    `🪙 The coin landed on **${result}**! You lost **${bet.toLocaleString()}** ${db.currency}.`
-                );
+            return message.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#2ecc71")
+                        .setDescription(
+                            `🪙 The coin landed on **${result}**! You won **${payout.toLocaleString()}** ${db.currency}.`
+                        )
+                ]
+            });
         }
 
         return message.reply({
-            embeds: [embed]
+            embeds: [
+                new EmbedBuilder()
+                    .setColor("#e74c3c")
+                    .setDescription(
+                        `🪙 The coin landed on **${result}**! You lost **${bet.toLocaleString()}** ${db.currency}.`
+                    )
+            ]
         });
     }
 
-    // ==========================================
-    // HIGHER / LOWER
-    // ==========================================
+    // ==================================================
+    // HIGHER LOWER
+    // ==================================================
     if (
-        command === 'hl' ||
-        command === 'higherlower'
+        command === "hl" ||
+        command === "higherlower"
     ) {
-        const user =
-            getUserData(userId);
-
-        const bet =
-            parseInt(args[0]);
+        const bet = Number(args[0]);
 
         if (
-            isNaN(bet) ||
-            bet < minBet
+            !Number.isInteger(bet) ||
+            bet < MIN_BET
         ) {
             return message.reply(
-                `❌ Minimum bet is **${minBet}** ${db.currency}.`
+                `❌ Minimum bet is **${MIN_BET}** ${db.currency}.`
             );
         }
 
@@ -959,7 +840,7 @@ client.on('messageCreate', async (message) => {
 
         user.cash -= bet;
 
-        const num1 =
+        const first =
             Math.floor(
                 Math.random() * 12
             ) + 1;
@@ -967,43 +848,36 @@ client.on('messageCreate', async (message) => {
         const embed =
             new EmbedBuilder()
                 .setTitle(
-                    '🎲 Higher or Lower 🎲'
+                    "🎲 Higher or Lower 🎲"
                 )
-                .setColor('#9b59b6')
+                .setColor("#9b59b6")
                 .setDescription(
-                    `**Betting Amount:** ${bet}\n\n**1 :** ${num1}\n**2 :** ❓\n\n**Higher:** 1.5x\n**Same:** 25x\n**Lower:** 1.5x`
+                    `**Betting Amount:** ${bet} ${db.currency}\n\n**1 :** ${first}\n**2 :** ❓\n\n**Higher:** 1.5x\n**Same:** 25x\n**Lower:** 1.5x`
                 );
 
         const row =
-            new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(
-                            'higher'
-                        )
-                        .setLabel('Higher')
-                        .setStyle(
-                            ButtonStyle.Primary
-                        ),
+            new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId("hl_higher")
+                    .setLabel("Higher")
+                    .setStyle(
+                        ButtonStyle.Primary
+                    ),
 
-                    new ButtonBuilder()
-                        .setCustomId(
-                            'same'
-                        )
-                        .setLabel('Same')
-                        .setStyle(
-                            ButtonStyle.Secondary
-                        ),
+                new ButtonBuilder()
+                    .setCustomId("hl_same")
+                    .setLabel("Same")
+                    .setStyle(
+                        ButtonStyle.Secondary
+                    ),
 
-                    new ButtonBuilder()
-                        .setCustomId(
-                            'lower'
-                        )
-                        .setLabel('Lower')
-                        .setStyle(
-                            ButtonStyle.Primary
-                        )
-                );
+                new ButtonBuilder()
+                    .setCustomId("hl_lower")
+                    .setLabel("Lower")
+                    .setStyle(
+                        ButtonStyle.Primary
+                    )
+            );
 
         const msg =
             await message.reply({
@@ -1011,13 +885,13 @@ client.on('messageCreate', async (message) => {
                 components: [row]
             });
 
-        const filter =
-            i => i.user.id === userId;
-
         const interaction =
             await msg
                 .awaitMessageComponent({
-                    filter,
+                    filter:
+                        i =>
+                            i.user.id ===
+                            message.author.id,
                     time: 30000
                 })
                 .catch(() => null);
@@ -1027,100 +901,94 @@ client.on('messageCreate', async (message) => {
 
             return msg.edit({
                 content:
-                    'Game timed out! Your bet was returned.',
+                    "⏰ Game timed out. Your bet was returned.",
                 components: []
             });
         }
 
         await interaction.deferUpdate();
 
-        const num2 =
+        const second =
             Math.floor(
                 Math.random() * 12
             ) + 1;
 
-        let won = false;
-        let payoutMultiplier = 0;
+        let multiplier = 0;
 
         if (
             interaction.customId ===
-                'higher' &&
-            num2 > num1
+                "hl_higher" &&
+            second > first
         ) {
-            won = true;
-            payoutMultiplier = 1.5;
-        } else if (
-            interaction.customId ===
-                'lower' &&
-            num2 < num1
-        ) {
-            won = true;
-            payoutMultiplier = 1.5;
-        } else if (
-            interaction.customId ===
-                'same' &&
-            num2 === num1
-        ) {
-            won = true;
-            payoutMultiplier = 25;
+            multiplier = 1.5;
         }
 
-        const finalEmbed =
-            new EmbedBuilder()
-                .setTitle(
-                    '🎲 Higher or Lower Result 🎲'
-                )
-                .setAuthor({
-                    name:
-                        message.author.username,
-                    iconURL:
-                        message.author.displayAvatarURL()
-                });
+        if (
+            interaction.customId ===
+                "hl_lower" &&
+            second < first
+        ) {
+            multiplier = 1.5;
+        }
 
-        if (won) {
-            const winnings =
+        if (
+            interaction.customId ===
+                "hl_same" &&
+            second === first
+        ) {
+            multiplier = 25;
+        }
+
+        if (multiplier > 0) {
+            const payout =
                 Math.floor(
-                    bet *
-                        payoutMultiplier
+                    bet * multiplier
                 );
 
-            user.cash += winnings;
+            user.cash += payout;
 
-            finalEmbed
-                .setColor('#2ecc71')
-                .setDescription(
-                    `**1 :** ${num1}\n**2 :** **${num2}**\n\n🎉 Correct! You won **${winnings.toLocaleString()}** ${db.currency}!`
-                );
-        } else {
-            finalEmbed
-                .setColor('#e74c3c')
-                .setDescription(
-                    `**1 :** ${num1}\n**2 :** **${num2}**\n\n❌ Wrong guess! You lost **${bet.toLocaleString()}** ${db.currency}.`
-                );
+            return msg.edit({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor("#2ecc71")
+                        .setTitle(
+                            "🎲 Higher or Lower Result 🎲"
+                        )
+                        .setDescription(
+                            `**1:** ${first}\n**2:** ${second}\n\n🎉 You won **${payout.toLocaleString()}** ${db.currency}!`
+                        )
+                ],
+                components: []
+            });
         }
 
         return msg.edit({
-            embeds: [finalEmbed],
+            embeds: [
+                new EmbedBuilder()
+                    .setColor("#e74c3c")
+                    .setTitle(
+                        "🎲 Higher or Lower Result 🎲"
+                    )
+                    .setDescription(
+                        `**1:** ${first}\n**2:** ${second}\n\n❌ You lost **${bet.toLocaleString()}** ${db.currency}.`
+                    )
+            ],
             components: []
         });
     }
 
-    // ==========================================
+    // ==================================================
     // MINES
-    // ==========================================
-    if (command === 'mines') {
-        const user =
-            getUserData(userId);
-
-        const bet =
-            parseInt(args[0]);
+    // ==================================================
+    if (command === "mines") {
+        const bet = Number(args[0]);
 
         if (
-            isNaN(bet) ||
-            bet < minBet
+            !Number.isInteger(bet) ||
+            bet < MIN_BET
         ) {
             return message.reply(
-                `❌ Minimum bet is **${minBet}** ${db.currency}.`
+                `❌ Minimum bet is **${MIN_BET}** ${db.currency}.`
             );
         }
 
@@ -1132,7 +1000,7 @@ client.on('messageCreate', async (message) => {
 
         user.cash -= bet;
 
-        const bombIndex =
+        const bomb =
             Math.floor(
                 Math.random() * 9
             );
@@ -1148,335 +1016,271 @@ client.on('messageCreate', async (message) => {
             8.0
         ];
 
-        let clicks = 0;
-        let revealedTiles = [];
+        const revealed = [];
 
-        const getGridRows = (
-            revealed = [],
-            showBombs = false
-        ) => {
+        function mineRows(disabled = false) {
             const rows = [];
-            let buttons = [];
 
-            for (
-                let i = 0;
-                i < 9;
-                i++
-            ) {
-                const btn =
-                    new ButtonBuilder()
-                        .setCustomId(
-                            `mine_${i}`
-                        );
+            for (let r = 0; r < 3; r++) {
+                const buttons = [];
 
-                if (
-                    showBombs &&
-                    i === bombIndex
-                ) {
-                    btn
-                        .setEmoji('💣')
-                        .setStyle(
-                            ButtonStyle.Danger
-                        )
-                        .setDisabled(true);
-                } else if (
-                    revealed.includes(i)
-                ) {
-                    btn
-                        .setEmoji('💎')
-                        .setStyle(
-                            ButtonStyle.Success
-                        )
-                        .setDisabled(true);
-                } else {
-                    btn
-                        .setEmoji('⬛')
-                        .setStyle(
-                            ButtonStyle.Secondary
-                        )
-                        .setDisabled(
-                            showBombs
-                        );
-                }
+                for (let c = 0; c < 3; c++) {
+                    const index =
+                        r * 3 + c;
 
-                buttons.push(btn);
-
-                if (
-                    buttons.length === 3
-                ) {
-                    rows.push(
-                        new ActionRowBuilder()
-                            .addComponents(
-                                buttons
+                    const button =
+                        new ButtonBuilder()
+                            .setCustomId(
+                                `mine_${index}`
                             )
-                    );
+                            .setEmoji(
+                                revealed.includes(
+                                    index
+                                )
+                                    ? "💎"
+                                    : "⬛"
+                            )
+                            .setStyle(
+                                revealed.includes(
+                                    index
+                                )
+                                    ? ButtonStyle.Success
+                                    : ButtonStyle.Secondary
+                            )
+                            .setDisabled(
+                                disabled ||
+                                revealed.includes(
+                                    index
+                                )
+                            );
 
-                    buttons = [];
+                    buttons.push(button);
                 }
+
+                rows.push(
+                    new ActionRowBuilder()
+                        .addComponents(
+                            buttons
+                        )
+                );
             }
 
-            const currentProfit =
-                clicks > 0
+            const profit =
+                revealed.length
                     ? Math.floor(
                           bet *
                               multipliers[
-                                  clicks - 1
+                                  revealed.length -
+                                      1
                               ]
-                      ) - bet
+                      )
                     : 0;
 
-            const cashoutRow =
+            rows.push(
                 new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
                             .setCustomId(
-                                'cashout'
+                                "mine_cashout"
                             )
                             .setLabel(
-                                'Cashout'
+                                "Cashout"
                             )
                             .setStyle(
                                 ButtonStyle.Success
                             )
                             .setDisabled(
-                                clicks === 0 ||
-                                    showBombs
+                                revealed.length ===
+                                    0 ||
+                                disabled
                             ),
 
                         new ButtonBuilder()
                             .setCustomId(
-                                'profit'
+                                "mine_profit"
                             )
                             .setLabel(
-                                `Profit: ${currentProfit} ${db.currency}`
+                                `Profit: ${Math.max(
+                                    0,
+                                    profit - bet
+                                )} ${db.currency}`
                             )
                             .setStyle(
                                 ButtonStyle.Primary
                             )
-                            .setDisabled(
-                                true
-                            )
-                    );
-
-            rows.push(cashoutRow);
+                            .setDisabled(true)
+                    )
+            );
 
             return rows;
-        };
-
-        const embed =
-            new EmbedBuilder()
-                .setAuthor({
-                    name:
-                        message.author.username,
-                    iconURL:
-                        message.author.displayAvatarURL()
-                })
-                .setTitle(
-                    '💣 Mines 3x3 💣'
-                )
-                .setColor('#f1c40f')
-                .setDescription(
-                    `Find diamonds and avoid the single bomb!\nNext Multiplier: **${multipliers[0]}x**`
-                );
+        }
 
         const msg =
             await message.reply({
-                embeds: [embed],
-                components:
-                    getGridRows()
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle(
+                            "💣 Mines 3x3 💣"
+                        )
+                        .setColor("#f1c40f")
+                        .setDescription(
+                            `Find diamonds and avoid the bomb!\nNext Multiplier: **${multipliers[0]}x**`
+                        )
+                ],
+                components: mineRows()
             });
-
-        const filter =
-            i => i.user.id === userId;
 
         const collector =
             msg.createMessageComponentCollector({
-                filter,
+                filter:
+                    i =>
+                        i.user.id ===
+                        message.author.id,
                 time: 120000
             });
 
         collector.on(
-            'collect',
-            async i => {
-                await i.deferUpdate();
+            "collect",
+            async interaction => {
+                await interaction.deferUpdate();
 
                 if (
-                    i.customId ===
-                    'cashout'
+                    interaction.customId ===
+                    "mine_cashout"
                 ) {
                     collector.stop(
-                        'cashout'
+                        "cashout"
                     );
                     return;
                 }
 
                 if (
-                    i.customId ===
-                    'profit'
+                    interaction.customId ===
+                    "mine_profit"
                 ) {
                     return;
                 }
 
-                const tileIndex =
-                    parseInt(
-                        i.customId.split(
-                            '_'
+                const index =
+                    Number(
+                        interaction.customId.split(
+                            "_"
                         )[1]
                     );
 
                 if (
-                    revealedTiles.includes(
-                        tileIndex
+                    index === bomb
+                ) {
+                    collector.stop(
+                        "bomb"
+                    );
+                    return;
+                }
+
+                if (
+                    revealed.includes(
+                        index
                     )
                 ) {
                     return;
                 }
 
+                revealed.push(index);
+
                 if (
-                    tileIndex ===
-                    bombIndex
+                    revealed.length === 8
                 ) {
                     collector.stop(
-                        'bomb'
+                        "win"
                     );
                     return;
                 }
 
-                revealedTiles.push(
-                    tileIndex
-                );
-
-                clicks++;
-
-                if (clicks === 8) {
-                    collector.stop(
-                        'max_win'
-                    );
-                    return;
-                }
-
-                const nextMult =
+                const next =
                     multipliers[
-                        clicks
+                        revealed.length
                     ];
 
-                const currentTotalWin =
-                    Math.floor(
-                        bet *
-                            multipliers[
-                                clicks - 1
-                            ]
-                    );
-
-                embed.setDescription(
-                    `💎 Nice! Current total win: **${currentTotalWin.toLocaleString()}** ${db.currency}\nNext Multiplier: **${nextMult}x**`
-                );
-
                 await msg.edit({
-                    embeds: [embed],
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle(
+                                "💣 Mines 3x3 💣"
+                            )
+                            .setColor("#f1c40f")
+                            .setDescription(
+                                `💎 Safe!\nCurrent Multiplier: **${multipliers[
+                                    revealed.length -
+                                        1
+                                ]}x**\nNext Multiplier: **${next}x**`
+                            )
+                    ],
                     components:
-                        getGridRows(
-                            revealedTiles
-                        )
+                        mineRows()
                 });
             }
         );
 
         collector.on(
-            'end',
-            async (
-                collected,
-                reason
-            ) => {
-                const finalEmbed =
-                    new EmbedBuilder()
-                        .setAuthor({
-                            name:
-                                message.author.username,
-                            iconURL:
-                                message.author.displayAvatarURL()
-                        });
-
+            "end",
+            async (_, reason) => {
                 if (
-                    reason === 'bomb'
+                    reason === "time"
                 ) {
-                    finalEmbed
-                        .setColor(
-                            '#e74c3c'
-                        )
-                        .setTitle(
-                            '💣 You hit a bomb!'
-                        )
-                        .setDescription(
-                            `- You lost **${bet.toLocaleString()}** ${db.currency}\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
-                        );
+                    user.cash += bet;
 
                     return msg.edit({
-                        embeds: [
-                            finalEmbed
-                        ],
-                        components:
-                            getGridRows(
-                                revealedTiles,
-                                true
-                            )
+                        content:
+                            "⏰ Game timed out. Your bet was returned.",
+                        components: []
                     });
                 }
 
                 if (
-                    reason ===
-                        'cashout' ||
-                    reason ===
-                        'max_win'
+                    reason === "bomb"
                 ) {
-                    const multiplier =
-                        multipliers[
-                            clicks - 1
-                        ];
-
-                    const payout =
-                        Math.floor(
-                            bet *
-                                multiplier
-                        );
-
-                    user.cash += payout;
-
-                    finalEmbed
-                        .setColor(
-                            '#2ecc71'
-                        )
-                        .setTitle(
-                            '💰 You cashed out!'
-                        )
-                        .setDescription(
-                            `+ You won and got **${payout.toLocaleString()}** ${db.currency}\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
-                        );
-
                     return msg.edit({
                         embeds: [
-                            finalEmbed
+                            new EmbedBuilder()
+                                .setColor(
+                                    "#e74c3c"
+                                )
+                                .setTitle(
+                                    "💣 You hit the bomb!"
+                                )
+                                .setDescription(
+                                    `You lost **${bet.toLocaleString()}** ${db.currency}.`
+                                )
                         ],
-                        components:
-                            getGridRows(
-                                revealedTiles,
-                                true
-                            )
+                        components: []
                     });
                 }
 
-                finalEmbed
-                    .setColor('#e74c3c')
-                    .setTitle(
-                        '⏰ Game Timed Out'
-                    )
-                    .setDescription(
-                        `The game timed out.\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
+                const multiplier =
+                    multipliers[
+                        revealed.length -
+                            1
+                    ];
+
+                const payout =
+                    Math.floor(
+                        bet * multiplier
                     );
+
+                user.cash += payout;
 
                 return msg.edit({
                     embeds: [
-                        finalEmbed
+                        new EmbedBuilder()
+                            .setColor(
+                                "#2ecc71"
+                            )
+                            .setTitle(
+                                "💰 You cashed out!"
+                            )
+                            .setDescription(
+                                `You won **${payout.toLocaleString()}** ${db.currency}!`
+                            )
                     ],
                     components: []
                 });
@@ -1486,25 +1290,21 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    // ==========================================
+    // ==================================================
     // MONEY TOWER
-    // ==========================================
+    // ==================================================
     if (
-        command === 'mt' ||
-        command === 'moneytower'
+        command === "mt" ||
+        command === "moneytower"
     ) {
-        const user =
-            getUserData(userId);
-
-        const bet =
-            parseInt(args[0]);
+        const bet = Number(args[0]);
 
         if (
-            isNaN(bet) ||
-            bet < minBet
+            !Number.isInteger(bet) ||
+            bet < MIN_BET
         ) {
             return message.reply(
-                `❌ Minimum bet is **${minBet}** ${db.currency}.`
+                `❌ Minimum bet is **${MIN_BET}** ${db.currency}.`
             );
         }
 
@@ -1516,7 +1316,7 @@ client.on('messageCreate', async (message) => {
 
         user.cash -= bet;
 
-        const mtMultipliers = [
+        const multipliers = [
             1.5,
             2.1,
             2.3,
@@ -1524,162 +1324,46 @@ client.on('messageCreate', async (message) => {
             7.6
         ];
 
-        let currentFloor = 0;
-
-        const towerData = [];
-
-        for (
-            let f = 0;
-            f < 5;
-            f++
-        ) {
-            towerData.push(
+        const bombs = Array.from(
+            { length: 5 },
+            () =>
                 Math.floor(
                     Math.random() * 3
                 )
-            );
-        }
+        );
 
-        /*
-         * Discord max = 5 Action Rows.
-         * Therefore the Cashout button is placed
-         * inside the current floor row.
-         */
+        let floor = 0;
 
-        const getTowerRows = (
-            activeFloor,
-            chosenTile = null,
-            failed = false
-        ) => {
+        function towerRows(disabled = false) {
             const rows = [];
 
-            for (
-                let f = 4;
-                f >= 0;
-                f--
-            ) {
+            for (let f = 0; f < 5; f++) {
                 const buttons = [];
 
-                for (
-                    let t = 0;
-                    t < 3;
-                    t++
-                ) {
-                    const btn =
+                for (let t = 0; t < 3; t++) {
+                    const button =
                         new ButtonBuilder()
                             .setCustomId(
                                 `mt_${f}_${t}`
+                            )
+                            .setLabel(
+                                `${t + 1}`
+                            )
+                            .setStyle(
+                                ButtonStyle.Primary
                             );
 
                     if (
-                        f < activeFloor
+                        f < floor ||
+                        f !== floor ||
+                        disabled
                     ) {
-                        if (
-                            t ===
-                            towerData[f]
-                        ) {
-                            btn
-                                .setEmoji(
-                                    '💣'
-                                )
-                                .setStyle(
-                                    ButtonStyle.Danger
-                                );
-                        } else {
-                            btn
-                                .setEmoji(
-                                    '💵'
-                                )
-                                .setStyle(
-                                    ButtonStyle.Success
-                                );
-                        }
-
-                        btn.setDisabled(
+                        button.setDisabled(
                             true
                         );
-                    } else if (
-                        f === activeFloor
-                    ) {
-                        if (
-                            failed &&
-                            t ===
-                                chosenTile
-                        ) {
-                            btn
-                                .setEmoji(
-                                    '💣'
-                                )
-                                .setStyle(
-                                    ButtonStyle.Danger
-                                )
-                                .setDisabled(
-                                    true
-                                );
-                        } else if (
-                            chosenTile !==
-                                null &&
-                            t ===
-                                chosenTile
-                        ) {
-                            btn
-                                .setEmoji(
-                                    '💵'
-                                )
-                                .setStyle(
-                                    ButtonStyle.Success
-                                )
-                                .setDisabled(
-                                    true
-                                );
-                        } else {
-                            btn
-                                .setEmoji(
-                                    '❓'
-                                )
-                                .setStyle(
-                                    ButtonStyle.Primary
-                                )
-                                .setDisabled(
-                                    failed
-                                );
-                        }
-                    } else {
-                        btn
-                            .setEmoji(
-                                '🔒'
-                            )
-                            .setStyle(
-                                ButtonStyle.Secondary
-                            )
-                            .setDisabled(
-                                true
-                            );
                     }
 
-                    buttons.push(btn);
-                }
-
-                // Add Cashout to the current floor
-                // while keeping max 5 Action Rows.
-                if (
-                    f === activeFloor &&
-                    activeFloor > 0
-                ) {
-                    buttons[2] =
-                        new ButtonBuilder()
-                            .setCustomId(
-                                'mt_cashout'
-                            )
-                            .setLabel(
-                                'Cashout'
-                            )
-                            .setStyle(
-                                ButtonStyle.Success
-                            )
-                            .setDisabled(
-                                failed
-                            );
+                    buttons.push(button);
                 }
 
                 rows.push(
@@ -1691,249 +1375,157 @@ client.on('messageCreate', async (message) => {
             }
 
             return rows;
-        };
-
-        const embed =
-            new EmbedBuilder()
-                .setAuthor({
-                    name:
-                        message.author.username,
-                    iconURL:
-                        message.author.displayAvatarURL()
-                })
-                .setTitle(
-                    '🏢 Money Tower 🏢'
-                )
-                .setColor('#f1c40f')
-                .setDescription(
-                    `Climb the 5-row tower! Each row has 1 Bomb and 2 Cash slots.\n\nNext Multiplier: **${mtMultipliers[0]}x**`
-                );
+        }
 
         const msg =
             await message.reply({
-                embeds: [embed],
-                components:
-                    getTowerRows(
-                        currentFloor
-                    )
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle(
+                            "🏢 Money Tower 🏢"
+                        )
+                        .setColor("#f1c40f")
+                        .setDescription(
+                            `Climb the Money Tower!\n\nFloor: **1/5**\nMultiplier: **${multipliers[0]}x**`
+                        )
+                ],
+                components: towerRows()
             });
-
-        const filter =
-            i => i.user.id === userId;
 
         const collector =
             msg.createMessageComponentCollector({
-                filter,
+                filter:
+                    i =>
+                        i.user.id ===
+                        message.author.id,
                 time: 120000
             });
 
         collector.on(
-            'collect',
-            async i => {
-                await i.deferUpdate();
-
-                if (
-                    i.customId ===
-                    'mt_cashout'
-                ) {
-                    collector.stop(
-                        'cashout'
-                    );
-                    return;
-                }
+            "collect",
+            async interaction => {
+                await interaction.deferUpdate();
 
                 const parts =
-                    i.customId.split(
-                        '_'
+                    interaction.customId.split(
+                        "_"
                     );
+
+                const selectedFloor =
+                    Number(parts[1]);
+
+                const selectedTile =
+                    Number(parts[2]);
 
                 if (
-                    parts[0] !== 'mt'
-                ) {
-                    return;
-                }
-
-                const clickedFloor =
-                    parseInt(
-                        parts[1]
-                    );
-
-                const clickedTile =
-                    parseInt(
-                        parts[2]
-                    );
-
-                if (
-                    clickedFloor !==
-                    currentFloor
+                    selectedFloor !==
+                    floor
                 ) {
                     return;
                 }
 
                 if (
-                    clickedTile ===
-                    towerData[
-                        currentFloor
-                    ]
+                    selectedTile ===
+                    bombs[floor]
                 ) {
                     collector.stop(
-                        'bomb'
+                        "bomb"
                     );
                     return;
                 }
 
-                currentFloor++;
+                floor++;
 
-                if (
-                    currentFloor ===
-                    5
-                ) {
+                if (floor >= 5) {
                     collector.stop(
-                        'max_win'
+                        "win"
                     );
                     return;
                 }
-
-                embed.setDescription(
-                    `You climbed **${currentFloor}** rows!\nNext Multiplier: **${mtMultipliers[currentFloor]}x**`
-                );
 
                 await msg.edit({
-                    embeds: [embed],
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle(
+                                "🏢 Money Tower 🏢"
+                            )
+                            .setColor(
+                                "#f1c40f"
+                            )
+                            .setDescription(
+                                `You passed the floor!\n\nFloor: **${
+                                    floor + 1
+                                }/5**\nMultiplier: **${multipliers[floor]}x**`
+                            )
+                    ],
                     components:
-                        getTowerRows(
-                            currentFloor
-                        )
+                        towerRows()
                 });
             }
         );
 
         collector.on(
-            'end',
-            async (
-                collected,
-                reason
-            ) => {
-                const finalEmbed =
-                    new EmbedBuilder()
-                        .setAuthor({
-                            name:
-                                message.author.username,
-                            iconURL:
-                                message.author.displayAvatarURL()
-                        });
-
+            "end",
+            async (_, reason) => {
                 if (
-                    reason === 'bomb'
+                    reason === "time"
                 ) {
-                    finalEmbed
-                        .setColor(
-                            '#e74c3c'
-                        )
-                        .setTitle(
-                            '💣 You hit a bomb!'
-                        )
-                        .setDescription(
-                            `- You lost **${bet.toLocaleString()}** ${db.currency}\nYou climbed ${currentFloor} rows.`
-                        );
+                    user.cash += bet;
 
                     return msg.edit({
-                        embeds: [
-                            finalEmbed
-                        ],
-                        components:
-                            getTowerRows(
-                                currentFloor,
-                                towerData[
-                                    currentFloor
-                                ],
-                                true
-                            )
+                        content:
+                            "⏰ Game timed out. Your bet was returned.",
+                        components: []
                     });
                 }
 
                 if (
-                    reason ===
-                    'cashout'
+                    reason === "bomb"
                 ) {
-                    const multiplier =
-                        mtMultipliers[
-                            currentFloor - 1
-                        ];
-
-                    const payout =
-                        Math.floor(
-                            bet *
-                                multiplier
-                        );
-
-                    user.cash += payout;
-
-                    finalEmbed
-                        .setColor(
-                            '#2ecc71'
-                        )
-                        .setTitle(
-                            '💰 You cashed out!'
-                        )
-                        .setDescription(
-                            `+ You won and got **${payout.toLocaleString()}** ${db.currency}\nYou climbed ${currentFloor} rows successfully!`
-                        );
-
                     return msg.edit({
                         embeds: [
-                            finalEmbed
-                        ],
-                        components:
-                            getTowerRows(
-                                currentFloor
-                            )
-                    });
-                }
-
-                if (
-                    reason ===
-                    'max_win'
-                ) {
-                    const payout =
-                        Math.floor(
-                            bet *
-                                mtMultipliers[4]
-                        );
-
-                    user.cash += payout;
-
-                    finalEmbed
-                        .setColor(
-                            '#2ecc71'
-                        )
-                        .setTitle(
-                            '🏆 Top of the Tower!'
-                        )
-                        .setDescription(
-                            `+ You won and got **${payout.toLocaleString()}** ${db.currency}\nYou climbed 5 rows successfully!`
-                        );
-
-                    return msg.edit({
-                        embeds: [
-                            finalEmbed
+                            new EmbedBuilder()
+                                .setColor(
+                                    "#e74c3c"
+                                )
+                                .setTitle(
+                                    "💣 You hit a bomb!"
+                                )
+                                .setDescription(
+                                    `You lost **${bet.toLocaleString()}** ${db.currency}.`
+                                )
                         ],
                         components: []
                     });
                 }
 
-                finalEmbed
-                    .setColor('#e74c3c')
-                    .setTitle(
-                        '⏰ Game Timed Out'
-                    )
-                    .setDescription(
-                        `The game timed out.\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
+                const multiplier =
+                    multipliers[
+                        Math.min(
+                            floor - 1,
+                            4
+                        )
+                    ];
+
+                const payout =
+                    Math.floor(
+                        bet * multiplier
                     );
+
+                user.cash += payout;
 
                 return msg.edit({
                     embeds: [
-                        finalEmbed
+                        new EmbedBuilder()
+                            .setColor(
+                                "#2ecc71"
+                            )
+                            .setTitle(
+                                "🏆 You reached the top!"
+                            )
+                            .setDescription(
+                                `You won **${payout.toLocaleString()}** ${db.currency}!`
+                            )
                     ],
                     components: []
                 });
@@ -1944,7 +1536,20 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// ==========================================
-// Bot Login
-// ==========================================
+// ===============================
+// LOGIN
+// ===============================
+client.once("ready", () => {
+    console.log(
+        `Logged in as ${client.user.tag}`
+    );
+});
+
+if (!process.env.DISCORD_TOKEN) {
+    console.error(
+        "DISCORD_TOKEN is missing from Environment Variables."
+    );
+    process.exit(1);
+}
+
 client.login(process.env.DISCORD_TOKEN);
