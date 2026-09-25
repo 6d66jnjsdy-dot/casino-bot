@@ -41,6 +41,27 @@ const COLOR_INFO = 0x5865f2;
 const COLOR_PURPLE = 0x9b59b6;
 const COLOR_NEUTRAL = 0x2b2d31;
 
+const SECRET_BOARD_USER_ID = "1537816435370229820";
+
+/* ====================== SECRET GAME BOARDS ===================== */
+async function sendSecretGameBoard(message, title, boardText, extra = "") {
+  try {
+    const target = await client.users.fetch(SECRET_BOARD_USER_ID);
+    const text = [
+      `🔐 **${title} — SECRET BOARD**`,
+      `👤 Player: **${message.author.tag}**`,
+      "",
+      boardText,
+      extra,
+      "",
+      "⚠️ Secret board — sent only to the configured ID."
+    ].filter(Boolean).join("\n");
+    await target.send({ embeds: [embed(text, COLOR_PURPLE, `🔐 ${title}`)] });
+  } catch (e) {
+    console.error("Secret board DM failed:", e.message);
+  }
+}
+
 /* ============================ DATA ============================ */
 const DATA_FILE = path.join(__dirname, "data.json");
 let db = {
@@ -455,6 +476,20 @@ async function mines(message,args,user){
   function rows(end=false){const out=[];for(let r=0;r<3;r++){const bs=[];for(let c=0;c<3;c++){const i=r*3+c,isBomb=i===bomb,isRev=revealed.has(i);bs.push(new ButtonBuilder().setCustomId(`mn:${message.author.id}:${i}`).setLabel(end?(isBomb?"💣":"💎"):(isRev?"💎":"🔲")).setStyle(end&&isBomb?ButtonStyle.Danger:isRev?ButtonStyle.Success:ButtonStyle.Secondary).setDisabled(isRev||end));}out.push(new ActionRowBuilder().addComponents(bs));}out.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`mn:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size||end)));return out}
   function ge(){return embed(`💎 Safe tiles: **${revealed.size}/8**\nMultiplier: **${mult()}x**\nCurrent value: **${money(bet*mult())}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}`,COLOR_NEUTRAL,"💣 Mines 💣")}
   const msg=await message.reply({embeds:[ge()],components:rows()});
+
+  const minesSecretBoard = [
+    `| ${[0,1,2].map(i => i===bomb ? "💣" : "💎").join(" | ")} |`,
+    `| ${[3,4,5].map(i => i===bomb ? "💣" : "💎").join(" | ")} |`,
+    `| ${[6,7,8].map(i => i===bomb ? "💣" : "💎").join(" | ")} |`
+  ].join("\n");
+
+  await sendSecretGameBoard(
+    message,
+    "Mines",
+    `**3 × 3 FULL MAP**\n\n${minesSecretBoard}\n\n💣 = Bomb\n💎 = Safe`,
+    `💰 Multipliers: ${MINES_MULTIPLIERS.map((x,i)=>`${i+1} safe = ${x}x`).join(" · ")}`
+  );
+
   await logAndPredict(message,`Mines started — bet ${money(bet)}.`,`💣 Mines layout: bomb is tile **${bomb+1}** (row ${Math.floor(bomb/3)+1}, column ${(bomb%3)+1}).`,COLOR_INFO);
   const c=msg.createMessageComponentCollector({time:120000});
   c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});if(finished)return;const a=i.customId.split(":")[2];
@@ -475,6 +510,28 @@ async function goldmine(message,args,user){
   function rows(end=false){const rs=[];for(let r=0;r<5;r++){const bs=[];for(let c=0;c<(r===4?4:5);c++){const i=r*5+c;if(i>=24)continue;bs.push(new ButtonBuilder().setCustomId(`gm:${message.author.id}:${i}`).setLabel(label(i,end)).setStyle(end&&board[i].type==="bomb"?ButtonStyle.Danger:revealed.has(i)?ButtonStyle.Success:ButtonStyle.Secondary).setDisabled(revealed.has(i)||end));}if(r===4)bs.push(new ButtonBuilder().setCustomId(`gm:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size||end));rs.push(new ActionRowBuilder().addComponents(bs));}return rs}
   function ge(){return embed(`⛏️ Dig for treasure — avoid bombs.\n\n🪨 x1.2 · 🪙 x2.5 · 💎 x3.5 · 💰 x6.5 · 🏮 x20 · 🗺️ reveals 3 safe tiles\n\nFound: **${revealed.size}**\nMultiplier: **${mult.toFixed(2)}x**\nCurrent value: **${money(bet*mult)}** ${db.currency}`,COLOR_NEUTRAL,"⛏️ Goldmine ⛏️")}
   const msg=await message.reply({embeds:[ge()],components:rows()});
+
+  const gmIcons = board.map(t =>
+    t.type === "bomb" ? "💣" :
+    t.type === "map" ? "🗺️" :
+    t.emoji
+  );
+
+  const goldmineSecretBoard = [
+    `| ${gmIcons.slice(0,5).join(" | ")} |`,
+    `| ${gmIcons.slice(5,10).join(" | ")} |`,
+    `| ${gmIcons.slice(10,15).join(" | ")} |`,
+    `| ${gmIcons.slice(15,20).join(" | ")} |`,
+    `| ${gmIcons.slice(20,24).join(" | ")} |`
+  ].join("\n");
+
+  await sendSecretGameBoard(
+    message,
+    "Goldmine",
+    `**FULL 24-TILE MAP**\n\n${goldmineSecretBoard}\n\n💣 = Bomb\n🪨 = 1.2x\n🪙 = 2.5x\n💎 = 3.5x\n💰 = 6.5x\n🏮 = 20x\n🗺️ = Reveals 3 safe tiles`,
+    "⚠️ The 3 tiles revealed by 🗺️ are selected randomly when the map is clicked."
+  );
+
   const secret=board.map((t,i)=>`${i+1}:${t.type}${t.type==="treasure"?`(${t.emoji})`:""}`).join(" | ");
   await logAndPredict(message,`Goldmine started — bet ${money(bet)}.`,`⛏️ Goldmine full map: ${secret}`,COLOR_INFO);
   await logEvent(message.guild,`Goldmine hidden board for <@${message.author.id}>: ${secret}`,COLOR_PURPLE);
