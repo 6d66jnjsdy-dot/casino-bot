@@ -1,5 +1,5 @@
 /* ============================================================
-   CASINO BOT — FULL BUILD (UPDATED & FIXED)
+   CASINO BOT — FULL BUILD (UPDATED TEXAS HOLD'EM)
    discord.js v14
    ============================================================ */
 
@@ -426,11 +426,11 @@ async function cockfight(message,args,user){
     user.cash+=payout;
     user.cfStreak=Math.min(82,chance+1);
     saveData();
-    text = `Your chicken won the fight, you won ${money(payout)} 💸🐔!\n\nYour chicken's strength (chance of winning): ${chance}%\nYou now have ${money(user.cash)} 💸`;[span_5](start_span)[span_5](end_span)
+    text = `Your chicken won the fight, you won ${money(payout)} 💸🐔!\n\nYour chicken's strength (chance of winning): ${chance}%\nYou now have ${money(user.cash)} 💸`;
   } else {
     user.cfStreak=55;
     saveData();
-    text = `Your chicken lost the fight... You lost ${money(bet)} 💸🐔.`;[span_6](start_span)[span_6](end_span)
+    text = `Your chicken lost the fight... You lost ${money(bet)} 💸🐔.`;
   }
   return message.reply({content: text});
 }
@@ -464,7 +464,7 @@ async function mines(message,args,user){
   const c=msg.createMessageComponentCollector({time:120000});
   c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});if(finished)return;const a=i.customId.split(":")[2];
     if(a==="cash"){if(!revealed.size)return i.reply({content:"❌ Reveal a tile first.",ephemeral:true});finished=true;c.stop();const p=Math.floor(bet*mult());user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
-    const idx=Number(a);if(idx===bomb){finished=true;c.stop();saveData();return i.update({content:`You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}[span_7](start_span)[span_7](end_span)[span_8](start_span)[span_8](end_span)
+    const idx=Number(a);if(idx===bomb){finished=true;c.stop();saveData();return i.update({content:`You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});_}
     revealed.add(idx);if(revealed.size===15){finished=true;c.stop();const p=Math.floor(bet*8.9);user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}return i.update({components:rows()});
   });
   c.on("end",async()=>{if(finished)return;finished=true;user.cash+=bet;saveData();await msg.edit({content:`⏰ Timed out. Returned ${money(bet)} 💸.`,components:rows(true)}).catch(()=>{})});
@@ -504,7 +504,7 @@ async function goldmine(message,args,user){
   const c=msg.createMessageComponentCollector({time:150000});
   c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});if(finished)return;const a=i.customId.split(":")[2];
     if(a==="cash"){finished=true;c.stop();const p=Math.floor(bet*mult);user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
-    const idx=Number(a),t=board[idx];if(t.type==="bomb"){finished=true;c.stop();saveData();return i.update({content:`You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}[span_9](start_span)[span_9](end_span)[span_10](start_span)[span_10](end_span)
+    const idx=Number(a),t=board[idx];if(t.type==="bomb"){finished=true;c.stop();saveData();return i.update({content:`You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});_}
     if(t.type==="map"){revealed.add(idx);const pool=shuffle([...Array(24).keys()].filter(x=>!revealed.has(x)&&board[x].type!=="bomb")).slice(0,3);for(const x of pool){revealed.add(x);if(board[x].type==="treasure")mult*=board[x].mult;}}else{revealed.add(idx);mult*=t.mult;}
     if(revealed.size>=12){finished=true;c.stop();const p=Math.floor(bet*mult);user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}return i.update({components:rows()});
   });
@@ -588,8 +588,9 @@ async function texasHoldem(message, args, user) {
     const deck = shuffle(CARD_VALUES.flatMap(([v, n]) => SUITS.map(s => ({ value: v, number: n, glyph: CARD_GLYPHS[s][rankIndex(v)] }))));
     const p1Cards = [deck.pop(), deck.pop()];
     const p2Cards = [deck.pop(), deck.pop()];
-    const communityCards = [deck.pop(), deck.pop(), deck.pop()];
+    const communityCards = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
 
+    // שליחת קלפים בפרטי
     try {
       const u1 = await client.users.fetch(message.author.id);
       await u1.send({ embeds: [embed(`Your private cards: ${p1Cards.map(c => c.glyph).join(" ")}`, COLOR_INFO, "Texas Hold'em - Hand")] });
@@ -604,28 +605,33 @@ async function texasHoldem(message, args, user) {
       message.channel.send(`<@${i.user.id}>, please open your DMs to receive your cards!`);
     }
 
-    let turn = message.author.id;
     let pot = bet * 2;
+    let stage = 0; // 0: Flop (3 cards), 1: Turn (4 cards), 2: River (5 cards / Showdown)
+
+    const getTableEmbed = () => {
+      let shownCards = "❓ ❓ ❓ ❓ ❓";
+      if (stage === 0) shownCards = `${communityCards[0].glyph} ${communityCards[1].glyph} ${communityCards[2].glyph} 🎴 🎴`;
+      else if (stage === 1) shownCards = `${communityCards[0].glyph} ${communityCards[1].glyph} ${communityCards[2].glyph} ${communityCards[3].glyph} 🎴`;
+      else shownCards = communityCards.map(c => c.glyph).join(" ");
+
+      return embed(`**Community Cards:**\n${shownCards}\n\nPot: **${money(pot)}** ${db.currency}`, COLOR_NEUTRAL, "Texas Hold'em Table");
+    };
 
     const gameRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tx_check").setLabel("Check").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("tx_call").setLabel("Call").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tx_call").setLabel("Check / Next").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("tx_fold").setLabel("Fold").setStyle(ButtonStyle.Danger)
     );
 
     const tableMsg = await message.channel.send({
-      embeds: [embed(`**Community Cards:** ${communityCards.map(c => c.glyph).join(" ")}\n\nPot: **${money(pot)}** ${db.currency}\n\nTurn: <@${turn}>`, COLOR_NEUTRAL, "Texas Hold'em Table")],
+      embeds: [getTableEmbed()],
       components: [gameRow]
     });
 
-    const gameCollector = tableMsg.createMessageComponentCollector({ time: 120000 });
+    const gameCollector = tableMsg.createMessageComponentCollector({ time: 180000 });
 
     gameCollector.on("collect", async gi => {
       if (gi.user.id !== message.author.id && gi.user.id !== i.user.id) {
         return gi.reply({ content: "❌ This is not your game.", ephemeral: true });
-      }
-      if (gi.user.id !== turn) {
-        return gi.reply({ content: "❌ Not your turn.", ephemeral: true });
       }
 
       const action = gi.customId.split("_")[1];
@@ -641,32 +647,38 @@ async function texasHoldem(message, args, user) {
         });
       }
 
-      if (action === "check" || action === "call") {
-        gameCollector.stop();
-        const p1Val = handValue(p1Cards) + communityCards.reduce((s, c) => s + c.number, 0);
-        const p2Val = handValue(p2Cards) + communityCards.reduce((s, c) => s + c.number, 0);
-
-        let winnerId;
-        if (p1Val > p2Val) winnerId = message.author.id;
-        else if (p2Val > p1Val) winnerId = i.user.id;
-        else winnerId = null;
-
-        if (winnerId) {
-          getUser(winnerId).cash += pot;
-          saveData();
-          return gi.update({
-            embeds: [embed(`🃏 **Showdown!**\n\n<@${message.author.id}> Cards: ${p1Cards.map(c => c.glyph).join(" ")}\n<@${i.user.id}> Cards: ${p2Cards.map(c => c.glyph).join(" ")}\n\n🎉 Winner: <@${winnerId}> takes **${money(pot)}** ${db.currency}!`, COLOR_WIN, "Texas Hold'em Showdown")],
-            components: [disabledRow(gameRow)]
-          });
+      if (action === "call") {
+        stage++;
+        if (stage < 3) {
+          return gi.update({ embeds: [getTableEmbed()], components: [gameRow] });
         } else {
-          const half = Math.floor(pot / 2);
-          getUser(message.author.id).cash += half;
-          getUser(i.user.id).cash += half;
-          saveData();
-          return gi.update({
-            embeds: [embed(`🤝 **It's a Tie!** Pot split evenly (**${money(half)}** ${db.currency} each).`, COLOR_INFO, "Texas Hold'em Showdown")],
-            components: [disabledRow(gameRow)]
-          });
+          gameCollector.stop();
+          // חישוב ניקוד סופי לפי חוזק קלפים פשוט
+          const p1Val = handValue(p1Cards) + communityCards.reduce((s, c) => s + c.number, 0);
+          const p2Val = handValue(p2Cards) + communityCards.reduce((s, c) => s + c.number, 0);
+
+          let winnerId;
+          if (p1Val > p2Val) winnerId = message.author.id;
+          else if (p2Val > p1Val) winnerId = i.user.id;
+          else winnerId = null;
+
+          if (winnerId) {
+            getUser(winnerId).cash += pot;
+            saveData();
+            return gi.update({
+              embeds: [embed(`🃏 **Showdown!**\n\n<@${message.author.id}> Hand: ${p1Cards.map(c => c.glyph).join(" ")}\n<@${i.user.id}> Hand: ${p2Cards.map(c => c.glyph).join(" ")}\n\nCommunity: ${communityCards.map(c => c.glyph).join(" ")}\n\n🎉 Winner: <@${winnerId}> takes **${money(pot)}** ${db.currency}!`, COLOR_WIN, "Texas Hold'em Showdown")],
+              components: [disabledRow(gameRow)]
+            });
+          } else {
+            const half = Math.floor(pot / 2);
+            getUser(message.author.id).cash += half;
+            getUser(i.user.id).cash += half;
+            saveData();
+            return gi.update({
+              embeds: [embed(`🤝 **It's a Tie!** Pot split evenly (**${money(half)}** ${db.currency} each).`, COLOR_INFO, "Texas Hold'em Showdown")],
+              components: [disabledRow(gameRow)]
+            });
+          }
         }
       }
     });
@@ -723,7 +735,7 @@ function buildInfoEmbed(){return embed([
   "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**","Red/Black = 2x, Green = 14x, exact number = 30x. 3-second reveal.","",
   "**🎡 Wheel — `$wheel <amount|half|all>`**","0x, 1.2x, 1.5x, 2x, 5x or 10x.","",
   "**🚀 Crash — `$crash <amount|half|all>`**","Cash out before the multiplier crashes.","",
-  "**🃏 Texas Hold'em — `$texas <amount>`**","1v1 poker game with secret DM hands, check, call and fold actions.","",
+  "**🃏 Texas Hold'em — `$texas <amount>`**","1v1 poker game with secret DM hands, community cards progression, and showdown.","",
   "**☀️ Summer — `$summer`**","One free spin every 24 hours: 1.75M / 25M / 65M / 100M JACKPOT.","",
   `_Minimum bet: ${money(MIN_BET)} ${db.currency}. ${amountHelp()}`
 ].join("\n"),COLOR_INFO,"📖 Casino Bot — Rules");}
