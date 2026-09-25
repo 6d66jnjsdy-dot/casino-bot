@@ -11,19 +11,21 @@ const {
 const express = require('express');
 
 // ==========================================
-// 1. Web server for Render
+// 1. Render Web Server
 // ==========================================
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('Casino Bot is Online 24/7!'));
+app.get('/', (req, res) => {
+    res.send('Casino Bot is Online 24/7!');
+});
 
 app.listen(port, () => {
     console.log(`Web server listening on port ${port}`);
 });
 
 // ==========================================
-// 2. Bot + Database
+// 2. Discord Client
 // ==========================================
 const client = new Client({
     intents: [
@@ -34,15 +36,15 @@ const client = new Client({
     ]
 });
 
+// ==========================================
+// 3. Temporary Database
+// ==========================================
 const db = {
     users: {},
     currency: '💸',
     casinoRole: null
 };
 
-// ==========================================
-// User data
-// ==========================================
 function getUserData(userId) {
     if (!db.users[userId]) {
         db.users[userId] = {
@@ -54,9 +56,6 @@ function getUserData(userId) {
     return db.users[userId];
 }
 
-// ==========================================
-// Manager permission
-// ==========================================
 function hasManagerPermission(message) {
     if (!message.member) return false;
 
@@ -79,7 +78,7 @@ function hasManagerPermission(message) {
 }
 
 // ==========================================
-// Blackjack deck
+// Blackjack
 // ==========================================
 function createDeck() {
     const suits = ['♠️', '♥️', '♦️', '♣️'];
@@ -100,7 +99,7 @@ function createDeck() {
         { name: 'A', value: 11 }
     ];
 
-    let deck = [];
+    const deck = [];
 
     for (const suit of suits) {
         for (const val of values) {
@@ -111,7 +110,6 @@ function createDeck() {
         }
     }
 
-    // Shuffle
     for (let i = deck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -122,7 +120,7 @@ function createDeck() {
 
 function calculateHand(hand) {
     let value = hand.reduce(
-        (acc, card) => acc + card.value,
+        (sum, card) => sum + card.value,
         0
     );
 
@@ -139,9 +137,10 @@ function calculateHand(hand) {
 }
 
 // ==========================================
-// 3. Commands
+// Commands
 // ==========================================
 const PREFIX = '$';
+const minBet = 150;
 
 client.on('messageCreate', async (message) => {
     if (
@@ -185,7 +184,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // ==========================================
-    // Casino role
+    // Casino Role
     // ==========================================
     if (command === 'casino') {
         if (
@@ -218,7 +217,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // ==========================================
-    // Add money
+    // Add Money
     // ==========================================
     if (command === 'addmoney') {
         if (!hasManagerPermission(message)) {
@@ -260,7 +259,10 @@ client.on('messageCreate', async (message) => {
     // ==========================================
     // Deposit
     // ==========================================
-    if (command === 'dep' || command === 'deposit') {
+    if (
+        command === 'dep' ||
+        command === 'deposit'
+    ) {
         const user = getUserData(userId);
 
         let amount = args[0];
@@ -302,7 +304,10 @@ client.on('messageCreate', async (message) => {
     // ==========================================
     // Withdraw
     // ==========================================
-    if (command === 'with' || command === 'withdraw') {
+    if (
+        command === 'with' ||
+        command === 'withdraw'
+    ) {
         const user = getUserData(userId);
 
         let amount = args[0];
@@ -373,7 +378,9 @@ client.on('messageCreate', async (message) => {
                 },
                 {
                     name: '📊 Total',
-                    value: `**${(user.cash + user.bank).toLocaleString()}** ${db.currency}`,
+                    value: `**${(
+                        user.cash + user.bank
+                    ).toLocaleString()}** ${db.currency}`,
                     inline: false
                 }
             );
@@ -425,13 +432,13 @@ client.on('messageCreate', async (message) => {
 
             if (!userObj) continue;
 
-            const amt =
+            const amount =
                 sub === 'cash'
                     ? sorted[i].cash
                     : sorted[i].total;
 
             description +=
-                `**#${i + 1}** | ${userObj.username} - ${amt.toLocaleString()} ${db.currency}\n`;
+                `**#${i + 1}** | ${userObj.username} - ${amount.toLocaleString()} ${db.currency}\n`;
         }
 
         const embed = new EmbedBuilder()
@@ -449,11 +456,6 @@ client.on('messageCreate', async (message) => {
     }
 
     // ==========================================
-    // Minimum bet
-    // ==========================================
-    const minBet = 150;
-
-    // ==========================================
     // BLACKJACK
     // ==========================================
     if (
@@ -461,7 +463,6 @@ client.on('messageCreate', async (message) => {
         command === 'blackjack'
     ) {
         const user = getUserData(userId);
-
         const bet = parseInt(args[0]);
 
         if (
@@ -485,10 +486,9 @@ client.on('messageCreate', async (message) => {
 
         const deck = createDeck();
 
-        let playerHand = [];
-        let dealerHand = [];
+        let playerHand;
+        let dealerHand;
 
-        // Original 20% starting Blackjack chance
         if (Math.random() < 0.20) {
             playerHand = [
                 {
@@ -528,21 +528,15 @@ client.on('messageCreate', async (message) => {
             const dVal =
                 calculateHand(dealerHand);
 
-            let dealerString;
-
-            if (finished) {
-                dealerString =
-                    dealerHand
-                        .map(
-                            c =>
-                                `[${c.name}${c.suit}]`
-                        )
-                        .join(', ') +
-                    `\n\nValue: **${dVal}**`;
-            } else {
-                dealerString =
-                    `[${dealerHand[0].name}${dealerHand[0].suit}], [?]\n\nValue: **${dealerHand[0].value}**`;
-            }
+            const dealerString = finished
+                ? dealerHand
+                      .map(
+                          c =>
+                              `[${c.name}${c.suit}]`
+                      )
+                      .join(', ') +
+                  `\n\nValue: **${dVal}**`
+                : `[${dealerHand[0].name}${dealerHand[0].suit}], [?]\n\nValue: **${dealerHand[0].value}**`;
 
             return new EmbedBuilder()
                 .setAuthor({
@@ -550,7 +544,9 @@ client.on('messageCreate', async (message) => {
                     iconURL:
                         message.author.displayAvatarURL()
                 })
-                .setTitle('🃏 Blackjack 🃏')
+                .setTitle(
+                    '🃏 Blackjack 🃏'
+                )
                 .setColor('#f1c40f')
                 .addFields(
                     {
@@ -620,13 +616,19 @@ client.on('messageCreate', async (message) => {
             async i => {
                 await i.deferUpdate();
 
-                if (i.customId === 'double') {
-                    if (user.cash < bet) {
-                        return message.followUp({
-                            content:
-                                "Not enough cash to double!",
-                            ephemeral: true
-                        });
+                if (
+                    i.customId === 'double'
+                ) {
+                    if (
+                        user.cash < bet
+                    ) {
+                        return message.followUp(
+                            {
+                                content:
+                                    "Not enough cash to double!",
+                                ephemeral: true
+                            }
+                        );
                     }
 
                     user.cash -= bet;
@@ -636,12 +638,16 @@ client.on('messageCreate', async (message) => {
                         deck.pop()
                     );
 
-                    collector.stop('double');
+                    collector.stop(
+                        'double'
+                    );
 
                     return;
                 }
 
-                if (i.customId === 'hit') {
+                if (
+                    i.customId === 'hit'
+                ) {
                     playerHand.push(
                         deck.pop()
                     );
@@ -661,6 +667,8 @@ client.on('messageCreate', async (message) => {
                             ]
                         });
                     }
+
+                    return;
                 }
 
                 if (
@@ -675,12 +683,10 @@ client.on('messageCreate', async (message) => {
 
         collector.on(
             'end',
-            async (collected, reason) => {
-                const pVal =
-                    calculateHand(
-                        playerHand
-                    );
-
+            async (
+                collected,
+                reason
+            ) => {
                 if (
                     reason === 'stand' ||
                     reason === 'double'
@@ -695,6 +701,11 @@ client.on('messageCreate', async (message) => {
                         );
                     }
                 }
+
+                const pVal =
+                    calculateHand(
+                        playerHand
+                    );
 
                 const dVal =
                     calculateHand(
@@ -751,7 +762,7 @@ client.on('messageCreate', async (message) => {
                         totalBet;
 
                     outcomeMessage =
-                        `🤝 It's a Tie! Returned **${totalBet.toLocaleString()}** ${db.currency`;
+                        `🤝 It's a Tie! Returned **${totalBet.toLocaleString()}** ${db.currency}`;
                 }
 
                 user.cash += winAmount;
@@ -768,6 +779,8 @@ client.on('messageCreate', async (message) => {
                 });
             }
         );
+
+        return;
     }
 
     // ==========================================
@@ -803,15 +816,12 @@ client.on('messageCreate', async (message) => {
 
         const strength =
             Math.floor(
-                Math.random() *
-                    (82 - 55 + 1)
+                Math.random() * 28
             ) + 55;
 
-        const winChance =
-            strength / 100;
-
         const isWin =
-            Math.random() < winChance;
+            Math.random() <
+            strength / 100;
 
         const embed =
             new EmbedBuilder()
@@ -894,13 +904,17 @@ client.on('messageCreate', async (message) => {
                         message.author.displayAvatarURL()
                 });
 
-        if (choice === result) {
+        if (
+            choice === result
+        ) {
             user.cash += bet * 2;
 
             embed
                 .setColor('#2ecc71')
                 .setDescription(
-                    `🪙 The coin landed on **${result}**! You won **${(bet * 2).toLocaleString()}** ${db.currency}.`
+                    `🪙 The coin landed on **${result}**! You won **${(
+                        bet * 2
+                    ).toLocaleString()}** ${db.currency}.`
                 );
         } else {
             embed
@@ -916,7 +930,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // ==========================================
-    // HIGHER LOWER
+    // HIGHER / LOWER
     // ==========================================
     if (
         command === 'hl' ||
@@ -1000,7 +1014,7 @@ client.on('messageCreate', async (message) => {
         const filter =
             i => i.user.id === userId;
 
-        const i =
+        const interaction =
             await msg
                 .awaitMessageComponent({
                     filter,
@@ -1008,41 +1022,43 @@ client.on('messageCreate', async (message) => {
                 })
                 .catch(() => null);
 
-        if (!i) {
+        if (!interaction) {
+            user.cash += bet;
+
             return msg.edit({
                 content:
-                    'Game timed out!',
+                    'Game timed out! Your bet was returned.',
                 components: []
             });
         }
 
-        await i.deferUpdate();
+        await interaction.deferUpdate();
 
         const num2 =
             Math.floor(
                 Math.random() * 12
             ) + 1;
 
-        const choice =
-            i.customId;
-
         let won = false;
         let payoutMultiplier = 0;
 
         if (
-            choice === 'higher' &&
+            interaction.customId ===
+                'higher' &&
             num2 > num1
         ) {
             won = true;
             payoutMultiplier = 1.5;
         } else if (
-            choice === 'lower' &&
+            interaction.customId ===
+                'lower' &&
             num2 < num1
         ) {
             won = true;
             payoutMultiplier = 1.5;
         } else if (
-            choice === 'same' &&
+            interaction.customId ===
+                'same' &&
             num2 === num1
         ) {
             won = true;
@@ -1133,6 +1149,7 @@ client.on('messageCreate', async (message) => {
         ];
 
         let clicks = 0;
+        let revealedTiles = [];
 
         const getGridRows = (
             revealed = [],
@@ -1141,7 +1158,11 @@ client.on('messageCreate', async (message) => {
             const rows = [];
             let buttons = [];
 
-            for (let i = 0; i < 9; i++) {
+            for (
+                let i = 0;
+                i < 9;
+                i++
+            ) {
                 const btn =
                     new ButtonBuilder()
                         .setCustomId(
@@ -1173,12 +1194,16 @@ client.on('messageCreate', async (message) => {
                         .setStyle(
                             ButtonStyle.Secondary
                         )
-                        .setDisabled(showBombs);
+                        .setDisabled(
+                            showBombs
+                        );
                 }
 
                 buttons.push(btn);
 
-                if (buttons.length === 3) {
+                if (
+                    buttons.length === 3
+                ) {
                     rows.push(
                         new ActionRowBuilder()
                             .addComponents(
@@ -1228,7 +1253,9 @@ client.on('messageCreate', async (message) => {
                             .setStyle(
                                 ButtonStyle.Primary
                             )
-                            .setDisabled(true)
+                            .setDisabled(
+                                true
+                            )
                     );
 
             rows.push(cashoutRow);
@@ -1252,15 +1279,11 @@ client.on('messageCreate', async (message) => {
                     `Find diamonds and avoid the single bomb!\nNext Multiplier: **${multipliers[0]}x**`
                 );
 
-        let revealedTiles = [];
-
         const msg =
             await message.reply({
                 embeds: [embed],
                 components:
-                    getGridRows(
-                        revealedTiles
-                    )
+                    getGridRows()
             });
 
         const filter =
@@ -1316,47 +1339,46 @@ client.on('messageCreate', async (message) => {
                     collector.stop(
                         'bomb'
                     );
-                } else {
-                    revealedTiles.push(
-                        tileIndex
+                    return;
+                }
+
+                revealedTiles.push(
+                    tileIndex
+                );
+
+                clicks++;
+
+                if (clicks === 8) {
+                    collector.stop(
+                        'max_win'
+                    );
+                    return;
+                }
+
+                const nextMult =
+                    multipliers[
+                        clicks
+                    ];
+
+                const currentTotalWin =
+                    Math.floor(
+                        bet *
+                            multipliers[
+                                clicks - 1
+                            ]
                     );
 
-                    clicks++;
+                embed.setDescription(
+                    `💎 Nice! Current total win: **${currentTotalWin.toLocaleString()}** ${db.currency}\nNext Multiplier: **${nextMult}x**`
+                );
 
-                    if (clicks === 8) {
-                        collector.stop(
-                            'max_win'
-                        );
-                    } else {
-                        const nextMult =
-                            multipliers[
-                                clicks
-                            ];
-
-                        const currentTotalWin =
-                            Math.floor(
-                                bet *
-                                    multipliers[
-                                        clicks -
-                                            1
-                                    ]
-                            );
-
-                        embed.setDescription(
-                            `💎 Nice! Current total win: **${currentTotalWin.toLocaleString()}** ${db.currency}\nNext Multiplier: **${nextMult}x**`
-                        );
-
-                        await msg.edit({
-                            embeds: [
-                                embed
-                            ],
-                            components:
-                                getGridRows(
-                                    revealedTiles
-                                )
-                        });
-                    }
-                }
+                await msg.edit({
+                    embeds: [embed],
+                    components:
+                        getGridRows(
+                            revealedTiles
+                        )
+                });
             }
         );
 
@@ -1389,7 +1411,7 @@ client.on('messageCreate', async (message) => {
                             `- You lost **${bet.toLocaleString()}** ${db.currency}\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
                         );
 
-                    await msg.edit({
+                    return msg.edit({
                         embeds: [
                             finalEmbed
                         ],
@@ -1399,8 +1421,6 @@ client.on('messageCreate', async (message) => {
                                 true
                             )
                     });
-
-                    return;
                 }
 
                 if (
@@ -1409,19 +1429,18 @@ client.on('messageCreate', async (message) => {
                     reason ===
                         'max_win'
                 ) {
-                    const usedMultiplier =
+                    const multiplier =
                         multipliers[
                             clicks - 1
                         ];
 
-                    const finalPayout =
+                    const payout =
                         Math.floor(
                             bet *
-                                usedMultiplier
+                                multiplier
                         );
 
-                    user.cash +=
-                        finalPayout;
+                    user.cash += payout;
 
                     finalEmbed
                         .setColor(
@@ -1431,10 +1450,10 @@ client.on('messageCreate', async (message) => {
                             '💰 You cashed out!'
                         )
                         .setDescription(
-                            `+ You won and got **${finalPayout.toLocaleString()}** ${db.currency}\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
+                            `+ You won and got **${payout.toLocaleString()}** ${db.currency}\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
                         );
 
-                    await msg.edit({
+                    return msg.edit({
                         embeds: [
                             finalEmbed
                         ],
@@ -1444,21 +1463,18 @@ client.on('messageCreate', async (message) => {
                                 true
                             )
                     });
-
-                    return;
                 }
 
-                // Timeout = no payout
                 finalEmbed
                     .setColor('#e74c3c')
                     .setTitle(
                         '⏰ Game Timed Out'
                     )
                     .setDescription(
-                        `You didn't finish the game.\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
+                        `The game timed out.\n\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
                     );
 
-                await msg.edit({
+                return msg.edit({
                     embeds: [
                         finalEmbed
                     ],
@@ -1466,6 +1482,8 @@ client.on('messageCreate', async (message) => {
                 });
             }
         );
+
+        return;
     }
 
     // ==========================================
@@ -1510,23 +1528,22 @@ client.on('messageCreate', async (message) => {
 
         const towerData = [];
 
-        for (let f = 0; f < 5; f++) {
-            const bombPos =
+        for (
+            let f = 0;
+            f < 5;
+            f++
+        ) {
+            towerData.push(
                 Math.floor(
                     Math.random() * 3
-                );
-
-            towerData.push(
-                bombPos
+                )
             );
         }
 
         /*
-         * Discord allows only 5 ActionRows.
-         *
-         * To keep all 5 tower floors,
-         * Cashout is placed as a button
-         * in the current floor row.
+         * Discord max = 5 Action Rows.
+         * Therefore the Cashout button is placed
+         * inside the current floor row.
          */
 
         const getTowerRows = (
@@ -1624,9 +1641,7 @@ client.on('messageCreate', async (message) => {
                                     ButtonStyle.Primary
                                 )
                                 .setDisabled(
-                                    failed ||
-                                        chosenTile !==
-                                            null
+                                    failed
                                 );
                         }
                     } else {
@@ -1645,11 +1660,28 @@ client.on('messageCreate', async (message) => {
                     buttons.push(btn);
                 }
 
-                /*
-                 * Keep the original 3 tile buttons.
-                 * Cashout is handled by the command
-                 * $mtcashout <message-id> if needed.
-                 */
+                // Add Cashout to the current floor
+                // while keeping max 5 Action Rows.
+                if (
+                    f === activeFloor &&
+                    activeFloor > 0
+                ) {
+                    buttons[2] =
+                        new ButtonBuilder()
+                            .setCustomId(
+                                'mt_cashout'
+                            )
+                            .setLabel(
+                                'Cashout'
+                            )
+                            .setStyle(
+                                ButtonStyle.Success
+                            )
+                            .setDisabled(
+                                failed
+                            );
+                }
+
                 rows.push(
                     new ActionRowBuilder()
                         .addComponents(
@@ -1700,6 +1732,16 @@ client.on('messageCreate', async (message) => {
             async i => {
                 await i.deferUpdate();
 
+                if (
+                    i.customId ===
+                    'mt_cashout'
+                ) {
+                    collector.stop(
+                        'cashout'
+                    );
+                    return;
+                }
+
                 const parts =
                     i.customId.split(
                         '_'
@@ -1737,32 +1779,32 @@ client.on('messageCreate', async (message) => {
                     collector.stop(
                         'bomb'
                     );
-                } else {
-                    currentFloor++;
-
-                    if (
-                        currentFloor ===
-                        5
-                    ) {
-                        collector.stop(
-                            'max_win'
-                        );
-                    } else {
-                        embed.setDescription(
-                            `You climbed **${currentFloor}** rows!\nNext Multiplier: **${mtMultipliers[currentFloor]}x**`
-                        );
-
-                        await msg.edit({
-                            embeds: [
-                                embed
-                            ],
-                            components:
-                                getTowerRows(
-                                    currentFloor
-                                )
-                        });
-                    }
+                    return;
                 }
+
+                currentFloor++;
+
+                if (
+                    currentFloor ===
+                    5
+                ) {
+                    collector.stop(
+                        'max_win'
+                    );
+                    return;
+                }
+
+                embed.setDescription(
+                    `You climbed **${currentFloor}** rows!\nNext Multiplier: **${mtMultipliers[currentFloor]}x**`
+                );
+
+                await msg.edit({
+                    embeds: [embed],
+                    components:
+                        getTowerRows(
+                            currentFloor
+                        )
+                });
             }
         );
 
@@ -1795,7 +1837,7 @@ client.on('messageCreate', async (message) => {
                             `- You lost **${bet.toLocaleString()}** ${db.currency}\nYou climbed ${currentFloor} rows.`
                         );
 
-                    await msg.edit({
+                    return msg.edit({
                         embeds: [
                             finalEmbed
                         ],
@@ -1808,24 +1850,58 @@ client.on('messageCreate', async (message) => {
                                 true
                             )
                     });
+                }
 
-                    return;
+                if (
+                    reason ===
+                    'cashout'
+                ) {
+                    const multiplier =
+                        mtMultipliers[
+                            currentFloor - 1
+                        ];
+
+                    const payout =
+                        Math.floor(
+                            bet *
+                                multiplier
+                        );
+
+                    user.cash += payout;
+
+                    finalEmbed
+                        .setColor(
+                            '#2ecc71'
+                        )
+                        .setTitle(
+                            '💰 You cashed out!'
+                        )
+                        .setDescription(
+                            `+ You won and got **${payout.toLocaleString()}** ${db.currency}\nYou climbed ${currentFloor} rows successfully!`
+                        );
+
+                    return msg.edit({
+                        embeds: [
+                            finalEmbed
+                        ],
+                        components:
+                            getTowerRows(
+                                currentFloor
+                            )
+                    });
                 }
 
                 if (
                     reason ===
                     'max_win'
                 ) {
-                    const finalPayout =
+                    const payout =
                         Math.floor(
                             bet *
-                                mtMultipliers[
-                                    4
-                                ]
+                                mtMultipliers[4]
                         );
 
-                    user.cash +=
-                        finalPayout;
+                    user.cash += payout;
 
                     finalEmbed
                         .setColor(
@@ -1835,22 +1911,15 @@ client.on('messageCreate', async (message) => {
                             '🏆 Top of the Tower!'
                         )
                         .setDescription(
-                            `+ You won and got **${finalPayout.toLocaleString()}** ${db.currency}\nYou climbed 5 rows successfully!`
+                            `+ You won and got **${payout.toLocaleString()}** ${db.currency}\nYou climbed 5 rows successfully!`
                         );
 
-                    await msg.edit({
+                    return msg.edit({
                         embeds: [
                             finalEmbed
                         ],
-                        components:
-                            getTowerRows(
-                                5,
-                                null,
-                                false
-                            )
+                        components: []
                     });
-
-                    return;
                 }
 
                 finalEmbed
@@ -1862,7 +1931,7 @@ client.on('messageCreate', async (message) => {
                         `The game timed out.\nYou now have **${user.cash.toLocaleString()}** ${db.currency}.`
                     );
 
-                await msg.edit({
+                return msg.edit({
                     embeds: [
                         finalEmbed
                     ],
@@ -1870,12 +1939,12 @@ client.on('messageCreate', async (message) => {
                 });
             }
         );
+
+        return;
     }
 });
 
 // ==========================================
-// Login
+// Bot Login
 // ==========================================
-client.login(
-    process.env.DISCORD_TOKEN
-);
+client.login(process.env.DISCORD_TOKEN);
