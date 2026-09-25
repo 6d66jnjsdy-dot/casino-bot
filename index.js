@@ -70,10 +70,10 @@ function saveData() {
   saveQueued = true;
   setImmediate(() => {
     saveQueued = false;
-    try { 
-      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); 
-    } catch (e) { 
-      console.error("Failed to save data.json:", e); 
+    try {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+    } catch (e) {
+      console.error("Failed to save data.json:", e);
     }
   });
 }
@@ -94,7 +94,7 @@ function randomFloat(min, max) { return Math.random() * (max - min) + min; }
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
-    const j = random(0, i); 
+    const j = random(0, i);
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
@@ -103,9 +103,9 @@ function shuffle(arr) {
 function weightedPick(entries) {
   const total = entries.reduce((s, x) => s + x.weight, 0);
   let r = Math.random() * total;
-  for (const e of entries) { 
-    if (r < e.weight) return e; 
-    r -= e.weight; 
+  for (const e of entries) {
+    if (r < e.weight) return e;
+    r -= e.weight;
   }
   return entries[entries.length - 1];
 }
@@ -146,8 +146,8 @@ function isGameChannel(message) {
 
 function gameRoomCheck(message) {
   if (isGameChannel(message)) return true;
-  message.reply({ 
-    embeds: [embed(`❌ Games are only allowed in the configured casino rooms.\nUse $roomgame to configure them.`, COLOR_LOSE)] 
+  message.reply({
+    embeds: [embed(`❌ Games are only allowed in the configured casino rooms.\nUse $roomgame to configure them.`, COLOR_LOSE)]
   }).catch(() => {});
   return false;
 }
@@ -185,8 +185,8 @@ async function logEvent(guild, text, color = COLOR_INFO) {
     const ch = guild.channels.cache.get(db.logChannelId) || await guild.channels.fetch(db.logChannelId);
     if (!ch || !ch.isTextBased()) return;
     await ch.send({ embeds: [embed(text, color, "🧾 Casino Log")] });
-  } catch (e) { 
-    console.error("Log error:", e.message); 
+  } catch (e) {
+    console.error("Log error:", e.message);
   }
 }
 
@@ -237,24 +237,24 @@ client.on("messageCreate", async message => {
     /* ACCESS / ADMIN CONFIG */
     if (command === "casinorole") {
       if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      if ((args[0] || "").toLowerCase() === "remove") { 
-        db.casinoRoleId = null; 
-        saveData(); 
-        return message.reply({ embeds: [embed("✅ Casino admin role removed.", COLOR_WIN)] }); 
+      if ((args[0] || "").toLowerCase() === "remove") {
+        db.casinoRoleId = null;
+        saveData();
+        return message.reply({ embeds: [embed("✅ Casino admin role removed.", COLOR_WIN)] });
       }
       const role = message.mentions.roles.first();
       if (!role) return message.reply({ embeds: [embed("❌ Usage: `$casinorole @role`", COLOR_LOSE)] });
-      db.casinoRoleId = role.id; 
+      db.casinoRoleId = role.id;
       saveData();
       return message.reply({ embeds: [embed(`✅ Casino admin access is now given to <@&${role.id}>.`, COLOR_WIN)] });
     }
 
     if (command === "roomgame") {
       if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
-      if ((args[0] || "").toLowerCase() === "clear") { 
-        db.gameChannels = []; 
-        saveData(); 
-        return message.reply({ embeds: [embed("✅ Game-room restriction cleared. Games work everywhere again.", COLOR_WIN)] }); 
+      if ((args[0] || "").toLowerCase() === "clear") {
+        db.gameChannels = [];
+        saveData();
+        return message.reply({ embeds: [embed("✅ Game-room restriction cleared. Games work everywhere again.", COLOR_WIN)] });
       }
       const channel = message.mentions.channels.first();
       if (!channel) return message.reply({ embeds: [embed("❌ Usage: `$roomgame #channel` or `$roomgame clear`", COLOR_LOSE)] });
@@ -265,14 +265,14 @@ client.on("messageCreate", async message => {
 
     if (command === "log-channel") {
       if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
-      if ((args[0] || "").toLowerCase() === "off") { 
-        db.logChannelId = null; 
-        saveData(); 
-        return message.reply({ embeds: [embed("✅ Casino logs disabled.", COLOR_WIN)] }); 
+      if ((args[0] || "").toLowerCase() === "off") {
+        db.logChannelId = null;
+        saveData();
+        return message.reply({ embeds: [embed("✅ Casino logs disabled.", COLOR_WIN)] });
       }
       const ch = message.mentions.channels.first();
       if (!ch) return message.reply({ embeds: [embed("❌ Usage: `$log-channel #channel` or `$log-channel off`", COLOR_LOSE)] });
-      db.logChannelId = ch.id; 
+      db.logChannelId = ch.id;
       saveData();
       return message.reply({ embeds: [embed(`✅ All casino activity logs will go to <#${ch.id}>.`, COLOR_WIN)] });
     }
@@ -280,7 +280,7 @@ client.on("messageCreate", async message => {
     if (command === "currency") {
       if (!args[0]) return message.reply({ embeds: [embed(`Current currency: ${db.currency}`, COLOR_INFO)] });
       if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ Casino-admin only.", COLOR_LOSE)] });
-      db.currency = args[0]; 
+      db.currency = args[0];
       saveData();
       return message.reply({ embeds: [embed(`✅ Currency changed to ${args[0]}.`, COLOR_WIN)] });
     }
@@ -313,9 +313,9 @@ client.on("messageCreate", async message => {
       await message.guild.members.fetch();
       const n = Math.floor(amount); let count = 0;
       for (const [, member] of message.guild.members.cache) {
-        if (!member.user.bot && member.roles.cache.has(role.id)) { 
-          getUser(member.id)[location] += n; 
-          count++; 
+        if (!member.user.bot && member.roles.cache.has(role.id)) {
+          getUser(member.id)[location] += n;
+          count++;
         }
       }
       saveData();
@@ -324,9 +324,9 @@ client.on("messageCreate", async message => {
 
     if (command === "reset-economy" || command === "reset-economey") {
       if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
-      for (const id of Object.keys(db.users)) { 
-        db.users[id].cash = 0; 
-        db.users[id].bank = 0; 
+      for (const id of Object.keys(db.users)) {
+        db.users[id].cash = 0;
+        db.users[id].bank = 0;
       }
       saveData();
       await logEvent(message.guild, `⚠️ Economy reset by **${message.author.tag}**. All stored cash and bank balances were set to 0.`, COLOR_LOSE);
@@ -347,11 +347,11 @@ client.on("messageCreate", async message => {
       if (!Number.isFinite(amount) || amount <= 0 || amount > user.cash) {
         return message.reply({ embeds: [embed("❌ Usage: `$deposit <amount|half|all>`", COLOR_LOSE)] });
       }
-      amount = Math.floor(amount); 
-      user.cash -= amount; 
-      user.bank += amount; 
+      amount = Math.floor(amount);
+      user.cash -= amount;
+      user.bank += amount;
       saveData();
-      return message.reply({ content: `Successfully deposited ${money(amount)} ${db.currency} to your bank account.` });
+      return message.reply({ embeds: [embed(`✅ Deposited **${money(amount)}** ${db.currency} into your bank.`, COLOR_WIN, "🏦 Deposit")] });
     }
 
     if (["withdraw","with","wd"].includes(command)) {
@@ -360,11 +360,11 @@ client.on("messageCreate", async message => {
       if (!Number.isFinite(amount) || amount <= 0 || amount > user.bank) {
         return message.reply({ embeds: [embed("❌ Usage: `$withdraw <amount|half|all>`", COLOR_LOSE)] });
       }
-      amount = Math.floor(amount); 
-      user.bank -= amount; 
-      user.cash += amount; 
+      amount = Math.floor(amount);
+      user.bank -= amount;
+      user.cash += amount;
       saveData();
-      return message.reply({ content: `Successfully withdrew ${money(amount)} ${db.currency} from your bank account.` });
+      return message.reply({ embeds: [embed(`✅ Withdrew **${money(amount)}** ${db.currency} from your bank.`, COLOR_WIN, "🏦 Withdraw")] });
     }
 
     if (command === "pay") {
@@ -374,9 +374,9 @@ client.on("messageCreate", async message => {
       if (!target || target.id === message.author.id || !Number.isFinite(amount) || amount <= 0 || amount > user.cash) {
         return message.reply({ embeds: [embed("❌ Usage: `$pay @user <amount|half|all>`", COLOR_LOSE)] });
       }
-      amount = Math.floor(amount); 
-      user.cash -= amount; 
-      getUser(target.id).cash += amount; 
+      amount = Math.floor(amount);
+      user.cash -= amount;
+      getUser(target.id).cash += amount;
       saveData();
       return message.reply({ embeds: [embed(`✅ Sent **${money(amount)}** ${db.currency} to <@${target.id}>.`, COLOR_WIN)] });
     }
@@ -395,50 +395,50 @@ client.on("messageCreate", async message => {
 
     /* ECONOMY */
     if (command === "work") {
-      const left = onCooldown(user, "work", 4 * 60 * 1000); 
+      const left = onCooldown(user, "work", 4 * 60 * 1000);
       if (left) return message.reply({ embeds: [embed(`⏳ Work again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
-      const n = random(4000, 12000); 
-      user.cash += n; 
-      user.cooldowns.work = Date.now(); 
+      const n = random(4000, 12000);
+      user.cash += n;
+      user.cooldowns.work = Date.now();
       saveData();
       return message.reply({ embeds: [embed(`💼 You earned **${money(n)}** ${db.currency}!`, COLOR_WIN)] });
     }
 
     if (command === "crime") {
-      const left = onCooldown(user, "crime", 4 * 60 * 1000); 
+      const left = onCooldown(user, "crime", 4 * 60 * 1000);
       if (left) return message.reply({ embeds: [embed(`⏳ Crime again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
-      user.cooldowns.crime = Date.now(); 
+      user.cooldowns.crime = Date.now();
       const win = Math.random() < 0.75;
       if (win) {
-        const n = random(6000, 15000); 
-        user.cash += n; 
-        saveData(); 
+        const n = random(6000, 15000);
+        user.cash += n;
+        saveData();
         return message.reply({ embeds: [embed(`🚨 Crime succeeded: **${money(n)}** ${db.currency}!`, COLOR_WIN)] });
       }
-      const fine = random(1000, 3000); 
-      user.cash = Math.max(0, user.cash - fine); 
-      saveData(); 
+      const fine = random(1000, 3000);
+      user.cash = Math.max(0, user.cash - fine);
+      saveData();
       return message.reply({ embeds: [embed(`🚔 Caught. Fine: **${money(fine)}** ${db.currency}.`, COLOR_LOSE)] });
     }
 
     if (command === "rob") {
-      const left = onCooldown(user, "rob", 8 * 60 * 1000); 
+      const left = onCooldown(user, "rob", 8 * 60 * 1000);
       if (left) return message.reply({ embeds: [embed(`⏳ Rob again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
-      const target = message.mentions.users.first(); 
+      const target = message.mentions.users.first();
       if (!target || target.id === message.author.id) return message.reply({ embeds: [embed("❌ Usage: `$rob @user`", COLOR_LOSE)] });
-      const t = getUser(target.id); 
+      const t = getUser(target.id);
       if (t.cash < 500) return message.reply({ embeds: [embed("❌ Target needs at least 500 cash.", COLOR_LOSE)] });
-      user.cooldowns.rob = Date.now(); 
+      user.cooldowns.rob = Date.now();
       if (Math.random() < 0.45) {
-        const n = Math.max(1, Math.floor(t.cash * randomFloat(0.1, 0.3))); 
-        t.cash -= n; 
-        user.cash += n; 
-        saveData(); 
+        const n = Math.max(1, Math.floor(t.cash * randomFloat(0.1, 0.3)));
+        t.cash -= n;
+        user.cash += n;
+        saveData();
         return message.reply({ embeds: [embed(`🕵️ Stole **${money(n)}** ${db.currency} from <@${target.id}>.`, COLOR_WIN)] });
       }
-      const fine = random(500, 1500); 
-      user.cash = Math.max(0, user.cash - fine); 
-      saveData(); 
+      const fine = random(500, 1500);
+      user.cash = Math.max(0, user.cash - fine);
+      saveData();
       return message.reply({ embeds: [embed(`🚔 Rob failed. Fine: **${money(fine)}** ${db.currency}.`, COLOR_LOSE)] });
     }
 
@@ -688,6 +688,8 @@ async function higherLower(message, args, user) {
 }
 
 /* =========================== COCKFIGHT ======================== */
+/* FIX: was replying with plain `content` text (no embed/frame). Now uses the
+   same styled embed frame as every other game, with COLOR_WIN / COLOR_LOSE. */
 async function cockfight(message, args, user) {
   const bet = validBet(message, args);
   if (bet === null) return;
@@ -695,23 +697,26 @@ async function cockfight(message, args, user) {
 
   const chance = user.cfStreak || 55;
   const win = Math.random() * 100 < chance;
-  let text = "";
 
   if (win) {
     const payout = bet * 2;
     user.cash += payout;
     user.cfStreak = Math.min(82, chance + 1);
     saveData();
-    text = `Your chicken won the fight, you won ${money(payout)} 💸🐔!\n\nYour chicken's strength (chance of winning): ${chance}%\nYou now have ${money(user.cash)} 💸`;
-  } else {
-    user.cfStreak = 55;
-    saveData();
-    text = `Your chicken lost the fight... You lost ${money(bet)} 💸🐔.`;
+    return message.reply({ embeds: [embed(`🐔 Your chicken won the fight!\n\nPayout: **${money(payout)}** ${db.currency}\nChicken strength: **${chance}%** (now **${user.cfStreak}%**)\nNew balance: **${money(user.cash)}** ${db.currency}`, COLOR_WIN, "🐔 Cockfight 🐔")] });
   }
-  return message.reply({ content: text });
+
+  user.cfStreak = 55;
+  saveData();
+  return message.reply({ embeds: [embed(`🐔 Your chicken lost the fight...\n\nLost: **${money(bet)}** ${db.currency}\nChicken strength reset to **55%**.`, COLOR_LOSE, "🐔 Cockfight 🐔")] });
 }
 
 /* ============================= MINES ========================== */
+/* FIXES:
+   1. Empty-string button label ("") on unrevealed tiles crashed the game —
+      discord.js requires a label at least 1 character long. Now uses "⬛".
+   2. Result messages were plain `content` text with no frame — now use
+      the same styled embed frame as the rest of the games. */
 const MINES_MULTIPLIERS = [1.1, 1.4, 1.8, 2.1, 2.8, 4.2, 6.2, 8.9];
 
 async function mines(message, args, user) {
@@ -736,7 +741,7 @@ async function mines(message, args, user) {
         const i = r * 4 + c, isBomb = i === bomb, isRev = revealed.has(i);
         bs.push(new ButtonBuilder()
           .setCustomId(`mn:${message.author.id}:${i}`)
-          .setLabel(end ? (isBomb ? "💣" : "💎") : (isRev ? "💎" : ""))
+          .setLabel(end ? (isBomb ? "💣" : "💎") : (isRev ? "💎" : "⬛"))
           .setStyle(end && isBomb ? ButtonStyle.Danger : isRev ? ButtonStyle.Success : ButtonStyle.Secondary)
           .setDisabled(isRev || end));
       }
@@ -749,7 +754,11 @@ async function mines(message, args, user) {
     return out;
   }
 
-  const msg = await message.reply({ content: `**${message.author.username}'s Game**`, components: rows() });
+  function minesEmbed(text, color = COLOR_NEUTRAL) {
+    return embed(`${text}\n\nBet: **${money(bet)}** ${db.currency}${revealed.size ? `\nCurrent multiplier: **${mult().toFixed(2)}x**` : ""}`, color, "💣 Mines 💣");
+  }
+
+  const msg = await message.reply({ embeds: [minesEmbed("Pick tiles to reveal gems. Avoid the bomb!")], components: rows() });
   const c = msg.createMessageComponentCollector({ time: 120000 });
 
   c.on("collect", async i => {
@@ -764,7 +773,7 @@ async function mines(message, args, user) {
       const p = Math.floor(bet * mult());
       user.cash += p;
       saveData();
-      return i.update({ content: `Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`, components: rows(true) });
+      return i.update({ embeds: [minesEmbed(`🎉 You cashed out and won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
     }
 
     const idx = Number(a);
@@ -772,7 +781,7 @@ async function mines(message, args, user) {
       finished = true;
       c.stop();
       saveData();
-      return i.update({ content: `You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`, components: rows(true) });
+      return i.update({ embeds: [minesEmbed(`💥 You hit a bomb! Lost **${money(bet)}** ${db.currency}.\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_LOSE)], components: rows(true) });
     }
 
     revealed.add(idx);
@@ -782,9 +791,9 @@ async function mines(message, args, user) {
       const p = Math.floor(bet * 8.9);
       user.cash += p;
       saveData();
-      return i.update({ content: `Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`, components: rows(true) });
+      return i.update({ embeds: [minesEmbed(`🎉 Board cleared! You won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
     }
-    return i.update({ components: rows() });
+    return i.update({ embeds: [minesEmbed("Pick another tile or cash out.")], components: rows() });
   });
 
   c.on("end", async () => {
@@ -792,11 +801,21 @@ async function mines(message, args, user) {
     finished = true;
     user.cash += bet;
     saveData();
-    await msg.edit({ content: `⏰ Timed out. Returned ${money(bet)} 💸.`, components: rows(true) }).catch(() => {});
+    await msg.edit({ embeds: [minesEmbed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`)], components: rows(true) }).catch(() => {});
   });
 }
 
 /* ============================ GOLDMINE ======================== */
+/* FIXES:
+   1. Empty-string button label ("") on unrevealed tiles crashed the game —
+      now uses "⬛".
+   2. The board sent 6 ActionRows (5 board rows + 1 cashout/profit row),
+      but Discord allows a maximum of 5 rows per message, so it always
+      crashed. The separate "Profit" button is removed (profit is now shown
+      in the embed text instead) and the Cashout button is merged into the
+      last board row, bringing the total to exactly 5 rows / 25 buttons.
+   3. Result messages were plain `content` text — now use the styled embed
+      frame like the rest of the games. */
 const GOLDMINE_TREASURE_COUNTS = [
   { key: "rock", emoji: "🪨", mult: 1.2, count: 4 },
   { key: "coin", emoji: "🪙", mult: 2.5, count: 3 },
@@ -833,7 +852,7 @@ async function goldmine(message, args, user) {
       if (t.type === "map") return "🗺️";
       return t.emoji;
     }
-    if (!revealed.has(i)) return "";
+    if (!revealed.has(i)) return "⬛";
     if (t.type === "map") return "🗺️";
     return t.emoji;
   }
@@ -842,9 +861,9 @@ async function goldmine(message, args, user) {
     const rs = [];
     for (let r = 0; r < 5; r++) {
       const bs = [];
-      for (let c = 0; c < (r === 4 ? 4 : 5); c++) {
+      const cols = r === 4 ? 4 : 5;
+      for (let c = 0; c < cols; c++) {
         const i = r * 5 + c;
-        if (i >= 24) continue;
         bs.push(new ButtonBuilder()
           .setCustomId(`gm:${message.author.id}:${i}`)
           .setLabel(label(i, end))
@@ -852,19 +871,23 @@ async function goldmine(message, args, user) {
           .setDisabled(revealed.has(i) || end));
       }
       if (r === 4) {
-        rs.push(new ActionRowBuilder().addComponents(bs));
-        rs.push(new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`gm:${message.author.id}:cash`).setLabel("Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size || end),
-          new ButtonBuilder().setCustomId(`gm:${message.author.id}:profit`).setLabel(`Profit: ${money(revealed.size ? Math.floor(bet * mult) - bet : 0)} 💸`).setStyle(ButtonStyle.Primary).setDisabled(true)
-        ));
-      } else {
-        rs.push(new ActionRowBuilder().addComponents(bs));
+        bs.push(new ButtonBuilder()
+          .setCustomId(`gm:${message.author.id}:cash`)
+          .setLabel("💰 Cashout")
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(!revealed.size || end));
       }
+      rs.push(new ActionRowBuilder().addComponents(bs));
     }
     return rs;
   }
 
-  const msg = await message.reply({ content: `**${message.author.username}'s Game**`, components: rows() });
+  function goldmineEmbed(text, color = COLOR_NEUTRAL) {
+    const profit = revealed.size ? Math.floor(bet * mult) - bet : 0;
+    return embed(`${text}\n\nBet: **${money(bet)}** ${db.currency}${revealed.size ? `\nCurrent multiplier: **${mult.toFixed(2)}x**\nProfit if cashed out now: **${money(profit)}** ${db.currency}` : ""}`, color, "⛏️ Goldmine ⛏️");
+  }
+
+  const msg = await message.reply({ embeds: [goldmineEmbed("Pick tiles to find treasure. Avoid bombs! 12 of 24 tiles are bombs.")], components: rows() });
   const c = msg.createMessageComponentCollector({ time: 150000 });
 
   c.on("collect", async i => {
@@ -878,7 +901,7 @@ async function goldmine(message, args, user) {
       const p = Math.floor(bet * mult);
       user.cash += p;
       saveData();
-      return i.update({ content: `Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`, components: rows(true) });
+      return i.update({ embeds: [goldmineEmbed(`🎉 You cashed out and won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
     }
 
     const idx = Number(a), t = board[idx];
@@ -886,7 +909,7 @@ async function goldmine(message, args, user) {
       finished = true;
       c.stop();
       saveData();
-      return i.update({ content: `You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`, components: rows(true) });
+      return i.update({ embeds: [goldmineEmbed(`💥 You hit a bomb! Lost **${money(bet)}** ${db.currency}.\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_LOSE)], components: rows(true) });
     }
 
     if (t.type === "map") {
@@ -907,9 +930,9 @@ async function goldmine(message, args, user) {
       const p = Math.floor(bet * mult);
       user.cash += p;
       saveData();
-      return i.update({ content: `Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`, components: rows(true) });
+      return i.update({ embeds: [goldmineEmbed(`🎉 All safe tiles found! You won **${money(p)}** ${db.currency}!\n\nYou now have **${money(user.cash)}** ${db.currency}.`, COLOR_WIN)], components: rows(true) });
     }
-    return i.update({ components: rows() });
+    return i.update({ embeds: [goldmineEmbed("Pick another tile or cash out.")], components: rows() });
   });
 
   c.on("end", async () => {
@@ -917,7 +940,7 @@ async function goldmine(message, args, user) {
     finished = true;
     user.cash += bet;
     saveData();
-    await msg.edit({ content: `⏰ Timed out. Returned ${money(bet)} 💸.`, components: rows(true) }).catch(() => {});
+    await msg.edit({ embeds: [goldmineEmbed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`)], components: rows(true) }).catch(() => {});
   });
 }
 
