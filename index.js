@@ -1,5 +1,5 @@
 /* ============================================================
-   CASINO BOT — FULL BUILD (UPDATED)
+   CASINO BOT — FULL BUILD (UPDATED & FIXED)
    discord.js v14
    ============================================================ */
 
@@ -284,14 +284,14 @@ client.on("messageCreate", async message => {
       let amount = raw === "all" ? user.cash : raw === "half" ? Math.floor(user.cash / 2) : Number(raw);
       if (!Number.isFinite(amount) || amount <= 0 || amount > user.cash) return message.reply({ embeds: [embed("❌ Usage: `$deposit <amount|half|all>`", COLOR_LOSE)] });
       amount = Math.floor(amount); user.cash -= amount; user.bank += amount; saveData();
-      return message.reply({ embeds: [embed(`🏦 Deposited **${money(amount)}** ${db.currency}.`, COLOR_WIN)] });
+      return message.reply({ content: `Successfully deposited ${money(amount)} ${db.currency} to your bank account.` });
     }
     if (["withdraw","with","wd"].includes(command)) {
       const raw = (args[0] || "").toLowerCase();
       let amount = raw === "all" ? user.bank : raw === "half" ? Math.floor(user.bank / 2) : Number(raw);
       if (!Number.isFinite(amount) || amount <= 0 || amount > user.bank) return message.reply({ embeds: [embed("❌ Usage: `$withdraw <amount|half|all>`", COLOR_LOSE)] });
       amount = Math.floor(amount); user.bank -= amount; user.cash += amount; saveData();
-      return message.reply({ embeds: [embed(`💵 Withdrew **${money(amount)}** ${db.currency}.`, COLOR_WIN)] });
+      return message.reply({ content: `Successfully withdrew ${money(amount)} ${db.currency} from your bank account.` });
     }
     if (command === "pay") {
       const target = message.mentions.users.first();
@@ -365,7 +365,7 @@ function rankIndex(v){return CARD_VALUES.findIndex(x=>x[0]===v)}
 function makeCard(v,n){const s=SUITS[random(0,3)];return{value:v,number:n,glyph:CARD_GLYPHS[s][rankIndex(v)]}}
 function drawStandardCard(){const x=CARD_VALUES[random(0,CARD_VALUES.length-1)];return makeCard(x[0],x[1])}
 function handValue(hand){let t=hand.reduce((s,c)=>s+c.number,0),a=hand.filter(c=>c.value==="A").length;while(t>21&&a-- >0)t-=10;return t}
-function handText(hand){return hand.map(c=>c.glyph).join(" ")}
+function handText(hand){return hand.map(c=>c.value).join(", ")}
 function dealPlayerHand(){
   if(Math.random()<.234){const ten=TEN_VALUE_CARDS[random(0,3)], tc=CARD_VALUES.find(x=>x[0]===ten);return shuffle([makeCard("A",11),makeCard(tc[0],tc[1])]);}
   return[drawStandardCard(),drawStandardCard()];
@@ -375,19 +375,18 @@ async function blackjack(message,args,user){
   const player=dealPlayerHand(),dealer=[drawStandardCard(),drawStandardCard()];let totalBet=bet,finished=false;
   const natural=handValue(player)===21;
   const row=new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`bj:hit:${message.author.id}`).setLabel("HIT").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`bj:stand:${message.author.id}`).setLabel("STAND").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`bj:double:${message.author.id}`).setLabel("DOUBLE").setStyle(ButtonStyle.Secondary).setDisabled(user.cash<bet)
+    new ButtonBuilder().setCustomId(`bj:hit:${message.author.id}`).setLabel("Hit").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`bj:stand:${message.author.id}`).setLabel("Stand").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`bj:double:${message.author.id}`).setLabel("Double").setStyle(ButtonStyle.Danger).setDisabled(user.cash<bet),
+    new ButtonBuilder().setCustomId(`bj:split:${message.author.id}`).setLabel("Split").setStyle(ButtonStyle.Secondary).setDisabled(true)
   );
   function gameEmbed(show=false){
-    return new EmbedBuilder().setColor(COLOR_NEUTRAL).setTitle("🃏  B L A C K J A C K  🃏")
-      .setDescription(`**YOUR HAND**\n${handText(player)}\n**Total: ${handValue(player)}**\n\n**DEALER**\n${show?handText(dealer):handText([dealer[0]])+" 🂠"}\n${show?`**Total: ${handValue(dealer)}**`:"**Total: ?**"}\n\n━━━━━━━━━━━━━━━━━━━━\n💰 **Bet:** ${money(totalBet)} ${db.currency}\n🎯 **Natural chance:** 23.4%`)
-      .setFooter({text:"Choose an action below • 120 second timer"});
+    return embed(`🃏 **Blackjack** 🃏\n\n**Your Hand**\n${handText(player)}\n\n**Value: ${handValue(player)}**\n**Dealer**\n${show?handText(dealer):dealer[0].value + ", 🟥"}\n\n**Value: ${show?handValue(dealer):dealer[0].number}**`, COLOR_NEUTRAL);
   }
   if(natural){const payout=Math.floor(totalBet*2.5);user.cash+=payout;saveData();return message.reply({embeds:[embed(`🃏 **BLACKJACK!**\n\nYour hand: ${handText(player)} — **21**\nDealer: ${handText(dealer)} — **${handValue(dealer)}**\n\nPayout: **${money(payout)}** ${db.currency}`,COLOR_WIN,"🃏 Blackjack 🃏")]});}
-  const gm=await message.reply({embeds:[gameEmbed()],components:[row]});
+  const gm=await message.reply({content: `<@${message.author.id}>'s Game`, embeds:[gameEmbed()],components:[row]});
   const collector=gm.createMessageComponentCollector({time:120000});
-  async function finish(result,payout,color){if(finished)return;finished=true;collector.stop();if(payout>0)user.cash+=payout;saveData();await gm.edit({embeds:[embed(`**YOUR HAND**\n${handText(player)} — **${handValue(player)}**\n\n**DEALER**\n${handText(dealer)} — **${handValue(dealer)}**\n\n${result}${payout?`\nPayout: **${money(payout)}**${db.currency}`:""}`,color,"🃏 Blackjack 🃏")],components:[disabledRow(row)]});}
+  async function finish(result,payout,color){if(finished)return;finished=true;collector.stop();if(payout>0)user.cash+=payout;saveData();await gm.edit({embeds:[embed(`**Your Hand**\n${handText(player)} — **${handValue(player)}**\n\n**Dealer**\n${handText(dealer)} — **${handValue(dealer)}**\n\n${result}${payout?`\nPayout: **${money(payout)}**${db.currency}`:""}`,color,"🃏 Blackjack 🃏")],components:[disabledRow(row)]});}
   collector.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});const a=i.customId.split(":")[1];
     if(a==="double"){if(user.cash<bet)return i.reply({content:"❌ Not enough cash.",ephemeral:true});user.cash-=bet;totalBet+=bet;player.push(drawStandardCard());await i.deferUpdate();if(handValue(player)>21)return finish("💥 Bust!",0,COLOR_LOSE);while(handValue(dealer)<17)dealer.push(drawStandardCard());const p=handValue(player),d=handValue(dealer);if(d>21||p>d)return finish("🎉 You win!",totalBet*2,COLOR_WIN);if(p===d)return finish("🤝 Push!",totalBet,COLOR_INFO);return finish("❌ Dealer wins.",0,COLOR_LOSE);}
     if(a==="hit"){player.push(drawStandardCard());if(handValue(player)>21){await i.deferUpdate();return finish("💥 Bust!",0,COLOR_LOSE)}return i.update({embeds:[gameEmbed()],components:[row]});}
@@ -408,9 +407,13 @@ async function coinflip(message,args,user){
 function hlMultipliers(current){const higher=100-current,lower=current-1;return{higher:Math.round(Math.min(15,Math.max(1.01,(100/higher)*1.02))*100)/100,lower:Math.round(Math.min(15,Math.max(1.01,(100/lower)*1.02))*100)/100,same:8};}
 async function higherLower(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const current=random(2,99),mult=hlMultipliers(current);
-  const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`hl:hi:${message.author.id}`).setLabel("Higher").setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId(`hl:eq:${message.author.id}`).setLabel("Same").setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId(`hl:lo:${message.author.id}`).setLabel("Lower").setStyle(ButtonStyle.Primary));
-  const msg=await message.reply({embeds:[embed(`**Betting Amount:** ${money(bet)}\n\n**1:** ${current}\n**2:** ❓\n\nHigher: **${mult.higher}x**\nSame: **${mult.same}x**\nLower: **${mult.lower}x**`,COLOR_NEUTRAL,"🎲 Higher or Lower 🎲")],components:[row]});
-  const c=msg.createMessageComponentCollector({time:60000,max:1});c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});const next=random(1,100),choice=i.customId.split(":")[1],win=(choice==="hi"&&next>current)||(choice==="lo"&&next<current)||(choice==="eq"&&next===current),m=choice==="hi"?mult.higher:choice==="lo"?mult.lower:mult.same,payout=win?Math.floor(bet*m):0;if(payout)user.cash+=payout;saveData();await i.update({embeds:[embed(`**1:** ${current}\n**2:** ${next}\n\n${win?`🎉 Won **${money(payout)}**${db.currency}!`:`❌ Lost **${money(bet)}**${db.currency}.`}`,win?COLOR_WIN:COLOR_LOSE,"🎲 Higher or Lower 🎲")],components:[disabledRow(row)]});});c.on("end",async col=>{if(col.size)return;user.cash+=bet;saveData();await msg.edit({embeds:[embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_NEUTRAL,"🎲 Higher or Lower 🎲")],components:[disabledRow(row)]}).catch(()=>{})});
+  const row=new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`hl:hi:${message.author.id}`).setLabel("Higher").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`hl:eq:${message.author.id}`).setLabel("Same").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`hl:lo:${message.author.id}`).setLabel("Lower").setStyle(ButtonStyle.Primary)
+  );
+  const msg=await message.reply({embeds:[embed(`🎲 Higher or Lower 🎲\n\nBetting Amount: ${money(bet)}\n1 : ${current}\n2 : ❓\n\nHigher: **${mult.higher}x**\nSame: **${mult.same}x**\nLower: **${mult.lower}x**`,COLOR_NEUTRAL)],components:[row]});
+  const c=msg.createMessageComponentCollector({time:60000,max:1});c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});const next=random(1,100),choice=i.customId.split(":")[1],win=(choice==="hi"&&next>current)||(choice==="lo"&&next<current)||(choice==="eq"&&next===current),m=choice==="hi"?mult.higher:choice==="lo"?mult.lower:mult.same,payout=win?Math.floor(bet*m):0;if(payout)user.cash+=payout;saveData();await i.update({embeds:[embed(`1 : ${current}\n2 : ${next}\n\n${win?`🎉 Won **${money(payout)}**${db.currency}!`:`❌ Lost **${money(bet)}**${db.currency}.`}`,win?COLOR_WIN:COLOR_LOSE,"🎲 Higher or Lower 🎲")],components:[disabledRow(row)]});});c.on("end",async col=>{if(col.size)return;user.cash+=bet;saveData();await msg.edit({embeds:[embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_NEUTRAL,"🎲 Higher or Lower 🎲")],components:[disabledRow(row)]}).catch(()=>{})});
 }
 
 /* =========================== COCKFIGHT ======================== */
@@ -423,11 +426,11 @@ async function cockfight(message,args,user){
     user.cash+=payout;
     user.cfStreak=Math.min(82,chance+1);
     saveData();
-    text = `Your chicken won the fight, you won ${money(payout)} 💸🐔!\n\nYour chicken's strength (chance of winning): ${chance}%\nYou now have ${money(user.cash)} 💸`;
+    text = `Your chicken won the fight, you won ${money(payout)} 💸🐔!\n\nYour chicken's strength (chance of winning): ${chance}%\nYou now have ${money(user.cash)} 💸`;[span_5](start_span)[span_5](end_span)
   } else {
     user.cfStreak=55;
     saveData();
-    text = `Your chicken lost the fight... You lost ${money(bet)} 💸🐔.`;
+    text = `Your chicken lost the fight... You lost ${money(bet)} 💸🐔.`;[span_6](start_span)[span_6](end_span)
   }
   return message.reply({content: text});
 }
@@ -435,17 +438,17 @@ async function cockfight(message,args,user){
 /* ============================= MINES ========================== */
 const MINES_MULTIPLIERS=[1.1,1.4,1.8,2.1,2.8,4.2,6.2,8.9];
 async function mines(message,args,user){
-  const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const bomb=random(0,8),revealed=new Set();let finished=false;
-  function mult(){return MINES_MULTIPLIERS[Math.max(0,revealed.size-1)]||8.9}
+  const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const bomb=random(0,15),revealed=new Set();let finished=false;
+  function mult(){return MINES_MULTIPLIERS[Math.min(revealed.size-1, MINES_MULTIPLIERS.length-1)]||1.1}
   function rows(end=false){
     const out=[];
-    for(let r=0;r<3;r++){
+    for(let r=0;r<4;r++){
       const bs=[];
-      for(let c=0;c<3;c++){
-        const i=r*3+c,isBomb=i===bomb,isRev=revealed.has(i);
+      for(let c=0;c<4;c++){
+        const i=r*4+c,isBomb=i===bomb,isRev=revealed.has(i);
         bs.push(new ButtonBuilder()
           .setCustomId(`mn:${message.author.id}:${i}`)
-          .setLabel(end?(isBomb?"💣":"💎"):(isRev?"💎":"⬛"))
+          .setLabel(end?(isBomb?"💣":"💎"):(isRev?"💎":""))
           .setStyle(end&&isBomb?ButtonStyle.Danger:isRev?ButtonStyle.Success:ButtonStyle.Secondary)
           .setDisabled(isRev||end));
       }
@@ -460,9 +463,9 @@ async function mines(message,args,user){
   const msg=await message.reply({content: `**${message.author.username}'s Game**`, components:rows()});
   const c=msg.createMessageComponentCollector({time:120000});
   c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});if(finished)return;const a=i.customId.split(":")[2];
-    if(a==="cash"){if(!revealed.size)return i.reply({content:"❌ Reveal a tile first.",ephemeral:true});finished=true;c.stop();const p=Math.floor(bet*mult());user.cash+=p;saveData();return i.update({content:`- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
-    const idx=Number(a);if(idx===bomb){finished=true;c.stop();saveData();return i.update({content:`- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
-    revealed.add(idx);if(revealed.size===8){finished=true;c.stop();const p=Math.floor(bet*MINES_MULTIPLIERS[7]);user.cash+=p;saveData();return i.update({content:`- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}return i.update({components:rows()});
+    if(a==="cash"){if(!revealed.size)return i.reply({content:"❌ Reveal a tile first.",ephemeral:true});finished=true;c.stop();const p=Math.floor(bet*mult());user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
+    const idx=Number(a);if(idx===bomb){finished=true;c.stop();saveData();return i.update({content:`You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}[span_7](start_span)[span_7](end_span)[span_8](start_span)[span_8](end_span)
+    revealed.add(idx);if(revealed.size===15){finished=true;c.stop();const p=Math.floor(bet*8.9);user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}return i.update({components:rows()});
   });
   c.on("end",async()=>{if(finished)return;finished=true;user.cash+=bet;saveData();await msg.edit({content:`⏰ Timed out. Returned ${money(bet)} 💸.`,components:rows(true)}).catch(()=>{})});
 }
@@ -472,7 +475,7 @@ const GOLDMINE_TREASURE_COUNTS=[{key:"rock",emoji:"🪨",mult:1.2,count:4},{key:
 function buildGoldmineBoard(){const ids=shuffle([...Array(24).keys()]),b=new Array(24);let c=0;for(const i of ids.slice(c,c+12)){b[i]={type:"bomb"};c++;}for(const d of GOLDMINE_TREASURE_COUNTS){for(const i of ids.slice(c,c+d.count)){b[i]={type:"treasure",...d};c++;}}b[ids[c]]={type:"map"};return b}
 async function goldmine(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const board=buildGoldmineBoard(),revealed=new Set();let mult=1,finished=false;
-  function label(i,end){const t=board[i];if(end){if(t.type==="bomb")return"💣";if(t.type==="map")return"🗺️";return t.emoji}if(!revealed.has(i))return"⬛";if(t.type==="map")return"🗺️";return t.emoji}
+  function label(i,end){const t=board[i];if(end){if(t.type==="bomb")return"💣";if(t.type==="map")return"🗺️";return t.emoji}if(!revealed.has(i))return"";if(t.type==="map")return"🗺️";return t.emoji}
   function rows(end=false){
     const rs=[];
     for(let r=0;r<5;r++){
@@ -500,10 +503,10 @@ async function goldmine(message,args,user){
   const msg=await message.reply({content: `**${message.author.username}'s Game**`, components:rows()});
   const c=msg.createMessageComponentCollector({time:150000});
   c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});if(finished)return;const a=i.customId.split(":")[2];
-    if(a==="cash"){finished=true;c.stop();const p=Math.floor(bet*mult);user.cash+=p;saveData();return i.update({content:`- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
-    const idx=Number(a),t=board[idx];if(t.type==="bomb"){finished=true;c.stop();saveData();return i.update({content:`- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
+    if(a==="cash"){finished=true;c.stop();const p=Math.floor(bet*mult);user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}
+    const idx=Number(a),t=board[idx];if(t.type==="bomb"){finished=true;c.stop();saveData();return i.update({content:`You hit a bomb!\n\n- You Lost ${money(bet)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}[span_9](start_span)[span_9](end_span)[span_10](start_span)[span_10](end_span)
     if(t.type==="map"){revealed.add(idx);const pool=shuffle([...Array(24).keys()].filter(x=>!revealed.has(x)&&board[x].type!=="bomb")).slice(0,3);for(const x of pool){revealed.add(x);if(board[x].type==="treasure")mult*=board[x].mult;}}else{revealed.add(idx);mult*=t.mult;}
-    if(revealed.size>=12){finished=true;c.stop();const p=Math.floor(bet*mult);user.cash+=p;saveData();return i.update({content:`- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}return i.update({components:rows()});
+    if(revealed.size>=12){finished=true;c.stop();const p=Math.floor(bet*mult);user.cash+=p;saveData();return i.update({content:`Result\n\n- You Won ${money(p)} 💸\n\nYou now have ${money(user.cash)} 💸.`,components:rows(true)});}return i.update({components:rows()});
   });
   c.on("end",async()=>{if(finished)return;finished=true;user.cash+=bet;saveData();await msg.edit({content:`⏰ Timed out. Returned ${money(bet)} 💸.`,components:rows(true)}).catch(()=>{})});
 }
@@ -573,7 +576,6 @@ async function texasHoldem(message, args, user) {
       return i.reply({ content: `❌ You don't have enough cash. Minimum required is **${money(bet)}** ${db.currency}.`, ephemeral: true });
     }
 
-    // Deduct bets
     user.cash -= bet;
     opponentUser.cash -= bet;
     saveData();
@@ -583,13 +585,11 @@ async function texasHoldem(message, args, user) {
       components: []
     });
 
-    // Draw cards for both
     const deck = shuffle(CARD_VALUES.flatMap(([v, n]) => SUITS.map(s => ({ value: v, number: n, glyph: CARD_GLYPHS[s][rankIndex(v)] }))));
     const p1Cards = [deck.pop(), deck.pop()];
     const p2Cards = [deck.pop(), deck.pop()];
     const communityCards = [deck.pop(), deck.pop(), deck.pop()];
 
-    // Send private cards via DM
     try {
       const u1 = await client.users.fetch(message.author.id);
       await u1.send({ embeds: [embed(`Your private cards: ${p1Cards.map(c => c.glyph).join(" ")}`, COLOR_INFO, "Texas Hold'em - Hand")] });
@@ -604,7 +604,6 @@ async function texasHoldem(message, args, user) {
       message.channel.send(`<@${i.user.id}>, please open your DMs to receive your cards!`);
     }
 
-    // Game table interaction
     let turn = message.author.id;
     let pot = bet * 2;
 
@@ -643,7 +642,6 @@ async function texasHoldem(message, args, user) {
       }
 
       if (action === "check" || action === "call") {
-        // Determine winner randomly or simple comparison for 1v1 finish
         gameCollector.stop();
         const p1Val = handValue(p1Cards) + communityCards.reduce((s, c) => s + c.number, 0);
         const p2Val = handValue(p2Cards) + communityCards.reduce((s, c) => s + c.number, 0);
@@ -651,7 +649,7 @@ async function texasHoldem(message, args, user) {
         let winnerId;
         if (p1Val > p2Val) winnerId = message.author.id;
         else if (p2Val > p1Val) winnerId = i.user.id;
-        else winnerId = null; // Tie
+        else winnerId = null;
 
         if (winnerId) {
           getUser(winnerId).cash += pot;
@@ -719,7 +717,7 @@ function buildInfoEmbed(){return embed([
   "**🐔 Cockfight — `$cf <amount|half|all>`**","Starts at 55% and increases by 1% after wins, up to 82%.","",
   "**🎲 Higher or Lower — `$hl <amount|half|all>`**","Choose Higher, Same or Lower. Same pays 8x.","",
   "**🍀 CoinFlip — `$ht <amount|half|all>`**","Heads/Tails, pays 2x.","",
-  "**💣 Mines — `$mines <amount|half|all>`**","3x3, one bomb. Multipliers: 1.1x → 8.9x. Cash out anytime.","",
+  "**💣 Mines — `$mines <amount|half|all>`**","Multipliers: 1.1x → 8.9x. Cash out anytime.","",
   "**⛏️ Goldmine — `$gm <amount|half|all>`**","24 tiles, 12 bombs, treasure multipliers compound.","",
   "**🎰 Slots — `$slots <amount|half|all>`**","3 reels. Triple 7️⃣ = 20x, ⭐ = 10x, 🍇 = 6x, 🍊 = 5x, 🍋 = 4x, 🍒 = 3x. Two matching = 1.2x. 3-second reveal.","",
   "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**","Red/Black = 2x, Green = 14x, exact number = 30x. 3-second reveal.","",
