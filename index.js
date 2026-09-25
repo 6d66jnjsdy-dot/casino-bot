@@ -35,1005 +35,944 @@ const MIN_BET = 150;
 
 const db = {
   users: {},
-  currency: "💸",
-  casinoRole: null
+  currency: "💸"
 };
 
 function getUser(id) {
   if (!db.users[id]) {
-    db.users[id] = {
-      cash: 0
-    };
+    db.users[id] = { cash: 0 };
   }
 
   return db.users[id];
 }
 
-function formatMoney(amount) {
+function money(amount) {
   return Math.floor(amount).toLocaleString();
-}
-
-function getBet(message, args) {
-  const bet = Number(args[0]);
-
-  if (!Number.isFinite(bet) || bet < MIN_BET) {
-    message.reply(`❌ Minimum bet is **${MIN_BET}** ${db.currency}.`);
-    return null;
-  }
-
-  const user = getUser(message.author.id);
-
-  if (bet > user.cash) {
-    message.reply(`❌ You don't have enough money.`);
-    return null;
-  }
-
-  return Math.floor(bet);
-}
-
-function spend(user, amount) {
-  user.cash -= amount;
-}
-
-function add(user, amount) {
-  user.cash += amount;
 }
 
 function random(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function disabledRow(buttons) {
-  return new ActionRowBuilder().addComponents(
-    buttons.map((b) => ButtonBuilder.from(b).setDisabled(true))
-  );
+function validBet(message, args) {
+  const bet = Number(args[0]);
+
+  if (!Number.isFinite(bet) || bet < MIN_BET) {
+    message.reply(
+      `❌ Minimum bet is **${MIN_BET}** ${db.currency}.`
+    );
+    return null;
+  }
+
+  const user = getUser(message.author.id);
+
+  if (bet > user.cash) {
+    message.reply("❌ You don't have enough money.");
+    return null;
+  }
+
+  return Math.floor(bet);
 }
 
-/* =========================
-   READY
-========================= */
+function disabledRow(row) {
+  return new ActionRowBuilder().addComponents(
+    row.components.map((component) =>
+      ButtonBuilder.from(component).setDisabled(true)
+    )
+  );
+}
 
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
 /* =========================
-   MESSAGE COMMANDS
+   COMMANDS
 ========================= */
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.content.startsWith(PREFIX)) return;
 
-  const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
-  const command = (args.shift() || "").toLowerCase();
+  const args = message.content
+    .slice(PREFIX.length)
+    .trim()
+    .split(/\s+/);
 
+  const command = (args.shift() || "").toLowerCase();
   const user = getUser(message.author.id);
 
-  /* =========================
-     BALANCE
-  ========================= */
+  /* BALANCE */
 
   if (["bal", "balance"].includes(command)) {
-    const embed = new EmbedBuilder()
-      .setTitle("💰 Balance")
-      .setDescription(
-        `You have **${formatMoney(user.cash)}** ${db.currency}`
-      );
-
-    return message.reply({ embeds: [embed] });
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("💰 Balance")
+          .setDescription(
+            `You have **${money(user.cash)}** ${db.currency}`
+          )
+      ]
+    });
   }
 
-  /* =========================
-     CURRENCY
-  ========================= */
+  /* CURRENCY */
 
   if (command === "currency") {
-    return message.reply(`Current currency: ${db.currency}`);
+    return message.reply(
+      `Current currency: ${db.currency}`
+    );
   }
 
-  /* =========================
-     ADD MONEY
-  ========================= */
+  /* ADD MONEY */
 
   if (command === "addmoney") {
-    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return message.reply("❌ You need Administrator permission.");
-    }
-
-    let target = message.mentions.users.first();
-    let amount;
-
-    if (target) {
-      amount = Number(args[1]);
-    } else {
-      const id = args[0];
-      amount = Number(args[1]);
-
-      if (id && /^\d{17,20}$/.test(id)) {
-        try {
-          target = await client.users.fetch(id);
-        } catch {
-          target = null;
-        }
-      }
-    }
-
-    if (!target || !Number.isFinite(amount) || amount <= 0) {
+    if (
+      !message.member.permissions.has(
+        PermissionFlagsBits.Administrator
+      )
+    ) {
       return message.reply(
-        `❌ Usage: \`$addmoney @user 1000\``
+        "❌ You need Administrator permission."
       );
     }
 
-    const targetUser = getUser(target.id);
-    add(targetUser, Math.floor(amount));
+    const target = message.mentions.users.first();
+    const amount = Number(args[1]);
+
+    if (
+      !target ||
+      !Number.isFinite(amount) ||
+      amount <= 0
+    ) {
+      return message.reply(
+        "❌ Usage: `$addmoney @user 1000`"
+      );
+    }
+
+    getUser(target.id).cash += Math.floor(amount);
 
     return message.reply(
-      `✅ Added **${formatMoney(amount)}** ${db.currency} to <@${target.id}>.`
+      `✅ Added **${money(amount)}** ${db.currency} to <@${target.id}>.`
     );
   }
 
-  /* =========================
-     DEPOSIT
-  ========================= */
-
-  if (["dep", "deposit"].includes(command)) {
-    const amount = Number(args[0]);
-
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return message.reply("❌ Enter a valid amount.");
-    }
-
-    return message.reply(
-      `💰 Deposit system is currently using your casino balance directly.`
-    );
-  }
-
-  /* =========================
-     WITHDRAW
-  ========================= */
-
-  if (["with", "withdraw"].includes(command)) {
-    const amount = Number(args[0]);
-
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return message.reply("❌ Enter a valid amount.");
-    }
-
-    if (amount > user.cash) {
-      return message.reply("❌ You don't have enough money.");
-    }
-
-    user.cash -= Math.floor(amount);
-
-    return message.reply(
-      `💸 Withdrawn **${formatMoney(amount)}** ${db.currency}.`
-    );
-  }
-
-  /* =========================
-     LEADERBOARD
-  ========================= */
+  /* LEADERBOARD */
 
   if (["lb", "leaderboard"].includes(command)) {
     const list = Object.entries(db.users)
       .sort((a, b) => b[1].cash - a[1].cash)
       .slice(0, 10);
 
-    if (!list.length) {
-      return message.reply("No users yet.");
-    }
+    const text = list.length
+      ? list
+          .map(
+            ([id, u], i) =>
+              `**${i + 1}.** <@${id}> — **${money(
+                u.cash
+              )}** ${db.currency}`
+          )
+          .join("\n")
+      : "No users yet.";
 
-    let text = "";
-
-    for (let i = 0; i < list.length; i++) {
-      text += `**${i + 1}.** <@${list[i][0]}> — **${formatMoney(
-        list[i][1].cash
-      )}** ${db.currency}\n`;
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle("🏆 Leaderboard")
-      .setDescription(text);
-
-    return message.reply({ embeds: [embed] });
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🏆 Leaderboard")
+          .setDescription(text)
+      ]
+    });
   }
 
-  /* =========================
-     BLACKJACK
-  ========================= */
+  /* GAMES */
 
   if (["bj", "blackjack"].includes(command)) {
-    const bet = getBet(message, args);
-    if (bet === null) return;
+    return blackjack(message, args, user);
+  }
 
-    spend(user, bet);
+  if (["ht", "coinflip"].includes(command)) {
+    return coinflip(message, args, user);
+  }
 
-    const suits = ["♠️", "♥️", "♦️", "♣️"];
-    const values = [
-      ["A", 11],
-      ["2", 2],
-      ["3", 3],
-      ["4", 4],
-      ["5", 5],
-      ["6", 6],
-      ["7", 7],
-      ["8", 8],
-      ["9", 9],
-      ["10", 10],
-      ["J", 10],
-      ["Q", 10],
-      ["K", 10]
-    ];
+  if (["hl", "higherlower"].includes(command)) {
+    return higherLower(message, args, user);
+  }
 
-    function card() {
-      const [value, number] =
-        values[random(0, values.length - 1)];
+  if (
+    ["cfight", "cockfight", "chickenfight"].includes(command)
+  ) {
+    return cockfight(message, args, user);
+  }
 
-      return {
-        value,
-        number,
-        suit: suits[random(0, suits.length - 1)]
-      };
-    }
+  if (command === "mines") {
+    return mines(message, args, user);
+  }
+});
 
-    function handValue(hand) {
-      let total = hand.reduce((sum, c) => sum + c.number, 0);
-      let aces = hand.filter((c) => c.value === "A").length;
+/* =========================
+   BLACKJACK
+========================= */
 
-      while (total > 21 && aces > 0) {
-        total -= 10;
-        aces--;
-      }
+async function blackjack(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
 
-      return total;
-    }
+  user.cash -= bet;
 
-    const player = [card(), card()];
-    const dealer = [card(), card()];
+  const cards = [
+    ["A", 11],
+    ["2", 2],
+    ["3", 3],
+    ["4", 4],
+    ["5", 5],
+    ["6", 6],
+    ["7", 7],
+    ["8", 8],
+    ["9", 9],
+    ["10", 10],
+    ["J", 10],
+    ["Q", 10],
+    ["K", 10]
+  ];
 
-    function handText(hand) {
-      return hand.map((c) => `${c.value}${c.suit}`).join(" ");
-    }
+  const suits = ["♠️", "♥️", "♦️", "♣️"];
 
-    function blackjackEmbed(showDealer = false) {
-      const pValue = handValue(player);
-      const dealerText = showDealer
-        ? `${handText(dealer)} — **${handValue(dealer)}**`
-        : `${dealer[0].value}${dealer[0].suit} 🂠`;
+  function draw() {
+    const [value, number] =
+      cards[random(0, cards.length - 1)];
 
-      return new EmbedBuilder()
-        .setTitle("🃏 Blackjack")
-        .setDescription(
-          `**Your hand:** ${handText(player)} — **${pValue}**\n` +
-          `**Dealer:** ${dealerText}\n\n` +
-          `Bet: **${formatMoney(bet)}** ${db.currency}`
-        );
-    }
+    return {
+      value,
+      number,
+      suit: suits[random(0, 3)]
+    };
+  }
 
-    const buttons = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`bj_hit_${message.author.id}`)
-        .setLabel("Hit")
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId(`bj_stand_${message.author.id}`)
-        .setLabel("Stand")
-        .setStyle(ButtonStyle.Success),
-
-      new ButtonBuilder()
-        .setCustomId(`bj_double_${message.author.id}`)
-        .setLabel("Double")
-        .setStyle(ButtonStyle.Secondary)
+  function handValue(hand) {
+    let total = hand.reduce(
+      (sum, card) => sum + card.number,
+      0
     );
 
-    const gameMessage = await message.reply({
-      embeds: [blackjackEmbed()],
-      components: [buttons]
-    });
+    let aces = hand.filter(
+      (card) => card.value === "A"
+    ).length;
 
-    const collector = gameMessage.createMessageComponentCollector({
+    while (total > 21 && aces > 0) {
+      total -= 10;
+      aces--;
+    }
+
+    return total;
+  }
+
+  function handText(hand) {
+    return hand
+      .map((card) => `${card.value}${card.suit}`)
+      .join(" ");
+  }
+
+  const player = [draw(), draw()];
+  const dealer = [draw(), draw()];
+
+  let totalBet = bet;
+  let finished = false;
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`bj_hit_${message.author.id}`)
+      .setLabel("Hit")
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId(`bj_stand_${message.author.id}`)
+      .setLabel("Stand")
+      .setStyle(ButtonStyle.Success),
+
+    new ButtonBuilder()
+      .setCustomId(`bj_double_${message.author.id}`)
+      .setLabel("Double")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  function gameEmbed(showDealer = false) {
+    return new EmbedBuilder()
+      .setTitle("🃏 Blackjack")
+      .setDescription(
+        `**Your hand:** ${handText(player)} — **${handValue(
+          player
+        )}**\n` +
+          `**Dealer:** ${
+            showDealer
+              ? `${handText(dealer)} — **${handValue(
+                  dealer
+                )}**`
+              : `${handText([dealer[0]])} 🂠`
+          }\n\n` +
+          `Bet: **${money(totalBet)}** ${db.currency}`
+      );
+  }
+
+  const gameMessage = await message.reply({
+    embeds: [gameEmbed()],
+    components: [row]
+  });
+
+  const collector =
+    gameMessage.createMessageComponentCollector({
       time: 120000
     });
 
-    let totalBet = bet;
-    let finished = false;
+  async function finish(result, payout) {
+    if (finished) return;
 
-    async function finish(result, payout = 0) {
-      if (finished) return;
-      finished = true;
+    finished = true;
+    collector.stop();
 
-      if (payout > 0) {
-        add(user, payout);
-      }
+    if (payout > 0) {
+      user.cash += payout;
+    }
 
-      collector.stop();
+    await gameMessage.edit({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🃏 Blackjack")
+          .setDescription(
+            `**Your hand:** ${handText(
+              player
+            )} — **${handValue(player)}**\n` +
+              `**Dealer:** ${handText(
+                dealer
+              )} — **${handValue(dealer)}**\n\n` +
+              `${result}` +
+              (payout > 0
+                ? `\nPayout: **${money(
+                    payout
+                  )}** ${db.currency}`
+                : "")
+          )
+      ],
+      components: [disabledRow(row)]
+    });
+  }
 
-      const finalEmbed = blackjackEmbed(true);
-
-      finalEmbed.setDescription(
-        `**Your hand:** ${handText(player)} — **${handValue(player)}**\n` +
-        `**Dealer:** ${handText(dealer)} — **${handValue(dealer)}**\n\n` +
-        `${result}\n\n` +
-        `Bet: **${formatMoney(totalBet)}** ${db.currency}` +
-        (payout > 0
-          ? `\nPayout: **${formatMoney(payout)}** ${db.currency}`
-          : "")
-      );
-
-      await gameMessage.edit({
-        embeds: [finalEmbed],
-        components: [disabledRow(buttons.components)]
+  collector.on("collect", async (interaction) => {
+    if (interaction.user.id !== message.author.id) {
+      return interaction.reply({
+        content: "❌ This isn't your game.",
+        ephemeral: true
       });
     }
 
-    collector.on("collect", async (interaction) => {
-      if (interaction.user.id !== message.author.id) {
+    if (interaction.customId.includes("double")) {
+      if (user.cash < bet) {
         return interaction.reply({
-          content: "❌ This isn't your game.",
+          content:
+            "❌ You don't have enough money to double.",
           ephemeral: true
         });
       }
 
-      if (finished) return;
+      user.cash -= bet;
+      totalBet += bet;
+      player.push(draw());
 
-      if (interaction.customId.startsWith("bj_hit_")) {
-        player.push(card());
+      await interaction.deferUpdate();
 
-        const value = handValue(player);
-
-        if (value > 21) {
-          await interaction.deferUpdate();
-          return finish("💥 You busted!", 0);
-        }
-
-        if (value === 21) {
-          await interaction.deferUpdate();
-
-          while (handValue(dealer) < 17) {
-            dealer.push(card());
-          }
-
-          const d = handValue(dealer);
-
-          if (d > 21 || value > d) {
-            return finish(
-              "🎉 You win!",
-              totalBet * 2
-            );
-          }
-
-          if (value === d) {
-            return finish(
-              "🤝 It's a tie!",
-              totalBet
-            );
-          }
-
-          return finish("❌ Dealer wins!", 0);
-        }
-
-        await interaction.update({
-          embeds: [blackjackEmbed()],
-          components: [buttons]
-        });
+      if (handValue(player) > 21) {
+        return finish("💥 You busted!", 0);
       }
 
-      if (interaction.customId.startsWith("bj_double_")) {
-        if (user.cash < bet) {
-          return interaction.reply({
-            content: "❌ You don't have enough money to double.",
-            ephemeral: true
-          });
-        }
+      while (handValue(dealer) < 17) {
+        dealer.push(draw());
+      }
 
-        spend(user, bet);
-        totalBet += bet;
-        player.push(card());
+      const p = handValue(player);
+      const d = handValue(dealer);
 
+      if (d > 21 || p > d) {
+        return finish(
+          "🎉 You win!",
+          totalBet * 2
+        );
+      }
+
+      if (p === d) {
+        return finish(
+          "🤝 It's a tie!",
+          totalBet
+        );
+      }
+
+      return finish("❌ Dealer wins!", 0);
+    }
+
+    if (interaction.customId.includes("hit")) {
+      player.push(draw());
+
+      if (handValue(player) > 21) {
         await interaction.deferUpdate();
-
-        if (handValue(player) > 21) {
-          return finish("💥 You busted!", 0);
-        }
-
-        while (handValue(dealer) < 17) {
-          dealer.push(card());
-        }
-
-        const p = handValue(player);
-        const d = handValue(dealer);
-
-        if (d > 21 || p > d) {
-          return finish("🎉 You win!", totalBet * 2);
-        }
-
-        if (p === d) {
-          return finish("🤝 It's a tie!", totalBet);
-        }
-
-        return finish("❌ Dealer wins!", 0);
+        return finish("💥 You busted!", 0);
       }
 
-      if (interaction.customId.startsWith("bj_stand_")) {
-        await interaction.deferUpdate();
+      return interaction.update({
+        embeds: [gameEmbed()],
+        components: [row]
+      });
+    }
 
-        while (handValue(dealer) < 17) {
-          dealer.push(card());
-        }
+    await interaction.deferUpdate();
 
-        const p = handValue(player);
-        const d = handValue(dealer);
+    while (handValue(dealer) < 17) {
+      dealer.push(draw());
+    }
 
-        if (d > 21 || p > d) {
-          return finish("🎉 You win!", totalBet * 2);
-        }
+    const p = handValue(player);
+    const d = handValue(dealer);
 
-        if (p === d) {
-          return finish("🤝 It's a tie!", totalBet);
-        }
+    if (d > 21 || p > d) {
+      return finish("🎉 You win!", totalBet * 2);
+    }
 
-        return finish("❌ Dealer wins!", 0);
-      }
+    if (p === d) {
+      return finish("🤝 It's a tie!", totalBet);
+    }
+
+    return finish("❌ Dealer wins!", 0);
+  });
+
+  collector.on("end", async () => {
+    if (finished) return;
+
+    finished = true;
+    user.cash += totalBet;
+
+    await gameMessage
+      .edit({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🃏 Blackjack")
+            .setDescription(
+              `⏰ Timed out.\nReturned **${money(
+                totalBet
+              )}** ${db.currency}.`
+            )
+        ],
+        components: [disabledRow(row)]
+      })
+      .catch(() => {});
+  });
+}
+
+/* =========================
+   COINFLIP
+========================= */
+
+async function coinflip(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
+
+  user.cash -= bet;
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`cf_h_${message.author.id}`)
+      .setLabel("Heads")
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId(`cf_t_${message.author.id}`)
+      .setLabel("Tails")
+      .setStyle(ButtonStyle.Success)
+  );
+
+  const msg = await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("🪙 Coinflip")
+        .setDescription(
+          `Choose Heads or Tails.\n\nBet: **${money(
+            bet
+          )}** ${db.currency}`
+        )
+    ],
+    components: [row]
+  });
+
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 60000,
+      max: 1
     });
 
-    collector.on("end", async () => {
-      if (!finished) {
-        finished = true;
-        add(user, totalBet);
+  collector.on("collect", async (interaction) => {
+    if (interaction.user.id !== message.author.id) {
+      return interaction.reply({
+        content: "❌ This isn't your game.",
+        ephemeral: true
+      });
+    }
 
-        await gameMessage.edit({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("🃏 Blackjack")
-              .setDescription(
-                `⏰ Game timed out.\n\nReturned **${formatMoney(
-                  totalBet
-                )}** ${db.currency}.`
-              )
-          ],
-          components: [disabledRow(buttons.components)]
-        }).catch(() => {});
-      }
-    });
+    const result = Math.random() < 0.5 ? "h" : "t";
+    const win =
+      interaction.customId.includes(`_${result}_`);
 
-    return;
-  }
+    if (win) {
+      user.cash += bet * 2;
+    }
 
-  /* =========================
-     COINFLIP
-  ========================= */
-
-  if (["cf", "coinflip", "ht"].includes(command)) {
-    const bet = getBet(message, args);
-    if (bet === null) return;
-
-    spend(user, bet);
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`cf_heads_${message.author.id}`)
-        .setLabel("Heads")
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId(`cf_tails_${message.author.id}`)
-        .setLabel("Tails")
-        .setStyle(ButtonStyle.Success)
-    );
-
-    const gameMessage = await message.reply({
+    await interaction.update({
       embeds: [
         new EmbedBuilder()
           .setTitle("🪙 Coinflip")
           .setDescription(
-            `Choose Heads or Tails.\n\nBet: **${formatMoney(
-              bet
-            )}** ${db.currency}`
+            `${result === "h" ? "Heads" : "Tails"}!\n\n` +
+              (win
+                ? `🎉 Won **${money(
+                    bet * 2
+                  )}** ${db.currency}!`
+                : `❌ Lost **${money(
+                    bet
+                  )}** ${db.currency}.`)
           )
       ],
-      components: [row]
+      components: [disabledRow(row)]
     });
+  });
 
-    const collector = gameMessage.createMessageComponentCollector({
-      time: 60000,
-      max: 1
-    });
+  collector.on("end", async (collected) => {
+    if (collected.size) return;
 
-    collector.on("collect", async (interaction) => {
-      if (interaction.user.id !== message.author.id) {
-        return interaction.reply({
-          content: "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
+    user.cash += bet;
 
-      const result =
-        Math.random() < 0.5 ? "heads" : "tails";
-
-      const choice = interaction.customId.includes("heads")
-        ? "heads"
-        : "tails";
-
-      const win = choice === result;
-
-      if (win) add(user, bet * 2);
-
-      await interaction.update({
+    await msg
+      .edit({
         embeds: [
           new EmbedBuilder()
             .setTitle("🪙 Coinflip")
             .setDescription(
-              `The coin landed on **${result.toUpperCase()}**.\n\n` +
-              (win
-                ? `🎉 You won **${formatMoney(
-                    bet * 2
-                  )}** ${db.currency}!`
-                : `❌ You lost **${formatMoney(
-                    bet
-                  )}** ${db.currency}.`)
+              `⏰ Timed out. Returned **${money(
+                bet
+              )}** ${db.currency}.`
             )
         ],
-        components: [disabledRow(row.components)]
-      });
-    });
+        components: [disabledRow(row)]
+      })
+      .catch(() => {});
+  });
+}
 
-    collector.on("end", async (collected) => {
-      if (collected.size === 0) {
-        add(user, bet);
+/* =========================
+   HIGHER LOWER
+========================= */
 
-        await gameMessage.edit({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("🪙 Coinflip")
-              .setDescription(
-                `⏰ Timed out.\nReturned **${formatMoney(
-                  bet
-                )}** ${db.currency}.`
-              )
-          ],
-          components: [disabledRow(row.components)]
-        }).catch(() => {});
-      }
-    });
+async function higherLower(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
 
-    return;
-  }
+  user.cash -= bet;
 
-  /* =========================
-     HIGHER / LOWER
-  ========================= */
+  const current = random(2, 99);
 
-  if (["hl", "higherlower"].includes(command)) {
-    const bet = getBet(message, args);
-    if (bet === null) return;
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`hl_hi_${message.author.id}`)
+      .setLabel("Higher")
+      .setStyle(ButtonStyle.Success),
 
-    spend(user, bet);
+    new ButtonBuilder()
+      .setCustomId(`hl_lo_${message.author.id}`)
+      .setLabel("Lower")
+      .setStyle(ButtonStyle.Primary),
 
-    const current = random(2, 99);
+    new ButtonBuilder()
+      .setCustomId(`hl_eq_${message.author.id}`)
+      .setLabel("Same")
+      .setStyle(ButtonStyle.Secondary)
+  );
 
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`hl_higher_${message.author.id}`)
-        .setLabel("Higher")
-        .setStyle(ButtonStyle.Success),
-
-      new ButtonBuilder()
-        .setCustomId(`hl_lower_${message.author.id}`)
-        .setLabel("Lower")
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId(`hl_same_${message.author.id}`)
-        .setLabel("Same")
-        .setStyle(ButtonStyle.Secondary)
-    );
-
-    const gameMessage = await message.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("📈 Higher or Lower")
-          .setDescription(
-            `Current number: **${current}**\n\n` +
+  const msg = await message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("📈 Higher or Lower")
+        .setDescription(
+          `Current number: **${current}**\n\n` +
             `Higher / Lower = **1.5x**\n` +
             `Same = **25x**\n\n` +
-            `Bet: **${formatMoney(bet)}** ${db.currency}`
-          )
-      ],
-      components: [row]
-    });
+            `Bet: **${money(bet)}** ${db.currency}`
+        )
+    ],
+    components: [row]
+  });
 
-    const collector = gameMessage.createMessageComponentCollector({
+  const collector =
+    msg.createMessageComponentCollector({
       time: 60000,
       max: 1
     });
 
-    collector.on("collect", async (interaction) => {
-      if (interaction.user.id !== message.author.id) {
-        return interaction.reply({
-          content: "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
+  collector.on("collect", async (interaction) => {
+    if (interaction.user.id !== message.author.id) {
+      return interaction.reply({
+        content: "❌ This isn't your game.",
+        ephemeral: true
+      });
+    }
 
-      const next = random(1, 100);
+    const next = random(1, 100);
 
-      const choice = interaction.customId.includes("higher")
-        ? "higher"
-        : interaction.customId.includes("lower")
-        ? "lower"
-        : "same";
+    const choice = interaction.customId.includes("_hi_")
+      ? "hi"
+      : interaction.customId.includes("_lo_")
+      ? "lo"
+      : "eq";
 
-      let win = false;
-      let multiplier = 0;
+    const win =
+      (choice === "hi" && next > current) ||
+      (choice === "lo" && next < current) ||
+      (choice === "eq" && next === current);
 
-      if (choice === "higher" && next > current) {
-        win = true;
-        multiplier = 1.5;
-      }
+    const payout = win
+      ? Math.floor(bet * (choice === "eq" ? 25 : 1.5))
+      : 0;
 
-      if (choice === "lower" && next < current) {
-        win = true;
-        multiplier = 1.5;
-      }
+    if (payout) {
+      user.cash += payout;
+    }
 
-      if (choice === "same" && next === current) {
-        win = true;
-        multiplier = 25;
-      }
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("📈 Higher or Lower")
+          .setDescription(
+            `Previous: **${current}**\n` +
+              `New: **${next}**\n\n` +
+              (win
+                ? `🎉 Won **${money(
+                    payout
+                  )}** ${db.currency}!`
+                : `❌ Lost **${money(
+                    bet
+                  )}** ${db.currency}.`)
+          )
+      ],
+      components: [disabledRow(row)]
+    });
+  });
 
-      const payout = win ? Math.floor(bet * multiplier) : 0;
+  collector.on("end", async (collected) => {
+    if (collected.size) return;
 
-      if (payout) add(user, payout);
+    user.cash += bet;
 
-      await interaction.update({
+    await msg
+      .edit({
         embeds: [
           new EmbedBuilder()
             .setTitle("📈 Higher or Lower")
             .setDescription(
-              `Previous: **${current}**\n` +
-              `New number: **${next}**\n\n` +
-              (win
-                ? `🎉 You won **${formatMoney(
-                    payout
-                  )}** ${db.currency}!`
-                : `❌ You lost **${formatMoney(
-                    bet
-                  )}** ${db.currency}.`)
+              `⏰ Timed out. Returned **${money(
+                bet
+              )}** ${db.currency}.`
             )
         ],
-        components: [disabledRow(row.components)]
-      });
-    });
+        components: [disabledRow(row)]
+      })
+      .catch(() => {});
+  });
+}
 
-    collector.on("end", async (collected) => {
-      if (collected.size === 0) {
-        add(user, bet);
+/* =========================
+   COCKFIGHT
+========================= */
 
-        await gameMessage.edit({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("📈 Higher or Lower")
-              .setDescription(
-                `⏰ Timed out.\nReturned **${formatMoney(
-                  bet
-                )}** ${db.currency}.`
-              )
-          ],
-          components: [disabledRow(row.components)]
-        }).catch(() => {});
-      }
-    });
+async function cockfight(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
 
-    return;
+  user.cash -= bet;
+
+  const yours = random(55, 82);
+  const enemy = random(55, 82);
+  const win = yours > enemy;
+
+  if (win) {
+    user.cash += bet * 2;
   }
 
-  /* =========================
-     COCKFIGHT
-  ========================= */
+  return message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("🐔 Cockfight")
+        .setDescription(
+          `Your chicken: **${yours}%**\n` +
+            `Enemy chicken: **${enemy}%**\n\n` +
+            (win
+              ? `🎉 Your chicken won!\nReceived **${money(
+                  bet * 2
+                )}** ${db.currency}.`
+              : `❌ Your chicken lost!\nLost **${money(
+                  bet
+                )}** ${db.currency}.`)
+        )
+    ]
+  });
+}
 
-  if (["cfight", "cockfight", "chickenfight"].includes(command)) {
-    const bet = getBet(message, args);
-    if (bet === null) return;
+/* =========================
+   MINES
+========================= */
 
-    spend(user, bet);
+async function mines(message, args, user) {
+  const bet = validBet(message, args);
+  if (bet === null) return;
 
-    const yourPower = random(55, 82);
-    const enemyPower = random(55, 82);
+  user.cash -= bet;
 
-    const win = yourPower > enemyPower;
+  const bomb = random(0, 8);
+  const safe = new Set();
 
-    if (win) add(user, bet * 2);
+  let finished = false;
 
-    const embed = new EmbedBuilder()
-      .setTitle("🐔 Cockfight")
+  const multipliers = [
+    1.1,
+    1.2,
+    1.4,
+    1.6,
+    2,
+    2.6,
+    3.6,
+    8
+  ];
+
+  function multiplier() {
+    return (
+      multipliers[Math.max(0, safe.size - 1)] || 8
+    );
+  }
+
+  function rows() {
+    const result = [];
+
+    for (let r = 0; r < 3; r++) {
+      const buttons = [];
+
+      for (let c = 0; c < 3; c++) {
+        const index = r * 3 + c;
+
+        buttons.push(
+          new ButtonBuilder()
+            .setCustomId(
+              `mine_${message.author.id}_${index}`
+            )
+            .setLabel(safe.has(index) ? "💎" : "💠")
+            .setStyle(
+              safe.has(index)
+                ? ButtonStyle.Success
+                : ButtonStyle.Secondary
+            )
+            .setDisabled(safe.has(index))
+        );
+      }
+
+      result.push(
+        new ActionRowBuilder().addComponents(buttons)
+      );
+    }
+
+    result.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `mine_cash_${message.author.id}`
+          )
+          .setLabel("💰 Cashout")
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(safe.size === 0)
+      )
+    );
+
+    return result;
+  }
+
+  function embed() {
+    return new EmbedBuilder()
+      .setTitle("💣 Mines")
       .setDescription(
-        `Your chicken: **${yourPower}%**\n` +
-        `Enemy chicken: **${enemyPower}%**\n\n` +
-        (win
-          ? `🎉 Your chicken won!\nYou received **${formatMoney(
-              bet * 2
-            )}** ${db.currency}.`
-          : `❌ Your chicken lost!\nYou lost **${formatMoney(
-              bet
-            )}** ${db.currency}.`)
+        `Pick a tile and avoid the bomb.\n\n` +
+          `💎 Safe tiles: **${safe.size}/8**\n` +
+          `Multiplier: **${multiplier()}x**\n` +
+          `Current value: **${money(
+            bet * multiplier()
+          )}** ${db.currency}\n\n` +
+          `Bet: **${money(bet)}** ${db.currency}`
+      );
+  }
+
+  const msg = await message.reply({
+    embeds: [embed()],
+    components: rows()
+  });
+
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 120000
+    });
+
+  collector.on("collect", async (interaction) => {
+    if (interaction.user.id !== message.author.id) {
+      return interaction.reply({
+        content: "❌ This isn't your game.",
+        ephemeral: true
+      });
+    }
+
+    if (finished) return;
+
+    if (interaction.customId.includes("mine_cash")) {
+      if (!safe.size) {
+        return interaction.reply({
+          content: "❌ Reveal a tile first.",
+          ephemeral: true
+        });
+      }
+
+      finished = true;
+      collector.stop();
+
+      const payout = Math.floor(
+        bet * multiplier()
       );
 
-    return message.reply({ embeds: [embed] });
-  }
+      user.cash += payout;
 
-  /* =========================
-     MINES
-  ========================= */
+      return interaction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("💣 Mines")
+            .setDescription(
+              `💰 Cashed out!\n\n` +
+                `Payout: **${money(
+                  payout
+                )}** ${db.currency}.`
+            )
+        ],
+        components: rows().map(disabledRow)
+      });
+    }
 
-  if (command === "mines") {
-    const bet = getBet(message, args);
-    if (bet === null) return;
+    const index = Number(
+      interaction.customId.split("_").pop()
+    );
 
-    spend(user, bet);
+    if (index === bomb) {
+      finished = true;
+      collector.stop();
 
-    const bomb = random(0, 8);
-    const revealed = new Set();
-    let finished = false;
-
-    const multipliers = [
-      1.1,
-      1.2,
-      1.4,
-      1.6,
-      2.0,
-      2.6,
-      3.6,
-      8.0
-    ];
-
-    function buildRows() {
-      const rows = [];
+      const endRows = [];
 
       for (let r = 0; r < 3; r++) {
         const buttons = [];
 
         for (let c = 0; c < 3; c++) {
-          const index = r * 3 + c;
-
-          let label = "💠";
-          let style = ButtonStyle.Secondary;
-
-          if (revealed.has(index)) {
-            label = "💎";
-            style = ButtonStyle.Success;
-          }
+          const i = r * 3 + c;
 
           buttons.push(
             new ButtonBuilder()
-              .setCustomId(`mine_${message.author.id}_${index}`)
-              .setLabel(label)
-              .setStyle(style)
-              .setDisabled(revealed.has(index))
-          );
-        }
-
-        rows.push(new ActionRowBuilder().addComponents(buttons));
-      }
-
-      const cashout = new ButtonBuilder()
-        .setCustomId(`mine_cashout_${message.author.id}`)
-        .setLabel("💰 Cashout")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(revealed.size === 0);
-
-      rows.push(new ActionRowBuilder().addComponents(cashout));
-
-      return rows;
-    }
-
-    function currentMultiplier() {
-      return multipliers[Math.max(0, revealed.size - 1)] || 8;
-    }
-
-    function embed() {
-      const multi = currentMultiplier();
-
-      return new EmbedBuilder()
-        .setTitle("💣 Mines")
-        .setDescription(
-          `Pick a tile and avoid the bomb.\n\n` +
-          `💎 Safe tiles: **${revealed.size}/8**\n` +
-          `Multiplier: **${multi}x**\n` +
-          `Current value: **${formatMoney(
-            bet * multi
-          )}** ${db.currency}\n\n` +
-          `Bet: **${formatMoney(bet)}** ${db.currency}`
-        );
-    }
-
-    const gameMessage = await message.reply({
-      embeds: [embed()],
-      components: buildRows()
-    });
-
-    const collector = gameMessage.createMessageComponentCollector({
-      time: 120000
-    });
-
-    collector.on("collect", async (interaction) => {
-      if (interaction.user.id !== message.author.id) {
-        return interaction.reply({
-          content: "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (finished) return;
-
-      if (interaction.customId.includes("cashout")) {
-        if (revealed.size === 0) {
-          return interaction.reply({
-            content: "❌ Reveal at least one tile first.",
-            ephemeral: true
-          });
-        }
-
-        finished = true;
-
-        const payout = Math.floor(
-          bet * currentMultiplier()
-        );
-
-        add(user, payout);
-        collector.stop();
-
-        return interaction.update({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("💣 Mines")
-              .setDescription(
-                `💰 Cashed out!\n\n` +
-                `Safe tiles: **${revealed.size}/8**\n` +
-                `Multiplier: **${currentMultiplier()}x**\n` +
-                `Payout: **${formatMoney(
-                  payout
-                )}** ${db.currency}`
+              .setCustomId(
+                `mine_end_${message.author.id}_${i}`
               )
-          ],
-          components: buildRows().map((row) =>
-            disabledRow(row.components)
-          )
-        });
-      }
-
-      const index = Number(
-        interaction.customId.split("_").pop()
-      );
-
-      if (revealed.has(index)) {
-        return interaction.deferUpdate();
-      }
-
-      if (index === bomb) {
-        finished = true;
-        collector.stop();
-
-        const finalRows = [];
-
-        for (let r = 0; r < 3; r++) {
-          const buttons = [];
-
-          for (let c = 0; c < 3; c++) {
-            const i = r * 3 + c;
-
-            buttons.push(
-              new ButtonBuilder()
-                .setCustomId(`mine_end_${message.author.id}_${i}`)
-                .setLabel(i === bomb ? "💣" : "💠")
-                .setStyle(
-                  i === bomb
-                    ? ButtonStyle.Danger
-                    : ButtonStyle.Secondary
-                )
-                .setDisabled(true)
-            );
-          }
-
-          finalRows.push(
-            new ActionRowBuilder().addComponents(buttons)
-          );
-        }
-
-        finalRows.push(
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`mine_end_cash_${message.author.id}`)
-              .setLabel("Game Over")
-              .setStyle(ButtonStyle.Danger)
+              .setLabel(i === bomb ? "💣" : "💠")
+              .setStyle(
+                i === bomb
+                  ? ButtonStyle.Danger
+                  : ButtonStyle.Secondary
+              )
               .setDisabled(true)
-          )
-        );
+          );
+        }
 
-        return interaction.update({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("💣 Mines")
-              .setDescription(
-                `💥 BOOM!\n\nYou hit the bomb and lost **${formatMoney(
-                  bet
-                )}** ${db.currency}.`
-              )
-          ],
-          components: finalRows
-        });
+        endRows.push(
+          new ActionRowBuilder().addComponents(buttons)
+        );
       }
 
-      revealed.add(index);
+      return interaction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("💣 Mines")
+            .setDescription(
+              `💥 BOOM!\n\nYou lost **${money(
+                bet
+              )}** ${db.currency}.`
+            )
+        ],
+        components: endRows
+      });
+    }
 
-      if (revealed.size === 8) {
-        finished = true;
-        collector.stop();
+    safe.add(index);
 
-        const payout = bet * 8;
-        add(user, payout);
+    if (safe.size === 8) {
+      finished = true;
+      collector.stop();
 
-        return interaction.update({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("💣 Mines")
-              .setDescription(
-                `💎 You cleared every safe tile!\n\n` +
-                `🎉 Payout: **${formatMoney(
+      const payout = bet * 8;
+      user.cash += payout;
+
+      return interaction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("💣 Mines")
+            .setDescription(
+              `💎 All safe tiles!\n\n` +
+                `Payout: **${money(
                   payout
                 )}** ${db.currency}.`
-              )
-          ],
-          components: buildRows().map((row) =>
-            disabledRow(row.components)
-          )
-        });
-      }
-
-      await interaction.update({
-        embeds: [embed()],
-        components: buildRows()
+            )
+        ],
+        components: rows().map(disabledRow)
       });
+    }
+
+    return interaction.update({
+      embeds: [embed()],
+      components: rows()
     });
+  });
 
-    collector.on("end", async () => {
-      if (!finished) {
-        finished = true;
-        add(user, bet);
+  collector.on("end", async () => {
+    if (finished) return;
 
-        await gameMessage.edit({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("💣 Mines")
-              .setDescription(
-                `⏰ Game timed out.\nReturned **${formatMoney(
-                  bet
-                )}** ${db.currency}.`
-              )
-          ],
-          components: buildRows().map((row) =>
-            disabledRow(row.components)
-          )
-        }).catch(() => {});
-      }
-    });
+    finished = true;
+    user.cash += bet;
 
-    return;
-  }
-});
+    await msg
+      .edit({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("💣 Mines")
+            .setDescription(
+              `⏰ Timed out.\nReturned **${money(
+                bet
+              )}** ${db.currency}.`
+            )
+        ],
+        components: rows().map(disabledRow)
+      })
+      .catch(() => {});
+  });
+}
 
 /* =========================
-   TOKEN CHECK
+   LOGIN
 ========================= */
 
 if (!process.env.DISCORD_TOKEN) {
   console.error("❌ DISCORD_TOKEN is missing.");
-  process.exit(1);
+} else {
+  client.login(process.env.DISCORD_TOKEN).catch((error) => {
+    console.error("❌ Discord login failed:");
+    console.error(error);
+  });
 }
-
-client.login(process.env.DISCORD_TOKEN).catch((err) => {
-  console.error("❌ Discord login failed:");
-  console.error(err);
-  process.exit(1);
-});
