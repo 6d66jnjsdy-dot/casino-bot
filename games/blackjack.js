@@ -179,20 +179,15 @@ async function finishBlackjack(game, message, result, payout = 0) {
   activeGames.delete(game.userId);
   saveData();
 
-  let dealerText =
-    handText(game.dealer);
-
+  let dealerText = handText(game.dealer);
   let resultText = "";
 
   if (result === "win") {
-    resultText =
-      `🎉 **You won!**\n💰 Payout: **${money(payout)}**`;
+    resultText = `🎉 **You won!**\n💰 Payout: **${money(payout)}**`;
   } else if (result === "push") {
-    resultText =
-      `🤝 **Push!**\n💰 Your bet was returned.`;
+    resultText = `🤝 **Push!**\n💰 Your bet was returned.`;
   } else {
-    resultText =
-      `💀 **You lost.**`;
+    resultText = `💀 **You lost.**`;
   }
 
   await message.edit({
@@ -221,7 +216,7 @@ async function handleBlackjackButton(interaction) {
     return false;
   }
 
-  const [, action, userId] =
+  const [, actionType, userId] =
     interaction.customId.split(":");
 
   if (interaction.user.id !== userId) {
@@ -246,9 +241,9 @@ async function handleBlackjackButton(interaction) {
 
   await interaction.deferUpdate();
 
-  if (action === "hit") {
+  // אם נבחר Hit או שהגענו ל-21 בעקבות פגיעה
+  if (actionType === "hit") {
     const card = game.deck.pop();
-
     game.player.push(card);
 
     const value = handValue(game.player);
@@ -259,32 +254,49 @@ async function handleBlackjackButton(interaction) {
         interaction.message,
         "lose"
       );
-
       return true;
     }
 
     if (value === 21) {
-      action = "stand";
-    } else {
-      await interaction.message.edit({
-        embeds: [
-          embed(
-            "🃏 BLACKJACK",
-            `Your hand:\n${handText(game.player)}\n` +
-            `**Value:** ${value}\n\n` +
-            `Dealer:\n${game.dealer[0].rank}${game.dealer[0].suit}  ❓`
-          )
-        ],
-        components: [
-          createButtons(userId)
-        ]
-      });
+      // עובר אוטומטית لل-Stand אם הגענו ל-21
+      // נריץ את הלוגיקה של stand ישירות
+      while (handValue(game.dealer) < 17) {
+        game.dealer.push(game.deck.pop());
+      }
 
+      const playerValue = handValue(game.player);
+      const dealerValue = handValue(game.dealer);
+
+      if (dealerValue > 21 || playerValue > dealerValue) {
+        await finishBlackjack(game, interaction.message, "win", game.bet * 2);
+        return true;
+      }
+      if (playerValue === dealerValue) {
+        await finishBlackjack(game, interaction.message, "push", game.bet);
+        return true;
+      }
+      await finishBlackjack(game, interaction.message, "lose");
       return true;
     }
+
+    await interaction.message.edit({
+      embeds: [
+        embed(
+          "🃏 BLACKJACK",
+          `Your hand:\n${handText(game.player)}\n` +
+          `**Value:** ${value}\n\n` +
+          `Dealer:\n${game.dealer[0].rank}${game.dealer[0].suit}  ❓`
+        )
+      ],
+      components: [
+        createButtons(userId)
+      ]
+    });
+
+    return true;
   }
 
-  if (action === "stand") {
+  if (actionType === "stand") {
     while (
       handValue(game.dealer) < 17
     ) {
