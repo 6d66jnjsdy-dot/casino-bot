@@ -502,4 +502,16 @@ process.on(
 
 process.on(
   "unhandledRejection",
-  error =>
+  error => {
+    console.error(
+      "❌ Unhandled Rejection:",
+      error
+    );
+  }
+);
+
+/* ============================================================
+   LOGIN TO DISCORD
+   ============================================================ */
+
+client.login(process.env.DISCORD_TOKEN);
