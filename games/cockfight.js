@@ -1,163 +1,69 @@
-const {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle
-} = require("discord.js");
-
 const { getUser, saveData } = require("../database");
-const { money, embed, validBet } = require("../helpers");
+const { money, validBet } = require("../helpers");
 
-const activeGames = new Map();
+// מפה לשמירת משחקים פעילים למניעת ספאם (נשמר לפי יוניק ID של המשתמש)
+const activeGames = new Set();
 
 async function cockfight(message, args, user) {
   const userId = message.author.id;
 
+  // הגנה מפני הרצת פקודות במקביל
   if (activeGames.has(userId)) {
-    return message.reply({
-      embeds: [
-        embed(
-          "❌ יש לך כבר משחק Cockfight פעיל.",
-          0xe74c3c,
-          "🐔 Cockfight"
-        )
-      ]
-    });
+    return message.reply("❌ יש לך כבר קרב תרנגולים פעיל ברגע זה.");
   }
 
+  // בדיקת תקינות ההימור (תומך גם ב-all, half וכו' דרך validBet)
   const bet = validBet(message, args);
-
   if (!bet) return;
 
   if (bet > user.cash) {
-    return message.reply({
-      embeds: [
-        embed(
-          "❌ אין לך מספיק כסף.",
-          0xe74c3c,
-          "🐔 Cockfight"
-        )
-      ]
-    });
+    return message.reply("❌ אין לך מספיק כסף בחשבון להימור זה.");
   }
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`cfight:left:${userId}`)
-      .setLabel("🐔 תרנגול שמאל")
-      .setStyle(ButtonStyle.Primary),
+  // הוספת המשתמש למשחקים פעילים
+  activeGames.add(userId);
 
-    new ButtonBuilder()
-      .setCustomId(`cfight:right:${userId}`)
-      .setLabel("🐔 תרנגול ימין")
-      .setStyle(ButtonStyle.Secondary)
-  );
+  try {
+    // 1. הגרלת אחוז החוזק של התרנגול שלך (בין 50 ל-83)
+    const strength = Math.floor(Math.random() * (83 - 50 + 1)) + 50;
+    
+    // 2. המרה של האחוז לערך עשרוני לצורך בדיקת זכייה
+    const winChance = strength / 100;
+    const won = Math.random() < winChance;
 
-  const msg = await message.reply({
-    embeds: [
-      embed(
-        `**הימור:** ${money(bet)}\n\nבחר את התרנגול שלך:`,
-        0x1c1c1c,
-        "🐔 Cockfight"
-      )
-    ],
-    components: [row]
-  });
+    // 3. עדכון היתרה בבסיס הנתונים
+    if (won) {
+      user.cash += bet; // המשתמש מקבל בחזרה את ההימור + סכום הזכייה (רווח נקי של גובה ההימור)
+    } else {
+      user.cash -= bet; // המשתמש מפסיד את גובה ההימור
+    }
 
-  activeGames.set(userId, {
-    bet,
-    messageId: msg.id
-  });
-}
+    // שמירת הנתונים החדשים
+    saveData();
 
-async function handleCockfightButton(interaction) {
-  const parts = interaction.customId.split(":");
+    // 4. בניית הודעת הפלט בהתאם לתוצאה בדיוק כמו בצילום המסך שלך
+    if (won) {
+      await message.reply(
+        `Your chicken won the fight, you won ${bet} 💸🐔!\n\n` +
+        `Your chicken's strength (chance of winning): ${strength}%\n` +
+        `You now have ${user.cash} 💸`
+      );
+    } else {
+      await message.reply(
+        `Your chicken lost the fight... You lost ${bet} 💸🐔.`
+      );
+    }
 
-  if (parts.length !== 3 || parts[0] !== "cfight") return;
-
-  const choice = parts[1];
-  const userId = parts[2];
-
-  if (interaction.user.id !== userId) {
-    return interaction.reply({
-      content: "❌ המשחק הזה לא שלך.",
-      ephemeral: true
-    });
-  }
-
-  const game = activeGames.get(userId);
-
-  if (!game) {
-    return interaction.reply({
-      content: "❌ המשחק כבר הסתיים.",
-      ephemeral: true
-    });
-  }
-
-  const user = getUser(userId);
-  const bet = game.bet;
-
-  if (bet > user.cash) {
+  } catch (error) {
+    console.error("Cockfight Error:", error);
+    await message.reply("❌ התרחשה שגיאה במהלך הקרב.");
+  } finally {
+    // הסרת המשתמש מרשימת המשחקים הפעילים בסיום הקרב
     activeGames.delete(userId);
-
-    return interaction.update({
-      embeds: [
-        embed(
-          "אין לך מספיק כסף בשביל ההימור.",
-          0xe74c3c,
-          "🐔 Cockfight"
-        )
-      ],
-      components: []
-    });
   }
-
-  user.cash -= bet;
-
-  const winner = Math.random() < 0.5 ? "left" : "right";
-  const won = choice === winner;
-
-  if (won) {
-    user.cash += bet * 2;
-  }
-
-  saveData();
-  activeGames.delete(userId);
-
-  const winnerText =
-    winner === "left"
-      ? "🐔 התרנגול השמאלי"
-      : "🐔 התרנגול הימני";
-
-  if (won) {
-    return interaction.update({
-      embeds: [
-        embed(
-          `המנצח: **${winnerText}**\n\n` +
-          `💰 זכייה: **${money(bet * 2)}**\n` +
-          `💵 יתרה: **${money(user.cash)}**`,
-          0x2ecc71,
-          "🐔 Cockfight — ניצחת!"
-        )
-      ],
-      components: []
-    });
-  }
-
-  return interaction.update({
-    embeds: [
-      embed(
-        `המנצח: **${winnerText}**\n\n` +
-        `💸 הפסד: **${money(bet)}**\n` +
-        `💵 יתרה: **${money(user.cash)}**`,
-        0xe74c3c,
-        "🐔 Cockfight — הפסדת"
-      )
-    ],
-    components: []
-  });
 }
 
+// ייצוא הפונקציה (הסרנו את פונקציית הכפתורים הישנה שאין בה צורך יותר)
 module.exports = {
-  cockfight,
-  handleCockfightButton
+  cockfight
 };
