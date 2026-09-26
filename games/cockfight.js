@@ -5,21 +5,39 @@ const {
 } = require("discord.js");
 
 const { getUser, saveData } = require("../database");
-const { money, embed } = require("../helpers");
+const { money, embed, validBet } = require("../helpers");
 
 const activeGames = new Map();
 
-async function cockfight(message, bet) {
+async function cockfight(message, args, user) {
   const userId = message.author.id;
 
   if (activeGames.has(userId)) {
-    return message.reply("❌ יש לך כבר משחק Cockfight פעיל.");
+    return message.reply({
+      embeds: [
+        embed(
+          "❌ יש לך כבר משחק Cockfight פעיל.",
+          0xe74c3c,
+          "🐔 Cockfight"
+        )
+      ]
+    });
   }
 
-  const user = getUser(userId);
+  const bet = validBet(message, args);
 
-  if (user.cash < bet) {
-    return message.reply("❌ אין לך מספיק כסף.");
+  if (!bet) return;
+
+  if (bet > user.cash) {
+    return message.reply({
+      embeds: [
+        embed(
+          "❌ אין לך מספיק כסף.",
+          0xe74c3c,
+          "🐔 Cockfight"
+        )
+      ]
+    });
   }
 
   const row = new ActionRowBuilder().addComponents(
@@ -37,9 +55,9 @@ async function cockfight(message, bet) {
   const msg = await message.reply({
     embeds: [
       embed(
-        "🐔 Cockfight",
-        `**הימור:** ${money(bet)}\n\n` +
-        "בחר את התרנגול שלך:"
+        `**הימור:** ${money(bet)}\n\nבחר את התרנגול שלך:`,
+        0x1c1c1c,
+        "🐔 Cockfight"
       )
     ],
     components: [row]
@@ -78,14 +96,15 @@ async function handleCockfightButton(interaction) {
   const user = getUser(userId);
   const bet = game.bet;
 
-  if (user.cash < bet) {
+  if (bet > user.cash) {
     activeGames.delete(userId);
 
     return interaction.update({
       embeds: [
         embed(
-          "❌ Cockfight",
-          "אין לך מספיק כסף בשביל ההימור."
+          "אין לך מספיק כסף בשביל ההימור.",
+          0xe74c3c,
+          "🐔 Cockfight"
         )
       ],
       components: []
@@ -113,10 +132,11 @@ async function handleCockfightButton(interaction) {
     return interaction.update({
       embeds: [
         embed(
-          "🐔 Cockfight — ניצחת!",
           `המנצח: **${winnerText}**\n\n` +
           `💰 זכייה: **${money(bet * 2)}**\n` +
-          `💵 יתרה: **${money(user.cash)}**`
+          `💵 יתרה: **${money(user.cash)}**`,
+          0x2ecc71,
+          "🐔 Cockfight — ניצחת!"
         )
       ],
       components: []
@@ -126,10 +146,11 @@ async function handleCockfightButton(interaction) {
   return interaction.update({
     embeds: [
       embed(
-        "🐔 Cockfight — הפסדת",
         `המנצח: **${winnerText}**\n\n` +
         `💸 הפסד: **${money(bet)}**\n` +
-        `💵 יתרה: **${money(user.cash)}**`
+        `💵 יתרה: **${money(user.cash)}**`,
+        0xe74c3c,
+        "🐔 Cockfight — הפסדת"
       )
     ],
     components: []
