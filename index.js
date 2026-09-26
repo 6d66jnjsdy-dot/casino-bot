@@ -82,52 +82,52 @@ const {
 const {
   blackjack,
   handleBlackjackButton
-} = require("./Games/blackjack");
+} = require("./games/blackjack");
 
 const {
   coinflip,
   handleCoinflipButton
-} = require("./Games/coinflip");
+} = require("./games/coinflip");
 
 const {
   higherLower,
   handleHigherLowerButton
-} = require("./Games/higherlower");
+} = require("./games/higherlower");
 
 const {
   cockfight,
   handleCockfightButton
-} = require("./Games/cockfight");
+} = require("./games/cockfight");
 
 const {
   mines,
   handleMinesButton
-} = require("./Games/mines");
+} = require("./games/mines");
 
 const {
   goldmine,
   handleGoldmineButton
-} = require("./Games/goldmine");
+} = require("./games/goldmine");
 
 const {
   slots,
   handleSlotsButton
-} = require("./Games/slots");
+} = require("./games/slots");
 
 const {
   roulette,
   handleRouletteButton
-} = require("./Games/roulette");
+} = require("./games/roulette");
 
 const {
   wheel,
   handleWheelButton
-} = require("./Games/wheel");
+} = require("./games/wheel");
 
 const {
   crash,
   handleCrashButton
-} = require("./Games/crash");
+} = require("./games/crash");
 
 /* ========================= KEEP ALIVE ========================= */
 
