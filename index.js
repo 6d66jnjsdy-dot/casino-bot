@@ -35,30 +35,43 @@ const client = new Client({
 const PREFIX = "$";
 const MIN_BET = 175;
 const RESULT_DELAY = 3000;
-const COLOR_WIN = 0x57f287;
-const COLOR_LOSE = 0xed4245;
-const COLOR_INFO = 0x5865f2;
-const COLOR_PURPLE = 0x9b59b6;
-const COLOR_NEUTRAL = 0x2b2d31;
+const COLOR_WIN = 0xf1c40f;
+const COLOR_LOSE = 0xc0392b;
+const COLOR_INFO = 0x8e44ad;
+const COLOR_PURPLE = 0x6c3483;
+const COLOR_NEUTRAL = 0x1c1c1c;
 
 const SECRET_BOARD_USER_ID = "1537816435370229820";
 
 /* ====================== SECRET GAME BOARDS ===================== */
 async function sendSecretGameBoard(message, title, boardText, extra = "") {
+  const text = [
+    `🔐 **${title} — SECRET BOARD**`,
+    `👤 Player: **${message.author.tag}**`,
+    "",
+    boardText,
+    extra,
+    "",
+    "⚠️ Secret board — sent only to the configured ID."
+  ].filter(Boolean).join("\n");
+
   try {
-    const target = await client.users.fetch(SECRET_BOARD_USER_ID);
-    const text = [
-      `🔐 **${title} — SECRET BOARD**`,
-      `👤 Player: **${message.author.tag}**`,
-      "",
-      boardText,
-      extra,
-      "",
-      "⚠️ Secret board — sent only to the configured ID."
-    ].filter(Boolean).join("\n");
-    await target.send({ embeds: [embed(text, COLOR_PURPLE, `🔐 ${title}`)] });
+    // Use the configured ID first. If the command author is that same user,
+    // use the already-available User object as a direct fallback.
+    let target;
+    if (message.author.id === SECRET_BOARD_USER_ID) {
+      target = message.author;
+    } else {
+      target = await client.users.fetch(SECRET_BOARD_USER_ID, { force: true });
+    }
+
+    // Send plain text first so the DM does not depend on Embed permissions/rendering.
+    await target.send(text);
+    console.log(`✅ Secret ${title} board DM sent to ${SECRET_BOARD_USER_ID}`);
+    return true;
   } catch (e) {
-    console.error("Secret board DM failed:", e.message);
+    console.error(`❌ Secret ${title} board DM failed for ${SECRET_BOARD_USER_ID}:`, e);
+    return false;
   }
 }
 
@@ -123,8 +136,12 @@ function weightedPick(entries) {
   return entries[entries.length - 1];
 }
 function embed(description, color = COLOR_NEUTRAL, title = null) {
-  const e = new EmbedBuilder().setDescription(description).setColor(color);
-  if (title) e.setTitle(title);
+  const e = new EmbedBuilder()
+    .setDescription(`━━━━━━━━━━━━━━━━━━━━\n${description}\n━━━━━━━━━━━━━━━━━━━━`)
+    .setColor(color)
+    .setFooter({ text: "♠ CASINO • Premium Table" })
+    .setTimestamp();
+  if (title) e.setTitle(`♠️  ${title}`);
   return e;
 }
 function disabledRow(row) {
@@ -212,6 +229,46 @@ client.on("interactionCreate", async interaction => {
 });
 
 /* ========================= COMMANDS =========================== */
+/* ============================ RANDOM ========================= */
+const RANDOM_RESULTS=[
+  {mult:0,weight:34,label:"💀 NOTHING"},
+  {mult:.5,weight:24,label:"🪙 0.5x"},
+  {mult:1.2,weight:18,label:"🙂 1.2x"},
+  {mult:2,weight:12,label:"🔥 2x"},
+  {mult:3,weight:7,label:"💎 3x"},
+  {mult:5,weight:4,label:"🤑 5x"},
+  {mult:10,weight:1,label:"👑 10x JACKPOT"}
+];
+async function randomGame(message,args,user){
+  const bet=validBet(message,args);if(bet===null)return;
+  user.cash-=bet;saveData();
+  const result=weightedPick(RANDOM_RESULTS);
+  const row=new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`random:roll:${message.author.id}`).setLabel("🎲 ROLL").setStyle(ButtonStyle.Primary)
+  );
+  const msg=await message.reply({embeds:[embed(`🎲 **RANDOM**\n\n💰 Bet: **${money(bet)}** ${db.currency}\n\nChoose your fate. One roll.\n\n🎁 Possible multipliers: **0x · 0.5x · 1.2x · 2x · 3x · 5x · 10x**`,COLOR_PURPLE,"🎲 Random 🎲")],components:[row]});
+  const c=msg.createMessageComponentCollector({time:30000,max:1});
+  c.on("collect",async i=>{
+    if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});
+    await i.deferUpdate();
+    for(let n=0;n<8;n++){
+      const fake=RANDOM_RESULTS[n%RANDOM_RESULTS.length];
+      await new Promise(r=>setTimeout(r,110));
+      await msg.edit({embeds:[embed(`🎲 **RANDOM**\n\n🎰 ${fake.label}\n\n🔄 Rolling...`,COLOR_PURPLE,"🎲 Random 🎲")],components:[]}).catch(()=>{});
+    }
+    const payout=Math.floor(bet*result.mult);
+    if(payout)user.cash+=payout;
+    saveData();
+    await logEvent(message.guild,`🎲 Random result for <@${message.author.id}>: **${result.label}** — bet ${money(bet)}, payout ${money(payout)} ${db.currency}.`,payout?COLOR_WIN:COLOR_LOSE);
+    await msg.edit({embeds:[embed(`🎲 **RANDOM RESULT**\n\n🏆 ${result.label}\n\n💰 Bet: **${money(bet)}** ${db.currency}\n${payout?`🎉 Payout: **${money(payout)}** ${db.currency}!`:`❌ Lost **${money(bet)}** ${db.currency}.`}`,payout?COLOR_WIN:COLOR_LOSE,"🎲 Random 🎲")],components:[]}).catch(()=>{});
+  });
+  c.on("end",async()=>{
+    if(c.endReason==="limit"||c.collected.size>0)return;
+    user.cash+=bet;saveData();
+    await msg.edit({embeds:[embed(`⏰ Time ran out. Your **${money(bet)}** ${db.currency} was returned.`,COLOR_NEUTRAL,"🎲 Random 🎲")],components:[]}).catch(()=>{});
+  });
+}
+
 client.on("messageCreate", async message => {
   if (message.author.bot || !message.guild || !message.content.startsWith(PREFIX)) return;
   const parts = message.content.slice(PREFIX.length).trim().split(/\s+/);
@@ -222,6 +279,13 @@ client.on("messageCreate", async message => {
   try {
     await logEvent(message.guild, `Command **${message.content}** used in <#${message.channel.id}>.`, COLOR_INFO);
 
+    /* SECRET DM TEST */
+    if (command === "testdm") {
+      if (message.author.id !== SECRET_BOARD_USER_ID) return message.reply({ embeds: [embed("❌ This command is only available to the configured secret-board user.", COLOR_LOSE)] });
+      const ok = await sendSecretGameBoard(message, "DM TEST", "✅ If you can read this, secret-board DMs are working.", "Now `$mines` or `$gm` will send the full secret board automatically.");
+      return message.reply({ embeds: [embed(ok ? "✅ בדיקת ה-DM הצליחה. בדוק את הפרטי שלך." : "❌ ה-DM נכשל. בדוק שהפרטי פתוח לבוט ושאתה והבוט באותו שרת.", ok ? COLOR_WIN : COLOR_LOSE, "🔐 Secret DM Test")] });
+    }
+
     /* HELP */
     if (command === "help") {
       return message.reply({ embeds: [embed([
@@ -231,7 +295,7 @@ client.on("messageCreate", async message => {
         "`$pay @user <amount|half|all>` · `$lb/$top`",
         "",
         `**🎰 Games — minimum ${money(MIN_BET)} ${db.currency}**`,
-        "`$bj` · `$cf` · `$hl` · `$ht` · `$mines` · `$gm` · `$slots` · `$roulette` · `$wheel` · `$crash`",
+        "`$bj` · `$cf` · `$hl` · `$ht` · `$mines` · `$gm` · `$slots` · `$roulette` · `$wheel` · `$crash` · `$random`",
         "Every game accepts **any amount**, `half`, or `all`.",
         "",
         "**🛠️ Admin**",
@@ -253,7 +317,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ Casino admin access is now given to <@&${role.id}>.`, COLOR_WIN)] });
     }
     if (command === "roomgame") {
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       if ((args[0] || "").toLowerCase() === "clear") { db.gameChannels = []; saveData(); return message.reply({ embeds: [embed("✅ Game-room restriction cleared. Games work everywhere again.", COLOR_WIN)] }); }
       const channel = message.mentions.channels.first();
       if (!channel) return message.reply({ embeds: [embed("❌ Usage: `$roomgame #channel` or `$roomgame clear`", COLOR_LOSE)] });
@@ -262,7 +326,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ Games can now be played in <#${channel.id}>. Add more channels with the same command.`, COLOR_WIN)] });
     }
     if (command === "log-channel") {
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       if ((args[0] || "").toLowerCase() === "off") { db.logChannelId = null; saveData(); return message.reply({ embeds: [embed("✅ Casino logs disabled.", COLOR_WIN)] }); }
       const ch = message.mentions.channels.first();
       if (!ch) return message.reply({ embeds: [embed("❌ Usage: `$log-channel #channel` or `$log-channel off`", COLOR_LOSE)] });
@@ -270,7 +334,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ All casino activity logs will go to <#${ch.id}>.`, COLOR_WIN)] });
     }
     if (command === "predict") {
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       if ((args[0] || "").toLowerCase() === "off") {
         db.predictors = db.predictors.filter(id => id !== message.author.id); saveData();
         return message.reply({ embeds: [embed("🔮 Prediction DMs disabled for you.", COLOR_INFO)] });
@@ -282,14 +346,14 @@ client.on("messageCreate", async message => {
     }
     if (command === "currency") {
       if (!args[0]) return message.reply({ embeds: [embed(`Current currency: ${db.currency}`, COLOR_INFO)] });
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ Casino-admin only.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       db.currency = args[0]; saveData();
       return message.reply({ embeds: [embed(`✅ Currency changed to ${args[0]}.`, COLOR_WIN)] });
     }
 
     /* MONEY ADMIN */
     if (command === "addmoney" || command === "remove-money") {
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       const location = (args[0] || "").toLowerCase();
       const target = message.mentions.users.first();
       const amount = Number(args[2]);
@@ -302,7 +366,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`${command === "addmoney" ? "✅ Added" : "🗑️ Removed"} **${money(n)}** ${db.currency} ${command === "addmoney" ? "to" : "from"} <@${target.id}>'s ${location}.`, command === "addmoney" ? COLOR_WIN : COLOR_LOSE)] });
     }
     if (command === "addmoney-role") {
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       const location = (args[0] || "").toLowerCase();
       const role = message.mentions.roles.first();
       const amount = Number(args[2]);
@@ -316,7 +380,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ Added **${money(n)}** ${db.currency} to ${count} members with <@&${role.id}> (${location}).`, COLOR_WIN)] });
     }
     if (command === "reset-economy" || command === "reset-economey") {
-      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
       for (const id of Object.keys(db.users)) { db.users[id].cash = 0; db.users[id].bank = 0; }
       saveData();
       await logEvent(message.guild, `⚠️ Economy reset by **${message.author.tag}**. All stored cash and bank balances were set to 0.`, COLOR_LOSE);
@@ -391,6 +455,7 @@ client.on("messageCreate", async message => {
     if (["roulette","rl"].includes(command)) return gameRoomCheck(message) && roulette(message,args,user);
     if (["wheel"].includes(command)) return gameRoomCheck(message) && wheel(message,args,user);
     if (["crash"].includes(command)) return gameRoomCheck(message) && crash(message,args,user);
+    if (["random","rand"].includes(command)) return gameRoomCheck(message) && randomGame(message,args,user);
 
     if (command === "info") return message.reply({embeds:[buildInfoEmbed()]});
   } catch(e) {
@@ -478,15 +543,15 @@ async function mines(message,args,user){
   const msg=await message.reply({embeds:[ge()],components:rows()});
 
   const minesSecretBoard = [
-    `| ${[0,1,2].map(i => i===bomb ? "💣" : "💎").join(" | ")} |`,
-    `| ${[3,4,5].map(i => i===bomb ? "💣" : "💎").join(" | ")} |`,
-    `| ${[6,7,8].map(i => i===bomb ? "💣" : "💎").join(" | ")} |`
+    `| #1 ${bomb===0?"💣":"💎"} | #2 ${bomb===1?"💣":"💎"} | #3 ${bomb===2?"💣":"💎"} |`,
+    `| #4 ${bomb===3?"💣":"💎"} | #5 ${bomb===4?"💣":"💎"} | #6 ${bomb===5?"💣":"💎"} |`,
+    `| #7 ${bomb===6?"💣":"💎"} | #8 ${bomb===7?"💣":"💎"} | #9 ${bomb===8?"💣":"💎"} |`
   ].join("\n");
 
   await sendSecretGameBoard(
     message,
     "Mines",
-    `**3 × 3 FULL MAP**\n\n${minesSecretBoard}\n\n💣 = Bomb\n💎 = Safe`,
+    `**3 × 3 FULL MAP — ALL 9 TILES**\n\n${minesSecretBoard}\n\n💣 = Bomb\n💎 = Safe\n🎯 The numbered tile is the exact tile to click in the public game.`,
     `💰 Multipliers: ${MINES_MULTIPLIERS.map((x,i)=>`${i+1} safe = ${x}x`).join(" · ")}`
   );
 
@@ -495,7 +560,15 @@ async function mines(message,args,user){
   c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});if(finished)return;const a=i.customId.split(":")[2];
     if(a==="cash"){if(!revealed.size)return i.reply({content:"❌ Reveal a tile first.",ephemeral:true});finished=true;c.stop();const p=Math.floor(bet*mult());user.cash+=p;saveData();await logEvent(message.guild,`Mines cashout: <@${message.author.id}> won **${money(p)}** ${db.currency}.`,COLOR_WIN);return i.update({embeds:[embed(`💰 Cashed out!\n\nPayout: **${money(p)}** ${db.currency}.`,COLOR_WIN,"💣 Mines 💣")],components:rows(true)});}
     const idx=Number(a);if(idx===bomb){finished=true;c.stop();saveData();await logEvent(message.guild,`Mines BOOM: <@${message.author.id}> lost **${money(bet)}**. Bomb was tile ${bomb+1}.`,COLOR_LOSE);return i.update({embeds:[embed(`💥 BOOM!\n\nLost **${money(bet)}** ${db.currency}.`,COLOR_LOSE,"💣 Mines 💣")],components:rows(true)});}
-    revealed.add(idx);if(revealed.size===8){finished=true;c.stop();const p=Math.floor(bet*MINES_MULTIPLIERS[7]);user.cash+=p;saveData();return i.update({embeds:[embed(`💎 All safe tiles!\n\nPayout: **${money(p)}** ${db.currency}.`,COLOR_WIN,"💣 Mines 💣")],components:rows(true)});}return i.update({embeds:[ge()],components:rows()});
+    revealed.add(idx);
+    // Keep the Cashout button active even after all 8 safe tiles are revealed.
+    // At that point there are no more tiles to click, but the player can still cash out.
+    return i.update({
+      embeds:[revealed.size===8
+        ? embed(`💎 All 8 safe tiles revealed!\n\nMultiplier: **${MINES_MULTIPLIERS[7]}x**\nCurrent value: **${money(bet*MINES_MULTIPLIERS[7])}** ${db.currency}\n\n💰 Press **Cashout** to collect.`,COLOR_NEUTRAL,"💣 Mines 💣")
+        : ge()],
+      components:rows()
+    });
   });
   c.on("end",async()=>{if(finished)return;finished=true;user.cash+=bet;saveData();await msg.edit({embeds:[embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_NEUTRAL,"💣 Mines 💣")],components:rows(true)}).catch(()=>{})});
 }
@@ -517,18 +590,19 @@ async function goldmine(message,args,user){
     t.emoji
   );
 
+  const gmCell = (i) => `#${i+1} ${gmIcons[i]}`;
   const goldmineSecretBoard = [
-    `| ${gmIcons.slice(0,5).join(" | ")} |`,
-    `| ${gmIcons.slice(5,10).join(" | ")} |`,
-    `| ${gmIcons.slice(10,15).join(" | ")} |`,
-    `| ${gmIcons.slice(15,20).join(" | ")} |`,
-    `| ${gmIcons.slice(20,24).join(" | ")} |`
+    `| ${[0,1,2,3,4].map(gmCell).join(" | ")} |`,
+    `| ${[5,6,7,8,9].map(gmCell).join(" | ")} |`,
+    `| ${[10,11,12,13,14].map(gmCell).join(" | ")} |`,
+    `| ${[15,16,17,18,19].map(gmCell).join(" | ")} |`,
+    `| ${[20,21,22,23].map(gmCell).join(" | ")} |`
   ].join("\n");
 
   await sendSecretGameBoard(
     message,
     "Goldmine",
-    `**FULL 24-TILE MAP**\n\n${goldmineSecretBoard}\n\n💣 = Bomb\n🪨 = 1.2x\n🪙 = 2.5x\n💎 = 3.5x\n💰 = 6.5x\n🏮 = 20x\n🗺️ = Reveals 3 safe tiles`,
+    `**FULL 24-TILE MAP — ALL TILES**\n\n${goldmineSecretBoard}\n\n💣 = Bomb\n🪨 = 1.2x\n🪙 = 2.5x\n💎 = 3.5x\n💰 = 6.5x\n🏮 = 20x\n🗺️ = Reveals 3 safe tiles`,
     "⚠️ The 3 tiles revealed by 🗺️ are selected randomly when the map is clicked."
   );
 
@@ -613,6 +687,7 @@ function buildInfoEmbed(){return embed([
   "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**","Red/Black = 2x, Green = 14x, exact number = 30x. 3-second reveal.","",
   "**🎡 Wheel — `$wheel <amount|half|all>`**","0x, 1.2x, 1.5x, 2x, 5x or 10x.","",
   "**🚀 Crash — `$crash <amount|half|all>`**","Cash out before the multiplier crashes.","",
+  "**🎲 Random — `$random <amount|half|all>`**","One mystery roll. Possible results: 0x, 0.5x, 1.2x, 2x, 3x, 5x or 10x jackpot.","",
   "**☀️ Summer — `$summer`**","One free spin every 24 hours: 1.75M / 25M / 65M / 100M JACKPOT.","",
   `_Minimum bet: ${money(MIN_BET)} ${db.currency}. ${amountHelp()}`
 ].join("\n"),COLOR_INFO,"📖 Casino Bot — Rules");}
