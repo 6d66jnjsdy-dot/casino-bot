@@ -1,3 +1,8 @@
+/* ============================ IMPORTS ============================ */
+
+const fs = require("fs");
+const path = require("path");
+
 /* ============================ DATA ============================ */
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
@@ -42,9 +47,19 @@ function normalizeDB() {
       continue;
     }
 
-    u.cash = Number.isFinite(Number(u.cash)) ? Math.max(0, Math.floor(Number(u.cash))) : 0;
-    u.bank = Number.isFinite(Number(u.bank)) ? Math.max(0, Math.floor(Number(u.bank))) : 0;
-    u.cooldowns = u.cooldowns && typeof u.cooldowns === "object" ? u.cooldowns : {};
+    u.cash = Number.isFinite(Number(u.cash))
+      ? Math.max(0, Math.floor(Number(u.cash)))
+      : 0;
+
+    u.bank = Number.isFinite(Number(u.bank))
+      ? Math.max(0, Math.floor(Number(u.bank)))
+      : 0;
+
+    u.cooldowns =
+      u.cooldowns && typeof u.cooldowns === "object"
+        ? u.cooldowns
+        : {};
+
     if (u.cfStreak == null) u.cfStreak = 55;
   }
 }
@@ -59,7 +74,9 @@ function loadData() {
       if (!fs.existsSync(file)) continue;
 
       try {
-        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+        const parsed = JSON.parse(
+          fs.readFileSync(file, "utf8")
+        );
 
         db = Object.assign(createDefaultDB(), parsed);
         normalizeDB();
@@ -67,16 +84,24 @@ function loadData() {
         console.log(`✅ Loaded persistent data from: ${file}`);
         return;
       } catch (err) {
-        console.error(`⚠️ Could not read ${file}:`, err.message);
+        console.error(
+          `⚠️ Could not read ${file}:`,
+          err.message
+        );
       }
     }
 
-    console.log("ℹ️ No previous database found. Creating a new one.");
+    console.log(
+      "ℹ️ No previous database found. Creating a new one."
+    );
+
     db = createDefaultDB();
     normalizeDB();
     saveDataNow();
+
   } catch (e) {
     console.error("❌ Failed to load persistent data:", e);
+
     db = createDefaultDB();
     normalizeDB();
   }
@@ -94,27 +119,33 @@ function saveDataNow() {
 
     const json = JSON.stringify(db, null, 2);
 
-    // Write to temporary file first.
+    // Write temporary file first.
     fs.writeFileSync(TEMP_FILE, json, "utf8");
 
-    // Keep previous database as a backup.
+    // Keep previous database as backup.
     if (fs.existsSync(DATA_FILE)) {
       try {
         fs.copyFileSync(DATA_FILE, BACKUP_FILE);
       } catch (e) {
-        console.error("⚠️ Could not create database backup:", e.message);
+        console.error(
+          "⚠️ Could not create database backup:",
+          e.message
+        );
       }
     }
 
-    // Atomic replacement.
+    // Replace database atomically.
     fs.renameSync(TEMP_FILE, DATA_FILE);
 
     console.log("💾 Database saved.");
+
   } catch (e) {
     console.error("❌ Failed to save database:", e);
 
     try {
-      if (fs.existsSync(TEMP_FILE)) fs.unlinkSync(TEMP_FILE);
+      if (fs.existsSync(TEMP_FILE)) {
+        fs.unlinkSync(TEMP_FILE);
+      }
     } catch {}
   }
 }
@@ -125,7 +156,9 @@ function saveData() {
     return;
   }
 
-  if (saveTimer) clearTimeout(saveTimer);
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+  }
 
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -155,7 +188,8 @@ function forceSaveData() {
 
 loadData();
 
-// Save everything before the process is shut down.
+/* ============================ SHUTDOWN ============================ */
+
 process.on("SIGINT", () => {
   console.log("🛑 SIGINT received. Saving database...");
   forceSaveData();
