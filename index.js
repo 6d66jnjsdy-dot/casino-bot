@@ -58,13 +58,14 @@ const client = new Client({
 
 const PREFIX = "$";
 const MIN_BET = 175;
-const RESULT_DELAY = 3000;
+const RESULT_DELAY = 10000;
 
-const COLOR_WIN = 0xf1c40f;
-const COLOR_LOSE = 0xc0392b;
+const COLOR_WIN = 0x2ecc71;
+const COLOR_LOSE = 0xe74c3c;
 const COLOR_INFO = 0x8e44ad;
 const COLOR_PURPLE = 0x6c3483;
 const COLOR_NEUTRAL = 0x1c1c1c;
+const COLOR_ACTIVE = 0xf39c12;
 
 const SECRET_BOARD_USER_ID = "1537816435370229820";
 
@@ -87,7 +88,7 @@ function createDefaultDB() {
     predictors: [],
     disabledCommands: [],
     users: {},
-    summer: {}
+    daily: {}
   };
 }
 
@@ -105,7 +106,13 @@ function normalizeDB() {
   db.predictors = Array.isArray(db.predictors) ? db.predictors : [];
   db.disabledCommands = Array.isArray(db.disabledCommands) ? db.disabledCommands : [];
   db.users = db.users && typeof db.users === "object" ? db.users : {};
-  db.summer = db.summer && typeof db.summer === "object" ? db.summer : {};
+
+  // Migrate old Summer data to Daily
+  if (!db.daily || typeof db.daily !== "object") {
+    db.daily = db.summer && typeof db.summer === "object"
+      ? db.summer
+      : {};
+  }
 
   for (const id of Object.keys(db.users)) {
     const u = db.users[id];
@@ -128,7 +135,10 @@ function normalizeDB() {
       ? Math.max(0, Math.floor(Number(u.bank)))
       : 0;
 
-    u.cooldowns = u.cooldowns && typeof u.cooldowns === "object" ? u.cooldowns : {};
+    u.cooldowns =
+      u.cooldowns && typeof u.cooldowns === "object"
+        ? u.cooldowns
+        : {};
 
     if (u.cfStreak == null) {
       u.cfStreak = 55;
@@ -200,6 +210,7 @@ function saveDataNow() {
 
   } catch (err) {
     console.error("❌ Failed to save database:", err);
+
     try {
       if (fs.existsSync(TEMP_FILE)) {
         fs.unlinkSync(TEMP_FILE);
@@ -240,6 +251,7 @@ function forceSaveData() {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
+
   saveDataNow();
 }
 
@@ -263,8 +275,13 @@ function shutdown(signal) {
     console.error("❌ Shutdown save failed:", err);
   }
 
-  try { server.close(); } catch {}
-  try { client.destroy(); } catch {}
+  try {
+    server.close();
+  } catch {}
+
+  try {
+    client.destroy();
+  } catch {}
 
   process.exit(0);
 }
@@ -309,15 +326,21 @@ function randomFloat(min, max) {
 
 function shuffle(arr) {
   const a = [...arr];
+
   for (let i = a.length - 1; i > 0; i--) {
     const j = random(0, i);
     [a[i], a[j]] = [a[j], a[i]];
   }
+
   return a;
 }
 
 function weightedPick(entries) {
-  const total = entries.reduce((sum, item) => sum + item.weight, 0);
+  const total = entries.reduce(
+    (sum, item) => sum + item.weight,
+    0
+  );
+
   let r = Math.random() * total;
 
   for (const entry of entries) {
@@ -330,9 +353,10 @@ function weightedPick(entries) {
 
 function embed(description, color = COLOR_NEUTRAL, title = null) {
   const e = new EmbedBuilder()
-    .setDescription(`━━━━━━━━━━━━━━━━━━━━\n${description}\n━━━━━━━━━━━━━━━━━━━━`)
+    .setDescription(
+      `━━━━━━━━━━━━━━━━━━━━\n${description}\n━━━━━━━━━━━━━━━━━━━━`
+    )
     .setColor(color)
-    .setFooter({ text: "♠ CASINO • Premium Table" })
     .setTimestamp();
 
   if (title) {
@@ -354,23 +378,40 @@ function formatDuration(ms) {
   const seconds = Math.max(0, Math.ceil(ms / 1000));
   const minutes = Math.floor(seconds / 60);
 
-  return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+  return minutes
+    ? `${minutes}m ${seconds % 60}s`
+    : `${seconds}s`;
 }
 
 function onCooldown(user, key, ms) {
-  const left = (user.cooldowns[key] || 0) + ms - Date.now();
+  const left =
+    (user.cooldowns[key] || 0) +
+    ms -
+    Date.now();
+
   return left > 0 ? left : 0;
 }
 
 function hasCasinoAccess(member) {
   if (!member) return false;
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
 
-  return !!(db.casinoRoleId && member.roles.cache.has(db.casinoRoleId));
+  if (
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
+    )
+  ) {
+    return true;
+  }
+
+  return !!(
+    db.casinoRoleId &&
+    member.roles.cache.has(db.casinoRoleId)
+  );
 }
 
 function isGameChannel(message) {
   if (!db.gameChannels.length) return true;
+
   return db.gameChannels.includes(message.channel.id);
 }
 
@@ -391,6 +432,7 @@ function gameRoomCheck(message) {
 
 function parseBet(user, raw) {
   const value = String(raw || "").toLowerCase();
+
   let bet;
 
   if (value === "all") {
@@ -403,7 +445,9 @@ function parseBet(user, raw) {
 
   if (!Number.isFinite(bet) || bet < MIN_BET) {
     return {
-      error: `❌ Minimum bet is **${money(MIN_BET)}** ${db.currency}. You can use an exact amount, \`half\`, or \`all\`.`
+      error:
+        `❌ Minimum bet is **${money(MIN_BET)}** ${db.currency}. ` +
+        `You can use an exact amount, \`half\`, or \`all\`.`
     };
   }
 
@@ -411,7 +455,8 @@ function parseBet(user, raw) {
 
   if (bet > user.cash) {
     return {
-      error: `❌ You only have **${money(user.cash)}** ${db.currency} in cash.`
+      error:
+        `❌ You only have **${money(user.cash)}** ${db.currency} in cash.`
     };
   }
 
@@ -419,12 +464,19 @@ function parseBet(user, raw) {
 }
 
 function validBet(message, args) {
-  const parsed = parseBet(getUser(message.author.id), args[0]);
+  const parsed =
+    parseBet(
+      getUser(message.author.id),
+      args[0]
+    );
 
   if (parsed.error) {
     message.reply({
-      embeds: [embed(parsed.error, COLOR_LOSE)]
+      embeds: [
+        embed(parsed.error, COLOR_LOSE)
+      ]
     }).catch(() => {});
+
     return null;
   }
 
@@ -436,71 +488,137 @@ function amountHelp() {
 }
 
 /* ============================================================
-   DISABLED COMMANDS
+   COMMAND ALIASES
    ============================================================ */
 
 const COMMAND_ALIASES = {
-  bj: "bj", blackjack: "bj",
-  ht: "ht", coinflip: "ht",
-  hl: "hl", higherlower: "hl",
-  cf: "cf", cockfight: "cf", chickenfight: "cf",
-  mines: "mines", mine: "mines",
-  gm: "gm", goldmine: "gm",
-  slots: "slots", slot: "slots",
-  roulette: "roulette", rl: "roulette",
+  bj: "bj",
+  blackjack: "bj",
+
+  ht: "ht",
+  coinflip: "ht",
+
+  hl: "hl",
+  higherlower: "hl",
+
+  cf: "cf",
+  cockfight: "cf",
+  chickenfight: "cf",
+
+  mines: "mines",
+  mine: "mines",
+
+  gm: "gm",
+  goldmine: "gm",
+
+  slots: "slots",
+  slot: "slots",
+
+  roulette: "roulette",
+  rl: "roulette",
+
   wheel: "wheel",
-  crash: "crash",
-  random: "random", rand: "random"
+  crash: "crash"
 };
 
 function normalizeCommand(command) {
-  const cmd = String(command || "").toLowerCase();
+  const cmd =
+    String(command || "").toLowerCase();
+
   return COMMAND_ALIASES[cmd] || cmd;
 }
 
 function isCommandDisabled(command) {
-  return db.disabledCommands.includes(normalizeCommand(command));
+  return db.disabledCommands.includes(
+    normalizeCommand(command)
+  );
 }
 
 function canManageDisabledCommands(member) {
-  return !!(member && member.permissions.has(PermissionFlagsBits.Administrator));
+  return !!(
+    member &&
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
+    )
+  );
 }
 
 /* ============================================================
    LOGGING
    ============================================================ */
 
-async function logEvent(guild, text, color = COLOR_INFO) {
+async function logEvent(
+  guild,
+  text,
+  color = COLOR_INFO
+) {
   if (!guild || !db.logChannelId) return;
 
   try {
-    const ch = guild.channels.cache.get(db.logChannelId) || await guild.channels.fetch(db.logChannelId);
+    const ch =
+      guild.channels.cache.get(
+        db.logChannelId
+      ) ||
+      await guild.channels.fetch(
+        db.logChannelId
+      );
+
     if (!ch || !ch.isTextBased()) return;
 
     await ch.send({
-      embeds: [embed(text, color, "🧾 Casino Log")]
+      embeds: [
+        embed(
+          text,
+          color,
+          "🧾 Casino Log"
+        )
+      ]
     });
   } catch (err) {
-    console.error("Log error:", err.message);
+    console.error(
+      "Log error:",
+      err.message
+    );
   }
 }
 
 async function secretDM(text) {
   for (const id of [...db.predictors]) {
     try {
-      const user = await client.users.fetch(id);
+      const user =
+        await client.users.fetch(id);
+
       await user.send({
-        embeds: [embed(text, COLOR_PURPLE, "🔮 Casino Prediction")]
+        embeds: [
+          embed(
+            text,
+            COLOR_PURPLE,
+            "🔮 Casino Prediction"
+          )
+        ]
       });
     } catch {}
   }
 }
 
-async function logAndPredict(message, text, secret = null, color = COLOR_INFO) {
-  await logEvent(message.guild, `**${message.author.tag}** (<@${message.author.id}>)\n${text}`, color);
+async function logAndPredict(
+  message,
+  text,
+  secret = null,
+  color = COLOR_INFO
+) {
+  await logEvent(
+    message.guild,
+    `**${message.author.tag}** (<@${message.author.id}>)\n${text}`,
+    color
+  );
 
   if (secret) {
-    await secretDM(`**Server:** ${message.guild.name}\n**Player:** ${message.author.tag}\n${secret}`);
+    await secretDM(
+      `**Server:** ${message.guild.name}\n` +
+      `**Player:** ${message.author.tag}\n` +
+      secret
+    );
   }
 }
 
@@ -508,7 +626,12 @@ async function logAndPredict(message, text, secret = null, color = COLOR_INFO) {
    SECRET BOARD
    ============================================================ */
 
-async function sendSecretGameBoard(message, title, boardText, extra = "") {
+async function sendSecretGameBoard(
+  message,
+  title,
+  boardText,
+  extra = ""
+) {
   const text = [
     `🔐 **${title} — SECRET BOARD**`,
     `👤 Player: **${message.author.tag}**`,
@@ -517,21 +640,39 @@ async function sendSecretGameBoard(message, title, boardText, extra = "") {
     extra,
     "",
     "⚠️ Secret board — sent only to the configured ID."
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   try {
     let target;
-    if (message.author.id === SECRET_BOARD_USER_ID) {
+
+    if (
+      message.author.id ===
+      SECRET_BOARD_USER_ID
+    ) {
       target = message.author;
     } else {
-      target = await client.users.fetch(SECRET_BOARD_USER_ID, { force: true });
+      target =
+        await client.users.fetch(
+          SECRET_BOARD_USER_ID,
+          { force: true }
+        );
     }
 
     await target.send(text);
-    console.log(`✅ Secret ${title} board DM sent to ${SECRET_BOARD_USER_ID}`);
+
+    console.log(
+      `✅ Secret ${title} board DM sent to ${SECRET_BOARD_USER_ID}`
+    );
+
     return true;
   } catch (err) {
-    console.error(`❌ Secret ${title} board DM failed:`, err.message);
+    console.error(
+      `❌ Secret ${title} board DM failed:`,
+      err.message
+    );
+
     return false;
   }
 }
@@ -541,820 +682,1680 @@ async function sendSecretGameBoard(message, title, boardText, extra = "") {
    ============================================================ */
 
 client.once("ready", () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log(`🟢 Casino bot is online and ready.`);
-  console.log(`💾 Data directory: ${DATA_DIR}`);
+  console.log(
+    `🤖 Logged in as ${client.user.tag}`
+  );
+
+  console.log(
+    `🟢 Casino bot is online and ready.`
+  );
+
+  console.log(
+    `💾 Data directory: ${DATA_DIR}`
+  );
 });
 
 /* ============================================================
    BUTTON LOGGING
    ============================================================ */
 
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isButton() || !interaction.guild) return;
-
-  await logEvent(
-    interaction.guild,
-    `Button **${interaction.customId}** clicked by **${interaction.user.tag}** in <#${interaction.channelId}>.`,
-    COLOR_INFO
-  );
-});
-
-/* ============================================================
-   RANDOM
-   ============================================================ */
-
-const RANDOM_RESULTS = [
-  { mult: 0, weight: 34, label: "💀 NOTHING" },
-  { mult: 0.5, weight: 24, label: "🪙 0.5x" },
-  { mult: 1.2, weight: 18, label: "🙂 1.2x" },
-  { mult: 2, weight: 12, label: "🔥 2x" },
-  { mult: 3, weight: 7, label: "💎 3x" },
-  { mult: 5, weight: 4, label: "🤑 5x" },
-  { mult: 10, weight: 1, label: "👑 10x JACKPOT" }
-];
-
-async function randomGame(message, args, user) {
-  const bet = validBet(message, args);
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const result = weightedPick(RANDOM_RESULTS);
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`random:roll:${message.author.id}`)
-      .setLabel("🎲 ROLL")
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  const msg = await message.reply({
-    embeds: [
-      embed(
-        `🎲 **RANDOM**\n\n💰 Bet: **${money(bet)}** ${db.currency}\n\nChoose your fate. One roll.\n\n🎁 Possible multipliers: **0x · 0.5x · 1.2x · 2x · 3x · 5x · 10x**`,
-        COLOR_PURPLE,
-        "🎲 Random 🎲"
-      )
-    ],
-    components: [row]
-  });
-
-  let finished = false;
-  const collector = msg.createMessageComponentCollector({ time: 30000, max: 1 });
-
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
+client.on(
+  "interactionCreate",
+  async interaction => {
+    if (
+      !interaction.isButton() ||
+      !interaction.guild
+    ) {
+      return;
     }
-
-    if (finished) return;
-    finished = true;
-
-    await interaction.deferUpdate();
-
-    for (let n = 0; n < 8; n++) {
-      const fake = RANDOM_RESULTS[n % RANDOM_RESULTS.length];
-      await new Promise(resolve => setTimeout(resolve, 110));
-
-      await msg.edit({
-        embeds: [embed(`🎲 **RANDOM**\n\n🎰 ${fake.label}\n\n🔄 Rolling...`, COLOR_PURPLE, "🎲 Random 🎲")],
-        components: []
-      }).catch(() => {});
-    }
-
-    const payout = Math.floor(bet * result.mult);
-    if (payout) user.cash += payout;
-    saveData();
 
     await logEvent(
-      message.guild,
-      `🎲 Random result for <@${message.author.id}>: **${result.label}** — bet ${money(bet)}, payout ${money(payout)} ${db.currency}.`,
-      payout ? COLOR_WIN : COLOR_LOSE
+      interaction.guild,
+      `Button **${interaction.customId}** clicked by **${interaction.user.tag}** in <#${interaction.channelId}>.`,
+      COLOR_INFO
     );
-
-    await msg.edit({
-      embeds: [
-        embed(
-          `🎲 **RANDOM RESULT**\n\n🏆 ${result.label}\n\n💰 Bet: **${money(bet)}** ${db.currency}\n` +
-          (payout ? `🎉 Payout: **${money(payout)}** ${db.currency}!` : `❌ Lost **${money(bet)}** ${db.currency}.`),
-          payout ? COLOR_WIN : COLOR_LOSE,
-          "🎲 Random 🎲"
-        )
-      ],
-      components: []
-    }).catch(() => {});
-  });
-
-  collector.on("end", async () => {
-    if (finished) return;
-    finished = true;
-
-    user.cash += bet;
-    saveData();
-
-    await msg.edit({
-      embeds: [embed(`⏰ Time ran out. Your **${money(bet)}** ${db.currency} was returned.`, COLOR_NEUTRAL, "🎲 Random 🎲")],
-      components: []
-    }).catch(() => {});
-  });
-}
+  }
+);
 
 /* ============================================================
    COMMAND HANDLER
    ============================================================ */
 
-client.on("messageCreate", async message => {
-  if (message.author.bot || !message.guild || !message.content.startsWith(PREFIX)) {
-    return;
-  }
-
-  const parts = message.content.slice(PREFIX.length).trim().split(/\s+/);
-  const command = (parts.shift() || "").toLowerCase();
-  const args = parts;
-  const user = getUser(message.author.id);
-
-  try {
-    await logEvent(
-      message.guild,
-      `Command **${message.content}** used in <#${message.channel.id}>.`,
-      COLOR_INFO
-    );
-
-    /* ========================================================
-       DISABLE / UNDISABLE
-       ======================================================== */
-
-    if (command === "disable" || command === "undisable") {
-      if (!canManageDisabledCommands(message.member)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      const target = normalizeCommand(args[0]);
-
-      if (!target || target === "disable" || target === "undisable") {
-        return message.reply({
-          embeds: [embed(`❌ Usage: \`$${command} <command>\`\n\nExample: \`$disable mines\``, COLOR_LOSE)]
-        });
-      }
-
-      if (command === "disable") {
-        if (db.disabledCommands.includes(target)) {
-          return message.reply({ embeds: [embed(`ℹ️ \`$${target}\` is already disabled.`, COLOR_INFO)] });
-        }
-
-        db.disabledCommands.push(target);
-        saveData();
-
-        return message.reply({
-          embeds: [embed(`🔒 Command \`$${target}\` has been disabled.\n\nAll aliases for this game are disabled too.`, COLOR_WIN)]
-        });
-      }
-
-      db.disabledCommands = db.disabledCommands.filter(x => x !== target);
-      saveData();
-
-      return message.reply({
-        embeds: [embed(`🔓 Command \`$${target}\` has been enabled again.`, COLOR_WIN)]
-      });
+client.on(
+  "messageCreate",
+  async message => {
+    if (
+      message.author.bot ||
+      !message.guild ||
+      !message.content.startsWith(PREFIX)
+    ) {
+      return;
     }
 
-    /* ========================================================
-       DISABLED COMMAND CHECK
-       ======================================================== */
+    const parts =
+      message.content
+        .slice(PREFIX.length)
+        .trim()
+        .split(/\s+/);
 
-    if (isCommandDisabled(command)) {
-      return message.reply({
-        embeds: [embed(`🔒 The command \`$${command}\` is currently disabled by an administrator.`, COLOR_LOSE)]
-      });
-    }
+    const command =
+      (parts.shift() || "").toLowerCase();
 
-    /* ========================================================
-       SECRET DM TEST
-       ======================================================== */
+    const args = parts;
 
-    if (command === "testdm") {
-      if (message.author.id !== SECRET_BOARD_USER_ID) {
-        return message.reply({
-          embeds: [embed("❌ This command is only available to the configured secret-board user.", COLOR_LOSE)]
-        });
-      }
+    const user =
+      getUser(message.author.id);
 
-      const ok = await sendSecretGameBoard(
-        message,
-        "DM TEST",
-        "✅ If you can read this, secret-board DMs are working.",
-        "Now `$mines` or `$gm` will send the full secret board automatically."
+    try {
+      await logEvent(
+        message.guild,
+        `Command **${message.content}** used in <#${message.channel.id}>.`,
+        COLOR_INFO
       );
 
-      return message.reply({
-        embeds: [
-          embed(
-            ok ? "✅ בדיקת ה-DM הצליחה. בדוק את הפרטי שלך." : "❌ ה-DM נכשל. בדוק שהפרטי פתוח לבוט.",
-            ok ? COLOR_WIN : COLOR_LOSE,
-            "🔐 Secret DM Test"
+      /* ======================================================
+         DISABLE / UNDISABLE
+         ====================================================== */
+
+      if (
+        command === "disable" ||
+        command === "undisable"
+      ) {
+        if (
+          !canManageDisabledCommands(
+            message.member
           )
-        ]
-      });
-    }
-
-    /* ========================================================
-       HELP
-       ======================================================== */
-
-    if (command === "help") {
-      return message.reply({
-        embeds: [
-          embed(
-            [
-              "**💰 Economy**",
-              "`$work` · `$crime` · `$rob @user` · `$bal`",
-              "`$deposit/$dep <amount|half|all>` · `$withdraw/$with <amount|half|all>`",
-              "`$pay @user <amount|half|all>` · `$lb/$top`",
-              "",
-              `**🎰 Games — minimum ${money(MIN_BET)} ${db.currency}**`,
-              "`$bj` · `$cf` · `$hl` · `$ht` · `$mines` · `$gm` · `$slots` · `$roulette` · `$wheel` · `$crash` · `$random`",
-              "",
-              "**🛠️ Admin**",
-              "`$addmoney cash/bank @user <amount>`",
-              "`$remove-money cash/bank @user <amount>`",
-              "`$addmoney-role cash/bank @role <amount>`",
-              "`$reset-economy`",
-              "`$casinorole @role` · `$roomgame #channel` · `$log-channel #channel`",
-              "`$predict` / `$predict off`",
-              "`$currency <emoji>`",
-              "`$disable <command>` / `$undisable <command>`",
-              "`$summer` — once every 24h"
-            ].join("\n"),
-            COLOR_INFO,
-            "🎲 Casino Bot"
-          )
-        ]
-      });
-    }
-
-    /* ========================================================
-       ADMIN CONFIG
-       ======================================================== */
-
-    if (command === "casinorole") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      if ((args[0] || "").toLowerCase() === "remove") {
-        db.casinoRoleId = null;
-        saveData();
-        return message.reply({ embeds: [embed("✅ Casino admin role removed.", COLOR_WIN)] });
-      }
-
-      const role = message.mentions.roles.first();
-      if (!role) {
-        return message.reply({ embeds: [embed("❌ Usage: `$casinorole @role`", COLOR_LOSE)] });
-      }
-
-      db.casinoRoleId = role.id;
-      saveData();
-
-      return message.reply({
-        embeds: [embed(`✅ Casino admin access is now given to <@&${role.id}>.`, COLOR_WIN)]
-      });
-    }
-
-    if (command === "roomgame") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      if ((args[0] || "").toLowerCase() === "clear") {
-        db.gameChannels = [];
-        saveData();
-        return message.reply({ embeds: [embed("✅ Game-room restriction cleared. Games work everywhere again.", COLOR_WIN)] });
-      }
-
-      const channel = message.mentions.channels.first();
-      if (!channel) {
-        return message.reply({ embeds: [embed("❌ Usage: `$roomgame #channel` or `$roomgame clear`", COLOR_LOSE)] });
-      }
-
-      if (!db.gameChannels.includes(channel.id)) {
-        db.gameChannels.push(channel.id);
-      }
-      saveData();
-
-      return message.reply({
-        embeds: [embed(`✅ Games can now be played in <#${channel.id}>.`, COLOR_WIN)]
-      });
-    }
-
-    if (command === "log-channel") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      if ((args[0] || "").toLowerCase() === "off") {
-        db.logChannelId = null;
-        saveData();
-        return message.reply({ embeds: [embed("✅ Casino logs disabled.", COLOR_WIN)] });
-      }
-
-      const ch = message.mentions.channels.first();
-      if (!ch) {
-        return message.reply({ embeds: [embed("❌ Usage: `$log-channel #channel` or `$log-channel off`", COLOR_LOSE)] });
-      }
-
-      db.logChannelId = ch.id;
-      saveData();
-
-      return message.reply({
-        embeds: [embed(`✅ All casino activity logs will go to <#${ch.id}>.`, COLOR_WIN)]
-      });
-    }
-
-    if (command === "predict") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      if ((args[0] || "").toLowerCase() === "off") {
-        db.predictors = db.predictors.filter(id => id !== message.author.id);
-        saveData();
-        return message.reply({ embeds: [embed("🔮 Prediction DMs disabled for you.", COLOR_INFO)] });
-      }
-
-      if (!db.predictors.includes(message.author.id)) {
-        db.predictors.push(message.author.id);
-      }
-      saveData();
-
-      await message.reply({ embeds: [embed("🔮 Prediction DMs enabled.", COLOR_PURPLE)] });
-      return secretDM(`🔮 Prediction feed test from **${message.guild.name}** — it is working.`);
-    }
-
-    if (command === "currency") {
-      if (!args[0]) {
-        return message.reply({ embeds: [embed(`Current currency: ${db.currency}`, COLOR_INFO)] });
-      }
-
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      db.currency = args[0];
-      saveData();
-
-      return message.reply({ embeds: [embed(`✅ Currency changed to ${args[0]}.`, COLOR_WIN)] });
-    }
-
-    /* ========================================================
-       MONEY ADMIN
-       ======================================================== */
-
-    if (command === "addmoney" || command === "remove-money") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      const location = (args[0] || "").toLowerCase();
-      const target = message.mentions.users.first();
-      const amount = Number(args[2]);
-
-      if (!["cash", "bank"].includes(location) || !target || !Number.isFinite(amount) || amount <= 0) {
-        return message.reply({
-          embeds: [embed(`❌ Usage: \`$${command} cash/bank @user <amount>\``, COLOR_LOSE)]
-        });
-      }
-
-      const u = getUser(target.id);
-      const n = Math.floor(amount);
-
-      if (command === "addmoney") {
-        u[location] += n;
-      } else {
-        u[location] = Math.max(0, u[location] - n);
-      }
-
-      saveData();
-
-      return message.reply({
-        embeds: [
-          embed(
-            `${command === "addmoney" ? "✅ Added" : "🗑️ Removed"} **${money(n)}** ${db.currency} ${command === "addmoney" ? "to" : "from"} <@${target.id}>'s ${location}.`,
-            command === "addmoney" ? COLOR_WIN : COLOR_LOSE
-          )
-        ]
-      });
-    }
-
-    if (command === "addmoney-role") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
-
-      const location = (args[0] || "").toLowerCase();
-      const role = message.mentions.roles.first();
-      const amount = Number(args[2]);
-
-      if (!["cash", "bank"].includes(location) || !role || !Number.isFinite(amount) || amount <= 0) {
-        return message.reply({
-          embeds: [embed("❌ Usage: `$addmoney-role cash/bank @role <amount>`", COLOR_LOSE)]
-        });
-      }
-
-      await message.guild.members.fetch();
-      const n = Math.floor(amount);
-      let count = 0;
-
-      for (const [, member] of message.guild.members.cache) {
-        if (!member.user.bot && member.roles.cache.has(role.id)) {
-          getUser(member.id)[location] += n;
-          count++;
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
         }
-      }
 
-      saveData();
+        const target =
+          normalizeCommand(args[0]);
 
-      return message.reply({
-        embeds: [embed(`✅ Added **${money(n)}** ${db.currency} to ${count} members with <@&${role.id}> (${location}).`, COLOR_WIN)]
-      });
-    }
+        if (
+          !target ||
+          target === "disable" ||
+          target === "undisable"
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                `❌ Usage: \`$${command} <command>\`\n\nExample: \`$disable mines\``,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
 
-    if (command === "reset-economy" || command === "reset-economey") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
-      }
+        if (command === "disable") {
+          if (
+            db.disabledCommands.includes(
+              target
+            )
+          ) {
+            return message.reply({
+              embeds: [
+                embed(
+                  `ℹ️ \`$${target}\` is already disabled.`,
+                  COLOR_INFO
+                )
+              ]
+            });
+          }
 
-      for (const id of Object.keys(db.users)) {
-        db.users[id].cash = 0;
-        db.users[id].bank = 0;
-      }
+          db.disabledCommands.push(target);
+          saveData();
 
-      saveData();
+          return message.reply({
+            embeds: [
+              embed(
+                `🔒 Command \`$${target}\` has been disabled.\n\nAll aliases for this game are disabled too.`,
+                COLOR_WIN
+              )
+            ]
+          });
+        }
 
-      return message.reply({ embeds: [embed("⚠️ Economy reset complete.", COLOR_LOSE)] });
-    }
+        db.disabledCommands =
+          db.disabledCommands.filter(
+            x => x !== target
+          );
 
-    /* ========================================================
-       BALANCE / BANK / PAY
-       ======================================================== */
-
-    if (["bal", "balance"].includes(command)) {
-      const target = message.mentions.users.first() || message.author;
-      const u = getUser(target.id);
-      const total = u.cash + u.bank;
-
-      return message.reply({
-        embeds: [
-          embed(
-            `**${target.username}**\n\n💵 Cash: **${money(u.cash)}** ${db.currency}\n🏦 Bank: **${money(u.bank)}** ${db.currency}\n📊 Total: **${money(total)}** ${db.currency}`,
-            COLOR_INFO,
-            "💰 Balance"
-          )
-        ]
-      });
-    }
-
-    if (["deposit", "dep"].includes(command)) {
-      const raw = (args[0] || "").toLowerCase();
-      let amount = raw === "all" ? user.cash : raw === "half" ? Math.floor(user.cash / 2) : Number(raw);
-
-      if (!Number.isFinite(amount) || amount <= 0 || amount > user.cash) {
-        return message.reply({ embeds: [embed("❌ Usage: `$deposit <amount|half|all>`", COLOR_LOSE)] });
-      }
-
-      amount = Math.floor(amount);
-      user.cash -= amount;
-      user.bank += amount;
-      saveData();
-
-      return message.reply({ embeds: [embed(`🏦 Deposited **${money(amount)}** ${db.currency}.`, COLOR_WIN)] });
-    }
-
-    if (["withdraw", "with", "wd"].includes(command)) {
-      const raw = (args[0] || "").toLowerCase();
-      let amount = raw === "all" ? user.bank : raw === "half" ? Math.floor(user.bank / 2) : Number(raw);
-
-      if (!Number.isFinite(amount) || amount <= 0 || amount > user.bank) {
-        return message.reply({ embeds: [embed("❌ Usage: `$withdraw <amount|half|all>`", COLOR_LOSE)] });
-      }
-
-      amount = Math.floor(amount);
-      user.bank -= amount;
-      user.cash += amount;
-      saveData();
-
-      return message.reply({ embeds: [embed(`💵 Withdrew **${money(amount)}** ${db.currency}.`, COLOR_WIN)] });
-    }
-
-    if (command === "pay") {
-      const target = message.mentions.users.first();
-      const raw = (args[1] || "").toLowerCase();
-      let amount = raw === "all" ? user.cash : raw === "half" ? Math.floor(user.cash / 2) : Number(raw);
-
-      if (!target || target.id === message.author.id || !Number.isFinite(amount) || amount <= 0 || amount > user.cash) {
-        return message.reply({ embeds: [embed("❌ Usage: `$pay @user <amount|half|all>`", COLOR_LOSE)] });
-      }
-
-      amount = Math.floor(amount);
-      user.cash -= amount;
-      getUser(target.id).cash += amount;
-      saveData();
-
-      return message.reply({ embeds: [embed(`✅ Sent **${money(amount)}** ${db.currency} to <@${target.id}>.`, COLOR_WIN)] });
-    }
-
-    if (["lb", "leaderboard", "top"].includes(command)) {
-      const cashOnly = (args[0] || "").toLowerCase() === "cash";
-
-      const list = Object.entries(db.users)
-        .sort((a, b) =>
-          cashOnly
-            ? b[1].cash - a[1].cash
-            : (b[1].cash + b[1].bank) - (a[1].cash + a[1].bank)
-        )
-        .slice(0, 10);
-
-      const text = list.length
-        ? list.map(([id, u], i) =>
-            `**${i + 1}.** <@${id}> — **${money(cashOnly ? u.cash : u.cash + u.bank)}** ${db.currency}`
-          ).join("\n")
-        : "No users yet.";
-
-      return message.reply({
-        embeds: [embed(text, COLOR_INFO, cashOnly ? "💵 Top Cash" : "🏆 Leaderboard")]
-      });
-    }
-
-    /* ========================================================
-       SUMMER
-       ======================================================== */
-
-    if (command === "summer") {
-      return summer(message, user);
-    }
-
-    /* ========================================================
-       ECONOMY
-       ======================================================== */
-
-    if (command === "work") {
-      const left = onCooldown(user, "work", 4 * 60 * 1000);
-      if (left) {
-        return message.reply({ embeds: [embed(`⏳ Work again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
-      }
-
-      const n = random(4000, 12000);
-      user.cash += n;
-      user.cooldowns.work = Date.now();
-      saveData();
-
-      return message.reply({ embeds: [embed(`💼 You earned **${money(n)}** ${db.currency}!`, COLOR_WIN)] });
-    }
-
-    if (command === "crime") {
-      const left = onCooldown(user, "crime", 4 * 60 * 1000);
-      if (left) {
-        return message.reply({ embeds: [embed(`⏳ Crime again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
-      }
-
-      user.cooldowns.crime = Date.now();
-      const win = Math.random() < 0.75;
-
-      if (win) {
-        const n = random(6000, 15000);
-        user.cash += n;
         saveData();
-        return message.reply({ embeds: [embed(`🚨 Crime succeeded: **${money(n)}** ${db.currency}!`, COLOR_WIN)] });
+
+        return message.reply({
+          embeds: [
+            embed(
+              `🔓 Command \`$${target}\` has been enabled again.`,
+              COLOR_WIN
+            )
+          ]
+        });
       }
 
-      const fine = random(1000, 3000);
-      user.cash = Math.max(0, user.cash - fine);
-      saveData();
+      /* ======================================================
+         DISABLED COMMAND CHECK
+         ====================================================== */
 
-      return message.reply({ embeds: [embed(`🚔 Caught. Fine: **${money(fine)}** ${db.currency}.`, COLOR_LOSE)] });
-    }
-
-    if (command === "rob") {
-      const left = onCooldown(user, "rob", 8 * 60 * 1000);
-      if (left) {
-        return message.reply({ embeds: [embed(`⏳ Rob again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
+      if (isCommandDisabled(command)) {
+        return message.reply({
+          embeds: [
+            embed(
+              `🔒 The command \`$${command}\` is currently disabled by an administrator.`,
+              COLOR_LOSE
+            )
+          ]
+        });
       }
 
-      const target = message.mentions.users.first();
-      if (!target || target.id === message.author.id) {
-        return message.reply({ embeds: [embed("❌ Usage: `$rob @user`", COLOR_LOSE)] });
+      /* ======================================================
+         SECRET DM TEST
+         ====================================================== */
+
+      if (command === "testdm") {
+        if (
+          message.author.id !==
+          SECRET_BOARD_USER_ID
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ This command is only available to the configured secret-board user.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const ok =
+          await sendSecretGameBoard(
+            message,
+            "DM TEST",
+            "✅ If you can read this, secret-board DMs are working.",
+            "Now `$mines` or `$gm` will send the full secret board automatically."
+          );
+
+        return message.reply({
+          embeds: [
+            embed(
+              ok
+                ? "✅ בדיקת ה-DM הצליחה. בדוק את הפרטי שלך."
+                : "❌ ה-DM נכשל. בדוק שהפרטי פתוח לבוט.",
+              ok
+                ? COLOR_WIN
+                : COLOR_LOSE,
+              "🔐 Secret DM Test"
+            )
+          ]
+        });
       }
 
-      const t = getUser(target.id);
-      if (t.cash < 500) {
-        return message.reply({ embeds: [embed("❌ Target needs at least 500 cash.", COLOR_LOSE)] });
+      /* ======================================================
+         HELP
+         ====================================================== */
+
+      if (command === "help") {
+        return message.reply({
+          embeds: [
+            embed(
+              [
+                "**💰 Economy**",
+                "`$work` · `$crime` · `$rob @user` · `$bal`",
+                "`$deposit/$dep <amount|half|all>` · `$withdraw/$with <amount|half|all>`",
+                "`$pay @user <amount|half|all>` · `$lb/$top`",
+                "",
+                `**🎰 Games — minimum ${money(MIN_BET)} ${db.currency}**`,
+                "`$bj` · `$cf` · `$hl` · `$ht` · `$mines` · `$gm` · `$slots` · `$roulette` · `$wheel` · `$crash`",
+                "",
+                "**🛠️ Admin**",
+                "`$addmoney cash/bank @user <amount>`",
+                "`$remove-money cash/bank @user <amount>`",
+                "`$addmoney-role cash/bank @role <amount>`",
+                "`$reset-economy`",
+                "`$casinorole @role` · `$roomgame #channel` · `$log-channel #channel`",
+                "`$predict` / `$predict off`",
+                "`$currency <emoji>`",
+                "`$disable <command>` / `$undisable <command>`",
+                "`$daily` — once every 24h"
+              ].join("\n"),
+              COLOR_INFO,
+              "🎲 Casino Bot"
+            )
+          ]
+        });
       }
 
-      user.cooldowns.rob = Date.now();
+      /* ======================================================
+         ADMIN CONFIG
+         ====================================================== */
 
-      if (Math.random() < 0.45) {
-        const n = Math.max(1, Math.floor(t.cash * randomFloat(0.1, 0.3)));
+      if (command === "casinorole") {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        if (
+          (args[0] || "").toLowerCase() ===
+          "remove"
+        ) {
+          db.casinoRoleId = null;
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                "✅ Casino admin role removed.",
+                COLOR_WIN
+              )
+            ]
+          });
+        }
+
+        const role =
+          message.mentions.roles.first();
+
+        if (!role) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$casinorole @role`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        db.casinoRoleId = role.id;
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `✅ Casino admin access is now given to <@&${role.id}>.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (command === "roomgame") {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        if (
+          (args[0] || "").toLowerCase() ===
+          "clear"
+        ) {
+          db.gameChannels = [];
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                "✅ Game-room restriction cleared. Games work everywhere again.",
+                COLOR_WIN
+              )
+            ]
+          });
+        }
+
+        const channel =
+          message.mentions.channels.first();
+
+        if (!channel) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$roomgame #channel` or `$roomgame clear`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        if (
+          !db.gameChannels.includes(
+            channel.id
+          )
+        ) {
+          db.gameChannels.push(channel.id);
+        }
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `✅ Games can now be played in <#${channel.id}>.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (command === "log-channel") {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        if (
+          (args[0] || "").toLowerCase() ===
+          "off"
+        ) {
+          db.logChannelId = null;
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                "✅ Casino logs disabled.",
+                COLOR_WIN
+              )
+            ]
+          });
+        }
+
+        const ch =
+          message.mentions.channels.first();
+
+        if (!ch) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$log-channel #channel` or `$log-channel off`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        db.logChannelId = ch.id;
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `✅ All casino activity logs will go to <#${ch.id}>.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (command === "predict") {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        if (
+          (args[0] || "").toLowerCase() ===
+          "off"
+        ) {
+          db.predictors =
+            db.predictors.filter(
+              id =>
+                id !==
+                message.author.id
+            );
+
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                "🔮 Prediction DMs disabled for you.",
+                COLOR_INFO
+              )
+            ]
+          });
+        }
+
+        if (
+          !db.predictors.includes(
+            message.author.id
+          )
+        ) {
+          db.predictors.push(
+            message.author.id
+          );
+        }
+
+        saveData();
+
+        await message.reply({
+          embeds: [
+            embed(
+              "🔮 Prediction DMs enabled.",
+              COLOR_PURPLE
+            )
+          ]
+        });
+
+        return secretDM(
+          `🔮 Prediction feed test from **${message.guild.name}** — it is working.`
+        );
+      }
+
+      if (command === "currency") {
+        if (!args[0]) {
+          return message.reply({
+            embeds: [
+              embed(
+                `Current currency: ${db.currency}`,
+                COLOR_INFO
+              )
+            ]
+          });
+        }
+
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        db.currency = args[0];
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `✅ Currency changed to ${args[0]}.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      /* ======================================================
+         MONEY ADMIN
+         ====================================================== */
+
+      if (
+        command === "addmoney" ||
+        command === "remove-money"
+      ) {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const location =
+          (args[0] || "").toLowerCase();
+
+        const target =
+          message.mentions.users.first();
+
+        const amount =
+          Number(args[2]);
+
+        if (
+          !["cash", "bank"].includes(
+            location
+          ) ||
+          !target ||
+          !Number.isFinite(amount) ||
+          amount <= 0
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                `❌ Usage: \`$${command} cash/bank @user <amount>\``,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const u =
+          getUser(target.id);
+
+        const n = Math.floor(amount);
+
+        if (command === "addmoney") {
+          u[location] += n;
+        } else {
+          u[location] =
+            Math.max(
+              0,
+              u[location] - n
+            );
+        }
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `${command === "addmoney" ? "✅ Added" : "🗑️ Removed"} **${money(n)}** ${db.currency} ${command === "addmoney" ? "to" : "from"} <@${target.id}>'s ${location}.`,
+              command === "addmoney"
+                ? COLOR_WIN
+                : COLOR_LOSE
+            )
+          ]
+        });
+      }
+
+      if (command === "addmoney-role") {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const location =
+          (args[0] || "").toLowerCase();
+
+        const role =
+          message.mentions.roles.first();
+
+        const amount =
+          Number(args[2]);
+
+        if (
+          !["cash", "bank"].includes(
+            location
+          ) ||
+          !role ||
+          !Number.isFinite(amount) ||
+          amount <= 0
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$addmoney-role cash/bank @role <amount>`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        await message.guild.members.fetch();
+
+        const n =
+          Math.floor(amount);
+
+        let count = 0;
+
+        for (
+          const [, member]
+          of message.guild.members.cache
+        ) {
+          if (
+            !member.user.bot &&
+            member.roles.cache.has(
+              role.id
+            )
+          ) {
+            getUser(member.id)[
+              location
+            ] += n;
+
+            count++;
+          }
+        }
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `✅ Added **${money(n)}** ${db.currency} to ${count} members with <@&${role.id}> (${location}).`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (
+        command === "reset-economy" ||
+        command === "reset-economey"
+      ) {
+        if (
+          !message.member.permissions.has(
+            PermissionFlagsBits.Administrator
+          )
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Administrator only.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        for (
+          const id of Object.keys(
+            db.users
+          )
+        ) {
+          db.users[id].cash = 0;
+          db.users[id].bank = 0;
+        }
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              "⚠️ Economy reset complete.",
+              COLOR_LOSE
+            )
+          ]
+        });
+      }
+
+      /* ======================================================
+         BALANCE / BANK / PAY
+         ====================================================== */
+
+      if (
+        ["bal", "balance"].includes(
+          command
+        )
+      ) {
+        const target =
+          message.mentions.users.first() ||
+          message.author;
+
+        const u =
+          getUser(target.id);
+
+        const total =
+          u.cash + u.bank;
+
+        return message.reply({
+          embeds: [
+            embed(
+              `**${target.username}**\n\n💵 Cash: **${money(u.cash)}** ${db.currency}\n🏦 Bank: **${money(u.bank)}** ${db.currency}\n📊 Total: **${money(total)}** ${db.currency}`,
+              COLOR_INFO,
+              "💰 Balance"
+            )
+          ]
+        });
+      }
+
+      if (
+        ["deposit", "dep"].includes(
+          command
+        )
+      ) {
+        const raw =
+          (args[0] || "").toLowerCase();
+
+        let amount =
+          raw === "all"
+            ? user.cash
+            : raw === "half"
+              ? Math.floor(
+                  user.cash / 2
+                )
+              : Number(raw);
+
+        if (
+          !Number.isFinite(amount) ||
+          amount <= 0 ||
+          amount > user.cash
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$deposit <amount|half|all>`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        amount =
+          Math.floor(amount);
+
+        user.cash -= amount;
+        user.bank += amount;
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `🏦 Deposited **${money(amount)}** ${db.currency}.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (
+        ["withdraw", "with", "wd"].includes(
+          command
+        )
+      ) {
+        const raw =
+          (args[0] || "").toLowerCase();
+
+        let amount =
+          raw === "all"
+            ? user.bank
+            : raw === "half"
+              ? Math.floor(
+                  user.bank / 2
+                )
+              : Number(raw);
+
+        if (
+          !Number.isFinite(amount) ||
+          amount <= 0 ||
+          amount > user.bank
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$withdraw <amount|half|all>`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        amount =
+          Math.floor(amount);
+
+        user.bank -= amount;
+        user.cash += amount;
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `💵 Withdrew **${money(amount)}** ${db.currency}.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (command === "pay") {
+        const target =
+          message.mentions.users.first();
+
+        const raw =
+          (args[1] || "").toLowerCase();
+
+        let amount =
+          raw === "all"
+            ? user.cash
+            : raw === "half"
+              ? Math.floor(
+                  user.cash / 2
+                )
+              : Number(raw);
+
+        if (
+          !target ||
+          target.id ===
+            message.author.id ||
+          !Number.isFinite(amount) ||
+          amount <= 0 ||
+          amount > user.cash
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$pay @user <amount|half|all>`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        amount =
+          Math.floor(amount);
+
+        user.cash -= amount;
+
+        getUser(target.id).cash +=
+          amount;
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `✅ Sent **${money(amount)}** ${db.currency} to <@${target.id}>.`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      if (
+        ["lb", "leaderboard", "top"].includes(
+          command
+        )
+      ) {
+        const cashOnly =
+          (args[0] || "").toLowerCase() ===
+          "cash";
+
+        const list =
+          Object.entries(db.users)
+            .sort((a, b) =>
+              cashOnly
+                ? b[1].cash -
+                  a[1].cash
+                : (b[1].cash +
+                    b[1].bank) -
+                  (a[1].cash +
+                    a[1].bank)
+            )
+            .slice(0, 10);
+
+        const text =
+          list.length
+            ? list
+                .map(
+                  ([id, u], i) =>
+                    `**${i + 1}.** <@${id}> — **${money(cashOnly ? u.cash : u.cash + u.bank)}** ${db.currency}`
+                )
+                .join("\n")
+            : "No users yet.";
+
+        return message.reply({
+          embeds: [
+            embed(
+              text,
+              COLOR_INFO,
+              cashOnly
+                ? "💵 Top Cash"
+                : "🏆 Leaderboard"
+            )
+          ]
+        });
+      }
+
+      /* ======================================================
+         DAILY
+         ====================================================== */
+
+      if (command === "daily") {
+        return daily(message, user);
+      }
+
+      /* ======================================================
+         ECONOMY
+         ====================================================== */
+
+      if (command === "work") {
+        const left =
+          onCooldown(
+            user,
+            "work",
+            4 * 60 * 1000
+          );
+
+        if (left) {
+          return message.reply({
+            embeds: [
+              embed(
+                `⏳ Work again in **${formatDuration(left)}**.`,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const n =
+          random(4000, 12000);
+
+        user.cash += n;
+        user.cooldowns.work =
+          Date.now();
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `💼 You earned **${money(n)}** ${db.currency}!`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      /* ======================================================
+         CRIME — 12% CATCH
+         ====================================================== */
+
+      if (command === "crime") {
+        const left =
+          onCooldown(
+            user,
+            "crime",
+            4 * 60 * 1000
+          );
+
+        if (left) {
+          return message.reply({
+            embeds: [
+              embed(
+                `⏳ Crime again in **${formatDuration(left)}**.`,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        user.cooldowns.crime =
+          Date.now();
+
+        // 12% chance to get caught
+        const caught =
+          Math.random() < 0.12;
+
+        if (caught) {
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                "🚔 You got caught trying to commit a crime.\n\nNo money was lost.",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const n =
+          random(6000, 15000);
+
+        user.cash += n;
+
+        saveData();
+
+        return message.reply({
+          embeds: [
+            embed(
+              `🚨 Crime succeeded: **${money(n)}** ${db.currency}!`,
+              COLOR_WIN
+            )
+          ]
+        });
+      }
+
+      /* ======================================================
+         ROB
+         ====================================================== */
+
+      if (command === "rob") {
+        const left =
+          onCooldown(
+            user,
+            "rob",
+            8 * 60 * 1000
+          );
+
+        if (left) {
+          return message.reply({
+            embeds: [
+              embed(
+                `⏳ Rob again in **${formatDuration(left)}**.`,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const target =
+          message.mentions.users.first();
+
+        if (
+          !target ||
+          target.id ===
+            message.author.id
+        ) {
+          return message.reply({
+            embeds: [
+              embed(
+                "❌ Usage: `$rob @user`",
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const t =
+          getUser(target.id);
+
+        user.cooldowns.rob =
+          Date.now();
+
+        // Target has no money = 12% catch chance.
+        // Target has money = 20% catch chance.
+        const catchChance =
+          t.cash <= 0
+            ? 0.12
+            : 0.20;
+
+        if (
+          Math.random() <
+          catchChance
+        ) {
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                `You caught try rob <@${target.id}>`,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        if (t.cash <= 0) {
+          saveData();
+
+          return message.reply({
+            embeds: [
+              embed(
+                `❌ <@${target.id}> has no money to rob.`,
+                COLOR_LOSE
+              )
+            ]
+          });
+        }
+
+        const n =
+          Math.max(
+            1,
+            Math.floor(
+              t.cash *
+                randomFloat(
+                  0.10,
+                  0.30
+                )
+            )
+          );
+
         t.cash -= n;
         user.cash += n;
+
         saveData();
 
-        return message.reply({ embeds: [embed(`🕵️ Stole **${money(n)}** ${db.currency} from <@${target.id}>.`, COLOR_WIN)] });
+        return message.reply({
+          embeds: [
+            embed(
+              `🕵️ You robbed <@${target.id}> and stole **${money(n)}** ${db.currency}.`,
+              COLOR_WIN
+            )
+          ]
+        });
       }
 
-      const fine = random(500, 1500);
-      user.cash = Math.max(0, user.cash - fine);
-      saveData();
+      /* ======================================================
+         GAMES
+         ====================================================== */
 
-      return message.reply({ embeds: [embed(`🚔 Rob failed. Fine: **${money(fine)}** ${db.currency}.`, COLOR_LOSE)] });
-    }
+      if (
+        ["bj", "blackjack"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          blackjack(
+            message,
+            args,
+            user
+          )
+        );
+      }
 
-    /* ========================================================
-       GAMES
-       ======================================================== */
+      if (
+        ["ht", "coinflip"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          coinflip(
+            message,
+            args,
+            user
+          )
+        );
+      }
 
-    if (["bj", "blackjack"].includes(command)) {
-      return gameRoomCheck(message) && blackjack(message, args, user);
-    }
-    if (["ht", "coinflip"].includes(command)) {
-      return gameRoomCheck(message) && coinflip(message, args, user);
-    }
-    if (["hl", "higherlower"].includes(command)) {
-      return gameRoomCheck(message) && higherLower(message, args, user);
-    }
-    if (["cf", "cockfight", "chickenfight"].includes(command)) {
-      return gameRoomCheck(message) && cockfight(message, args, user);
-    }
-    if (["mines", "mine"].includes(command)) {
-      return gameRoomCheck(message) && mines(message, args, user);
-    }
-    if (["gm", "goldmine"].includes(command)) {
-      return gameRoomCheck(message) && goldmine(message, args, user);
-    }
-    if (["slots", "slot"].includes(command)) {
-      return gameRoomCheck(message) && slots(message, args, user);
-    }
-    if (["roulette", "rl"].includes(command)) {
-      return gameRoomCheck(message) && roulette(message, args, user);
-    }
-    if (command === "wheel") {
-      return gameRoomCheck(message) && wheel(message, args, user);
-    }
-    if (command === "crash") {
-      return gameRoomCheck(message) && crash(message, args, user);
-    }
-    if (["random", "rand"].includes(command)) {
-      return gameRoomCheck(message) && randomGame(message, args, user);
-    }
+      if (
+        ["hl", "higherlower"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          higherLower(
+            message,
+            args,
+            user
+          )
+        );
+      }
 
-    if (command === "info") {
-      return message.reply({ embeds: [buildInfoEmbed()] });
-    }
+      if (
+        [
+          "cf",
+          "cockfight",
+          "chickenfight"
+        ].includes(command)
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          cockfight(
+            message,
+            args,
+            user
+          )
+        );
+      }
 
-  } catch (err) {
-    console.error("❌ Command error:", err);
-    message.reply({
-      embeds: [embed("❌ Something went wrong.", COLOR_LOSE)]
-    }).catch(() => {});
+      if (
+        ["mines", "mine"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          mines(
+            message,
+            args,
+            user
+          )
+        );
+      }
+
+      if (
+        ["gm", "goldmine"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          goldmine(
+            message,
+            args,
+            user
+          )
+        );
+      }
+
+      if (
+        ["slots", "slot"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          slots(
+            message,
+            args,
+            user
+          )
+        );
+      }
+
+      if (
+        ["roulette", "rl"].includes(
+          command
+        )
+      ) {
+        return (
+          gameRoomCheck(message) &&
+          roulette(
+            message,
+            args,
+            user
+          )
+        );
+      }
+
+      if (command === "wheel") {
+        return (
+          gameRoomCheck(message) &&
+          wheel(
+            message,
+            args,
+            user
+          )
+        );
+      }
+
+      if (command === "crash") {
+        return (
+          gameRoomCheck(message) &&
+          crash(
+            message,
+            args,
+            user
+          )
+        );
+      }
+
+      if (command === "info") {
+        return message.reply({
+          embeds: [
+            buildInfoEmbed()
+          ]
+        });
+      }
+
+    } catch (err) {
+      console.error(
+        "❌ Command error:",
+        err
+      );
+
+      message.reply({
+        embeds: [
+          embed(
+            "❌ Something went wrong.",
+            COLOR_LOSE
+          )
+        ]
+      }).catch(() => {});
+    }
   }
-});
+);
 
 /* ============================================================
    BLACKJACK
    ============================================================ */
 
 const CARD_VALUES = [
-  ["A", 11], ["2", 2], ["3", 3], ["4", 4], ["5", 5],
-  ["6", 6], ["7", 7], ["8", 8], ["9", 9], ["10", 10],
-  ["J", 10], ["Q", 10], ["K", 10]
+  ["A", 11],
+  ["2", 2],
+  ["3", 3],
+  ["4", 4],
+  ["5", 5],
+  ["6", 6],
+  ["7", 7],
+  ["8", 8],
+  ["9", 9],
+  ["10", 10],
+  ["J", 10],
+  ["Q", 10],
+  ["K", 10]
 ];
 
-const TEN_VALUE_CARDS = ["10", "J", "Q", "K"];
+const TEN_VALUE_CARDS = [
+  "10",
+  "J",
+  "Q",
+  "K"
+];
 
-const CARD_GLYPHS = {
-  "♠": ["🂡","🂢","🂣","🂤","🂥","🂦","🂧","🂨","🂩","🂪","🂫","🂭","🂮"],
-  "♥": ["🂱","🂲","🂳","🂴","🂵","🂶","🂷","🂸","🂹","🂺","🂻","🂽","🂾"],
-  "♦": ["🃁","🃂","🃃","🃄","🃅","🃆","🃇","🃈","🃉","🃊","🃋","🃍","🃎"],
-  "♣": ["🃑","🃒","🃓","🃔","🃕","🃖","🃗","🃘","🃙","🃚","🃛","🃝","🃞"]
-};
-
-const SUITS = ["♠", "♥", "♦", "♣"];
+const SUITS = [
+  "♠",
+  "♥",
+  "♦",
+  "♣"
+];
 
 function rankIndex(value) {
-  return CARD_VALUES.findIndex(x => x[0] === value);
+  return CARD_VALUES.findIndex(
+    x => x[0] === value
+  );
 }
 
-function makeCard(value, number) {
-  const suit = SUITS[random(0, 3)];
+function makeCard(
+  value,
+  number
+) {
+  const suit =
+    SUITS[random(0, 3)];
+
   return {
     value,
     number,
-    glyph: CARD_GLYPHS[suit][rankIndex(value)]
+    suit
   };
 }
 
 function drawStandardCard() {
-  const x = CARD_VALUES[random(0, CARD_VALUES.length - 1)];
-  return makeCard(x[0], x[1]);
+  const x =
+    CARD_VALUES[
+      random(
+        0,
+        CARD_VALUES.length - 1
+      )
+    ];
+
+  return makeCard(
+    x[0],
+    x[1]
+  );
 }
 
 function drawPlayerCard() {
-  const p = [...CARD_VALUES, ["2", 2], ["3", 3], ["4", 4], ["5", 5], ["6", 6]];
-  const x = p[random(0, p.length - 1)];
-  return makeCard(x[0], x[1]);
+  const p = [
+    ...CARD_VALUES,
+    ["2", 2],
+    ["3", 3],
+    ["4", 4],
+    ["5", 5],
+    ["6", 6]
+  ];
+
+  const x =
+    p[random(0, p.length - 1)];
+
+  return makeCard(
+    x[0],
+    x[1]
+  );
 }
 
 function drawDealerCard() {
-  const p = [...CARD_VALUES, ["8", 8], ["9", 9], ["10", 10], ["J", 10], ["Q", 10], ["K", 10]];
-  const x = p[random(0, p.length - 1)];
-  return makeCard(x[0], x[1]);
+  const p = [
+    ...CARD_VALUES,
+    ["8", 8],
+    ["9", 9],
+    ["10", 10],
+    ["J", 10],
+    ["Q", 10],
+    ["K", 10]
+  ];
+
+  const x =
+    p[random(0, p.length - 1)];
+
+  return makeCard(
+    x[0],
+    x[1]
+  );
 }
 
 function handValue(hand) {
-  let total = hand.reduce((sum, card) => sum + card.number, 0);
-  let aces = hand.filter(card => card.value === "A").length;
+  let total =
+    hand.reduce(
+      (sum, card) =>
+        sum + card.number,
+      0
+    );
 
-  while (total > 21 && aces-- > 0) {
+  let aces =
+    hand.filter(
+      card =>
+        card.value === "A"
+    ).length;
+
+  while (
+    total > 21 &&
+    aces-- > 0
+  ) {
     total -= 10;
   }
 
   return total;
 }
 
+/* ============================================================
+   REAL CARD STYLE
+   ============================================================ */
+
+function cardText(card) {
+  return [
+    "┌──────┐",
+    `│${card.value.padEnd(6, " ")}│`,
+    `│  ${card.suit}   │`,
+    `│   ${card.value.padStart(6, " ")}│`,
+    "└──────┘"
+  ].join("\n");
+}
+
 function handText(hand) {
-  return hand.map(card => card.glyph).join(" ");
+  return (
+    "```text\n" +
+    hand
+      .map(cardText)
+      .join("\n\n") +
+    "\n```"
+  );
+}
+
+function hiddenCardText() {
+  return [
+    "┌──────┐",
+    "│░░░░░░│",
+    "│░░🂠░░│",
+    "│░░░░░░│",
+    "└──────┘"
+  ].join("\n");
 }
 
 function dealPlayerHand() {
   if (Math.random() < 0.234) {
-    const ten = TEN_VALUE_CARDS[random(0, 3)];
-    const tc = CARD_VALUES.find(x => x[0] === ten);
+    const ten =
+      TEN_VALUE_CARDS[
+        random(0, 3)
+      ];
+
+    const tc =
+      CARD_VALUES.find(
+        x => x[0] === ten
+      );
 
     return shuffle([
       makeCard("A", 11),
-      makeCard(tc[0], tc[1])
+      makeCard(
+        tc[0],
+        tc[1]
+      )
     ]);
   }
 
-  return [drawStandardCard(), drawStandardCard()];
+  return [
+    drawStandardCard(),
+    drawStandardCard()
+  ];
 }
 
-async function blackjack(message, args, user) {
-  const bet = validBet(message, args);
+async function blackjack(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const player = dealPlayerHand();
-  const dealer = [drawStandardCard(), drawStandardCard()];
+  const player =
+    dealPlayerHand();
+
+  const dealer = [
+    drawStandardCard(),
+    drawStandardCard()
+  ];
 
   let totalBet = bet;
   let finished = false;
   let processing = false;
 
-  const natural = handValue(player) === 21;
+  const natural =
+    handValue(player) === 21;
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`bj:hit:${message.author.id}`)
-      .setLabel("HIT")
-      .setStyle(ButtonStyle.Primary),
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `bj:hit:${message.author.id}`
+          )
+          .setLabel("HIT")
+          .setStyle(
+            ButtonStyle.Primary
+          ),
 
-    new ButtonBuilder()
-      .setCustomId(`bj:stand:${message.author.id}`)
-      .setLabel("STAND")
-      .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(
+            `bj:stand:${message.author.id}`
+          )
+          .setLabel("STAND")
+          .setStyle(
+            ButtonStyle.Success
+          ),
 
-    new ButtonBuilder()
-      .setCustomId(`bj:double:${message.author.id}`)
-      .setLabel("DOUBLE")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(user.cash < bet)
-  );
+        new ButtonBuilder()
+          .setCustomId(
+            `bj:double:${message.author.id}`
+          )
+          .setLabel("DOUBLE")
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+          .setDisabled(
+            user.cash < bet
+          )
+      );
 
-  function gameEmbed(show = false) {
+  function gameEmbed(
+    show = false
+  ) {
     return new EmbedBuilder()
-      .setColor(COLOR_NEUTRAL)
-      .setTitle("🃏  B L A C K J A C K  🃏")
+      .setColor(COLOR_ACTIVE)
+      .setTitle(
+        "🃏  B L A C K J A C K  🃏"
+      )
       .setDescription(
         `**YOUR HAND**\n${handText(player)}\n**Total: ${handValue(player)}**\n\n` +
-        `**DEALER**\n${show ? handText(dealer) : handText([dealer[0]]) + " 🂠"}\n` +
-        `${show ? `**Total: ${handValue(dealer)}**` : "**Total: ?**"}\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n💰 **Bet:** ${money(totalBet)} ${db.currency}\n🎯 **Natural chance:** 23.4%`
+        `**DEALER**\n` +
+        `${
+          show
+            ? handText(dealer)
+            : handText([dealer[0]]) +
+              "\n" +
+              hiddenCardText()
+        }\n` +
+        `${
+          show
+            ? `**Total: ${handValue(dealer)}**`
+            : "**Total: ?**"
+        }\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `💰 **Bet:** ${money(totalBet)} ${db.currency}\n` +
+        `🎯 **Natural chance:** 23.4%`
       )
-      .setFooter({ text: "Choose an action below • 120 second timer" });
+      .setFooter({
+        text:
+          "Choose an action below • 120 second timer"
+      });
   }
 
   if (natural) {
-    const payout = Math.floor(totalBet * 2.5);
+    const payout =
+      Math.floor(
+        totalBet * 2.5
+      );
+
     user.cash += payout;
     saveData();
 
     return message.reply({
       embeds: [
         embed(
-          `🃏 **BLACKJACK!**\n\nYour hand: ${handText(player)} — **21**\nDealer: ${handText(dealer)} — **${handValue(dealer)}**\n\nPayout: **${money(payout)}** ${db.currency}`,
+          `🃏 **BLACKJACK!**\n\n` +
+          `Your hand:\n${handText(player)}\n` +
+          `**21**\n\n` +
+          `Dealer:\n${handText(dealer)}\n` +
+          `**${handValue(dealer)}**\n\n` +
+          `Payout: **${money(payout)}** ${db.currency}`,
           COLOR_WIN,
           "🃏 Blackjack 🃏"
         )
@@ -1362,190 +2363,400 @@ async function blackjack(message, args, user) {
     });
   }
 
-  const gm = await message.reply({
-    embeds: [gameEmbed()],
-    components: [row]
-  });
+  const gm =
+    await message.reply({
+      embeds: [
+        gameEmbed()
+      ],
+      components: [row]
+    });
 
-  const collector = gm.createMessageComponentCollector({ time: 120000 });
+  const collector =
+    gm.createMessageComponentCollector({
+      time: 120000
+    });
 
-  async function finish(result, payout, color) {
+  async function finish(
+    result,
+    payout,
+    color
+  ) {
     if (finished) return;
+
     finished = true;
     collector.stop();
 
-    if (payout > 0) user.cash += payout;
+    if (payout > 0) {
+      user.cash += payout;
+    }
+
     saveData();
 
     await gm.edit({
       embeds: [
         embed(
-          `**YOUR HAND**\n${handText(player)} — **${handValue(player)}**\n\n**DEALER**\n${handText(dealer)} — **${handValue(dealer)}**\n\n${result}` +
-          (payout ? `\nPayout: **${money(payout)}** ${db.currency}` : ""),
+          `**YOUR HAND**\n${handText(player)}\n**${handValue(player)}**\n\n` +
+          `**DEALER**\n${handText(dealer)}\n**${handValue(dealer)}**\n\n` +
+          `${result}` +
+          (
+            payout
+              ? `\nPayout: **${money(payout)}** ${db.currency}`
+              : ""
+          ),
           color,
           "🃏 Blackjack 🃏"
         )
       ],
-      components: [disabledRow(row)]
+      components: [
+        disabledRow(row)
+      ]
     });
   }
 
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    }
-
-    if (finished || processing) return;
-    processing = true;
-
-    try {
-      const action = interaction.customId.split(":")[1];
-
-      if (action === "double") {
-        if (user.cash < bet) {
-          return interaction.reply({ content: "❌ Not enough cash.", ephemeral: true });
-        }
-
-        user.cash -= bet;
-        totalBet += bet;
-        player.push(drawPlayerCard());
-
-        await interaction.deferUpdate();
-
-        if (handValue(player) > 21) {
-          return finish("💥 Bust!", 0, COLOR_LOSE);
-        }
-
-        while (handValue(dealer) < 17) {
-          dealer.push(drawDealerCard());
-        }
-
-        const p = handValue(player);
-        const d = handValue(dealer);
-
-        if (d > 21 || p > d) return finish("🎉 You win!", totalBet * 2, COLOR_WIN);
-        if (p === d) return finish("🤝 Push!", totalBet, COLOR_INFO);
-        return finish("❌ Dealer wins.", 0, COLOR_LOSE);
+  collector.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your game.",
+          ephemeral: true
+        });
       }
 
-      if (action === "hit") {
-        player.push(drawPlayerCard());
-
-        if (handValue(player) > 21) {
-          await interaction.deferUpdate();
-          return finish("💥 Bust!", 0, COLOR_LOSE);
-        }
-
-        await interaction.update({
-          embeds: [gameEmbed()],
-          components: [row]
-        });
+      if (
+        finished ||
+        processing
+      ) {
         return;
       }
 
-      await interaction.deferUpdate();
+      processing = true;
 
-      while (handValue(dealer) < 17) {
-        dealer.push(drawDealerCard());
+      try {
+        const action =
+          interaction.customId.split(":")[1];
+
+        if (action === "double") {
+          if (user.cash < bet) {
+            return interaction.reply({
+              content:
+                "❌ Not enough cash.",
+              ephemeral: true
+            });
+          }
+
+          user.cash -= bet;
+          totalBet += bet;
+
+          player.push(
+            drawPlayerCard()
+          );
+
+          await interaction.deferUpdate();
+
+          if (
+            handValue(player) > 21
+          ) {
+            return finish(
+              "💥 Bust!",
+              0,
+              COLOR_LOSE
+            );
+          }
+
+          while (
+            handValue(dealer) < 17
+          ) {
+            dealer.push(
+              drawDealerCard()
+            );
+          }
+
+          const p =
+            handValue(player);
+
+          const d =
+            handValue(dealer);
+
+          if (
+            d > 21 ||
+            p > d
+          ) {
+            return finish(
+              "🎉 You win!",
+              totalBet * 2,
+              COLOR_WIN
+            );
+          }
+
+          if (p === d) {
+            return finish(
+              "🤝 Push!",
+              totalBet,
+              COLOR_INFO
+            );
+          }
+
+          return finish(
+            "❌ Dealer wins.",
+            0,
+            COLOR_LOSE
+          );
+        }
+
+        if (action === "hit") {
+          player.push(
+            drawPlayerCard()
+          );
+
+          if (
+            handValue(player) > 21
+          ) {
+            await interaction.deferUpdate();
+
+            return finish(
+              "💥 Bust!",
+              0,
+              COLOR_LOSE
+            );
+          }
+
+          await interaction.update({
+            embeds: [
+              gameEmbed()
+            ],
+            components: [row]
+          });
+
+          return;
+        }
+
+        await interaction.deferUpdate();
+
+        while (
+          handValue(dealer) < 17
+        ) {
+          dealer.push(
+            drawDealerCard()
+          );
+        }
+
+        const p =
+          handValue(player);
+
+        const d =
+          handValue(dealer);
+
+        if (
+          d > 21 ||
+          p > d
+        ) {
+          return finish(
+            "🎉 You win!",
+            totalBet * 2,
+            COLOR_WIN
+          );
+        }
+
+        if (p === d) {
+          return finish(
+            "🤝 Push!",
+            totalBet,
+            COLOR_INFO
+          );
+        }
+
+        return finish(
+          "❌ Dealer wins.",
+          0,
+          COLOR_LOSE
+        );
+
+      } finally {
+        processing = false;
       }
-
-      const p = handValue(player);
-      const d = handValue(dealer);
-
-      if (d > 21 || p > d) return finish("🎉 You win!", totalBet * 2, COLOR_WIN);
-      if (p === d) return finish("🤝 Push!", totalBet, COLOR_INFO);
-      return finish("❌ Dealer wins.", 0, COLOR_LOSE);
-
-    } finally {
-      processing = false;
     }
-  });
+  );
 
-  collector.on("end", async () => {
-    if (finished) return;
-    finished = true;
+  collector.on(
+    "end",
+    async () => {
+      if (finished) return;
 
-    user.cash += totalBet;
-    saveData();
+      finished = true;
 
-    await gm.edit({
-      embeds: [embed(`⏰ Game timed out. Returned **${money(totalBet)}** ${db.currency}.`, COLOR_NEUTRAL, "🃏 Blackjack 🃏")],
-      components: [disabledRow(row)]
-    }).catch(() => {});
-  });
+      user.cash += totalBet;
+      saveData();
+
+      await gm.edit({
+        embeds: [
+          embed(
+            `⏰ Game timed out. Returned **${money(totalBet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
+            "🃏 Blackjack 🃏"
+          )
+        ],
+        components: [
+          disabledRow(row)
+        ]
+      }).catch(() => {});
+    }
+  );
 }
 
 /* ============================================================
    COINFLIP
    ============================================================ */
 
-async function coinflip(message, args, user) {
-  const bet = validBet(message, args);
+async function coinflip(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`ht:h:${message.author.id}`)
-      .setLabel("Heads")
-      .setStyle(ButtonStyle.Primary),
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `ht:h:${message.author.id}`
+          )
+          .setLabel("Heads")
+          .setStyle(
+            ButtonStyle.Primary
+          ),
 
-    new ButtonBuilder()
-      .setCustomId(`ht:t:${message.author.id}`)
-      .setLabel("Tails")
-      .setStyle(ButtonStyle.Success)
-  );
+        new ButtonBuilder()
+          .setCustomId(
+            `ht:t:${message.author.id}`
+          )
+          .setLabel("Tails")
+          .setStyle(
+            ButtonStyle.Success
+          )
+      );
 
-  const msg = await message.reply({
-    embeds: [embed(`**Bet:** ${money(bet)} ${db.currency}\n\nChoose Heads or Tails.`, COLOR_NEUTRAL, "🍀 CoinFlip 🍀")],
-    components: [row]
-  });
-
-  let finished = false;
-  const c = msg.createMessageComponentCollector({ time: 60000, max: 1 });
-
-  c.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    }
-
-    if (finished) return;
-    finished = true;
-
-    const result = Math.random() < 0.5 ? "h" : "t";
-    const choice = interaction.customId.split(":")[1];
-    const win = result === choice;
-
-    if (win) user.cash += bet * 2;
-    saveData();
-
-    await interaction.update({
+  const msg =
+    await message.reply({
       embeds: [
         embed(
-          `${result === "h" ? "🪙 Heads" : "🪙 Tails"}\n\n` +
-          (win ? `🎉 Won **${money(bet * 2)}** ${db.currency}!` : `❌ Lost **${money(bet)}** ${db.currency}.`),
-          win ? COLOR_WIN : COLOR_LOSE,
+          `**Bet:** ${money(bet)} ${db.currency}\n\nChoose Heads or Tails.`,
+          COLOR_ACTIVE,
           "🍀 CoinFlip 🍀"
         )
       ],
-      components: [disabledRow(row)]
+      components: [row]
     });
-  });
 
-  c.on("end", async collection => {
-    if (collection.size || finished) return;
-    finished = true;
+  let finished = false;
 
-    user.cash += bet;
-    saveData();
+  const c =
+    msg.createMessageComponentCollector({
+      time: 60000,
+      max: 1
+    });
 
-    await msg.edit({
-      embeds: [embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_NEUTRAL, "🍀 CoinFlip 🍀")],
-      components: [disabledRow(row)]
-    }).catch(() => {});
-  });
+  c.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your game.",
+          ephemeral: true
+        });
+      }
+
+      if (finished) return;
+
+      finished = true;
+
+      const result =
+        Math.random() < 0.5
+          ? "h"
+          : "t";
+
+      const choice =
+        interaction.customId.split(":")[1];
+
+      const win =
+        result === choice;
+
+      if (win) {
+        user.cash += bet * 2;
+      }
+
+      saveData();
+
+      await interaction.update({
+        embeds: [
+          embed(
+            `${
+              result === "h"
+                ? "🪙 Heads"
+                : "🪙 Tails"
+            }\n\n` +
+            (
+              win
+                ? `🎉 Won **${money(bet * 2)}** ${db.currency}!`
+                : `❌ Lost **${money(bet)}** ${db.currency}.`
+            ),
+            win
+              ? COLOR_WIN
+              : COLOR_LOSE,
+            "🍀 CoinFlip 🍀"
+          )
+        ],
+        components: [
+          disabledRow(row)
+        ]
+      });
+    }
+  );
+
+  c.on(
+    "end",
+    async collection => {
+      if (
+        collection.size ||
+        finished
+      ) {
+        return;
+      }
+
+      finished = true;
+
+      user.cash += bet;
+      saveData();
+
+      await msg.edit({
+        embeds: [
+          embed(
+            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
+            "🍀 CoinFlip 🍀"
+          )
+        ],
+        components: [
+          disabledRow(row)
+        ]
+      }).catch(() => {});
+    }
+  );
 }
 
 /* ============================================================
@@ -1553,132 +2764,286 @@ async function coinflip(message, args, user) {
    ============================================================ */
 
 function hlMultipliers(current) {
-  const higher = 100 - current;
-  const lower = current - 1;
+  const higher =
+    100 - current;
+
+  const lower =
+    current - 1;
 
   return {
-    higher: Math.round(Math.min(15, Math.max(1.01, (100 / higher) * 1.02)) * 100) / 100,
-    lower: Math.round(Math.min(15, Math.max(1.01, (100 / lower) * 1.02)) * 100) / 100,
+    higher:
+      Math.round(
+        Math.min(
+          15,
+          Math.max(
+            1.01,
+            (100 / higher) * 1.02
+          )
+        ) * 100
+      ) / 100,
+
+    lower:
+      Math.round(
+        Math.min(
+          15,
+          Math.max(
+            1.01,
+            (100 / lower) * 1.02
+          )
+        ) * 100
+      ) / 100,
+
     same: 8
   };
 }
 
-async function higherLower(message, args, user) {
-  const bet = validBet(message, args);
+async function higherLower(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const current = random(2, 99);
-  const mult = hlMultipliers(current);
+  const current =
+    random(2, 99);
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`hl:hi:${message.author.id}`)
-      .setLabel("Higher")
-      .setStyle(ButtonStyle.Primary),
+  const mult =
+    hlMultipliers(current);
 
-    new ButtonBuilder()
-      .setCustomId(`hl:eq:${message.author.id}`)
-      .setLabel("Same")
-      .setStyle(ButtonStyle.Primary),
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `hl:hi:${message.author.id}`
+          )
+          .setLabel("Higher")
+          .setStyle(
+            ButtonStyle.Primary
+          ),
 
-    new ButtonBuilder()
-      .setCustomId(`hl:lo:${message.author.id}`)
-      .setLabel("Lower")
-      .setStyle(ButtonStyle.Primary)
-  );
+        new ButtonBuilder()
+          .setCustomId(
+            `hl:eq:${message.author.id}`
+          )
+          .setLabel("Same")
+          .setStyle(
+            ButtonStyle.Primary
+          ),
 
-  const msg = await message.reply({
-    embeds: [
-      embed(
-        `**Betting Amount:** ${money(bet)}\n\n**1:** ${current}\n**2:** ❓\n\nHigher: **${mult.higher}x**\nSame: **${mult.same}x**\nLower: **${mult.lower}x**`,
-        COLOR_NEUTRAL,
-        "🎲 Higher or Lower 🎲"
-      )
-    ],
-    components: [row]
-  });
+        new ButtonBuilder()
+          .setCustomId(
+            `hl:lo:${message.author.id}`
+          )
+          .setLabel("Lower")
+          .setStyle(
+            ButtonStyle.Primary
+          )
+      );
+
+  const msg =
+    await message.reply({
+      embeds: [
+        embed(
+          `**Betting Amount:** ${money(bet)}\n\n` +
+          `**1:** ${current}\n` +
+          `**2:** ❓\n\n` +
+          `Higher: **${mult.higher}x**\n` +
+          `Same: **${mult.same}x**\n` +
+          `Lower: **${mult.lower}x**`,
+          COLOR_ACTIVE,
+          "🎲 Higher or Lower 🎲"
+        )
+      ],
+      components: [row]
+    });
 
   let finished = false;
   let processing = false;
 
-  const collector = msg.createMessageComponentCollector({ time: 60000, max: 1 });
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 60000,
+      max: 1
+    });
 
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
+  collector.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your game.",
+          ephemeral: true
+        });
+      }
+
+      if (
+        finished ||
+        processing
+      ) {
+        return;
+      }
+
+      processing = true;
+
+      try {
+        const choice =
+          interaction.customId.split(":")[1];
+
+        let next =
+          random(1, 100);
+
+        /*
+         * Extra 2% losing gate.
+         * This lowers the effective winning
+         * chance by about 2%.
+         */
+        if (Math.random() < 0.02) {
+          if (choice === "hi") {
+            next = random(
+              1,
+              current
+            );
+          } else if (
+            choice === "lo"
+          ) {
+            next = random(
+              current,
+              100
+            );
+          } else {
+            let possible;
+
+            do {
+              possible =
+                random(1, 100);
+            } while (
+              possible === current
+            );
+
+            next = possible;
+          }
+        }
+
+        const win =
+          (choice === "hi" &&
+            next > current) ||
+          (choice === "lo" &&
+            next < current) ||
+          (choice === "eq" &&
+            next === current);
+
+        const multiplier =
+          choice === "hi"
+            ? mult.higher
+            : choice === "lo"
+              ? mult.lower
+              : mult.same;
+
+        const payout =
+          win
+            ? Math.floor(
+                bet * multiplier
+              )
+            : 0;
+
+        if (payout) {
+          user.cash += payout;
+        }
+
+        finished = true;
+        saveData();
+
+        await interaction.update({
+          embeds: [
+            embed(
+              `**1:** ${current}\n` +
+              `**2:** ${next}\n\n` +
+              (
+                win
+                  ? `🎉 Won **${money(payout)}** ${db.currency}!`
+                  : `❌ Lost **${money(bet)}** ${db.currency}.`
+              ),
+              win
+                ? COLOR_WIN
+                : COLOR_LOSE,
+              "🎲 Higher or Lower 🎲"
+            )
+          ],
+          components: [
+            disabledRow(row)
+          ]
+        });
+
+      } finally {
+        processing = false;
+      }
     }
+  );
 
-    if (finished || processing) return;
-    processing = true;
+  collector.on(
+    "end",
+    async collection => {
+      if (
+        collection.size ||
+        finished
+      ) {
+        return;
+      }
 
-    try {
-      const next = random(1, 100);
-      const choice = interaction.customId.split(":")[1];
-
-      const win =
-        (choice === "hi" && next > current) ||
-        (choice === "lo" && next < current) ||
-        (choice === "eq" && next === current);
-
-      const multiplier = choice === "hi" ? mult.higher : choice === "lo" ? mult.lower : mult.same;
-      const payout = win ? Math.floor(bet * multiplier) : 0;
-
-      if (payout) user.cash += payout;
       finished = true;
+
+      user.cash += bet;
       saveData();
 
-      await interaction.update({
+      await msg.edit({
         embeds: [
           embed(
-            `**1:** ${current}\n**2:** ${next}\n\n` +
-            (win ? `🎉 Won **${money(payout)}** ${db.currency}!` : `❌ Lost **${money(bet)}** ${db.currency}.`),
-            win ? COLOR_WIN : COLOR_LOSE,
+            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
             "🎲 Higher or Lower 🎲"
           )
         ],
-        components: [disabledRow(row)]
-      });
-
-    } finally {
-      processing = false;
+        components: [
+          disabledRow(row)
+        ]
+      }).catch(() => {});
     }
-  });
-
-  collector.on("end", async collection => {
-    if (collection.size || finished) return;
-    finished = true;
-
-    user.cash += bet;
-    saveData();
-
-    await msg.edit({
-      embeds: [embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_NEUTRAL, "🎲 Higher or Lower 🎲")],
-      components: [disabledRow(row)]
-    }).catch(() => {});
-  });
+  );
 }
 
 /* ============================================================
-   COCKFIGHT
+   COCKFIGHT — EXACTLY 50%
    ============================================================ */
 
-async function cockfight(message, args, user) {
-  const bet = validBet(message, args);
+async function cockfight(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
 
-  const chance = user.cfStreak || 55;
-  const win = Math.random() * 100 < chance;
+  const chance = 50;
+  const win =
+    Math.random() < 0.50;
 
   if (win) {
     user.cash += bet * 2;
-    user.cfStreak = Math.min(82, chance + 1);
-  } else {
-    user.cfStreak = 55;
   }
 
   saveData();
@@ -1687,10 +3052,12 @@ async function cockfight(message, args, user) {
     embeds: [
       embed(
         win
-          ? `🐔 Your chicken won!\n\nChance: **${chance}%**\nPayout: **${money(bet * 2)}** ${db.currency}`
-          : `🐔 Your chicken lost.\n\nChance: **${chance}%**\nLost: **${money(bet)}** ${db.currency}`,
-        win ? COLOR_WIN : COLOR_LOSE,
-        "🐔 Cockfight 🐔"
+          ? `Your chicken won the fight, you won **${money(bet * 2)}** ${db.currency} 🐔\n\n-# Your chicken strength **${chance}%**\n-# You now have **${money(user.cash)}** ${db.currency}`
+          : `Your chicken lost the fight, you lost **${money(bet)}** ${db.currency} 🐔\n\n-# Your chicken strength **${chance}%**\n-# You now have **${money(user.cash)}** ${db.currency}`,
+        win
+          ? COLOR_WIN
+          : COLOR_LOSE,
+        "🐔 Cockfight"
       )
     ]
   });
@@ -1700,83 +3067,163 @@ async function cockfight(message, args, user) {
    MINES
    ============================================================ */
 
-const MINES_MULTIPLIERS = [1.1, 1.3, 1.7, 2, 2.5, 4, 5.7, 9.42];
+const MINES_MULTIPLIERS = [
+  1.1,
+  1.3,
+  1.7,
+  2,
+  2.5,
+  4,
+  5.7,
+  9.42
+];
 
-async function mines(message, args, user) {
-  const bet = validBet(message, args);
+async function mines(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const bomb = random(0, 8);
-  const revealed = new Set();
+  const bomb =
+    random(0, 8);
+
+  const revealed =
+    new Set();
+
   let finished = false;
   let processing = false;
 
   function currentMultiplier() {
-    if (!revealed.size) return 1;
-    return MINES_MULTIPLIERS[Math.min(revealed.size - 1, MINES_MULTIPLIERS.length - 1)] || 9.42;
+    if (!revealed.size) {
+      return 1;
+    }
+
+    return (
+      MINES_MULTIPLIERS[
+        Math.min(
+          revealed.size - 1,
+          MINES_MULTIPLIERS.length - 1
+        )
+      ] || 9.42
+    );
   }
 
   function rows(end = false) {
     const output = [];
 
-    for (let r = 0; r < 3; r++) {
+    for (
+      let r = 0;
+      r < 3;
+      r++
+    ) {
       const buttons = [];
 
-      for (let c = 0; c < 3; c++) {
-        const index = r * 3 + c;
-        const isBomb = index === bomb;
-        const isRevealed = revealed.has(index);
+      for (
+        let c = 0;
+        c < 3;
+        c++
+      ) {
+        const index =
+          r * 3 + c;
+
+        const isBomb =
+          index === bomb;
+
+        const isRevealed =
+          revealed.has(index);
+
         let label = "ㅤ";
 
         if (end) {
-          label = isBomb ? "💣" : "💎";
-        } else if (isRevealed) {
+          label =
+            isBomb
+              ? "💣"
+              : "💎";
+        } else if (
+          isRevealed
+        ) {
           label = "💎";
         }
 
         buttons.push(
           new ButtonBuilder()
-            .setCustomId(`mn:${message.author.id}:${index}`)
+            .setCustomId(
+              `mn:${message.author.id}:${index}`
+            )
             .setLabel(label)
             .setStyle(
-              end && isBomb ? ButtonStyle.Danger : isRevealed ? ButtonStyle.Success : ButtonStyle.Secondary
+              end && isBomb
+                ? ButtonStyle.Danger
+                : isRevealed
+                  ? ButtonStyle.Success
+                  : ButtonStyle.Secondary
             )
-            .setDisabled(isRevealed || end)
+            .setDisabled(
+              isRevealed || end
+            )
         );
       }
 
-      output.push(new ActionRowBuilder().addComponents(buttons));
+      output.push(
+        new ActionRowBuilder()
+          .addComponents(
+            buttons
+          )
+      );
     }
 
     output.push(
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`mn:${message.author.id}:cash`)
-          .setLabel("💰 Cashout")
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(!revealed.size || end)
-      )
+      new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `mn:${message.author.id}:cash`
+            )
+            .setLabel(
+              "💰 Cashout"
+            )
+            .setStyle(
+              ButtonStyle.Success
+            )
+            .setDisabled(
+              !revealed.size ||
+              end
+            )
+        )
     );
 
     return output;
   }
 
   function gameEmbed() {
-    const multiplier = currentMultiplier();
+    const multiplier =
+      currentMultiplier();
+
     return embed(
-      `💎 Safe tiles: **${revealed.size}/8**\nMultiplier: **${multiplier}x**\nCurrent value: **${money(bet * multiplier)}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}`,
-      COLOR_NEUTRAL,
+      `💎 Safe tiles: **${revealed.size}/8**\n` +
+      `Multiplier: **${multiplier}x**\n` +
+      `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
+      `Bet: **${money(bet)}** ${db.currency}\n\n` +
+      `⏱️ Click cooldown: **550ms**`,
+      COLOR_ACTIVE,
       "💣 Mines 💣"
     );
   }
 
-  const msg = await message.reply({
-    embeds: [gameEmbed()],
-    components: rows()
-  });
+  const msg =
+    await message.reply({
+      embeds: [
+        gameEmbed()
+      ],
+      components: rows()
+    });
 
   const secretBoard = [
     `| #1 ${bomb === 0 ? "💣" : "💎"} | #2 ${bomb === 1 ? "💣" : "💎"} | #3 ${bomb === 2 ? "💣" : "💎"} |`,
@@ -1788,100 +3235,190 @@ async function mines(message, args, user) {
     message,
     "Mines",
     `**3 × 3 FULL MAP — ALL 9 TILES**\n\n${secretBoard}\n\n💣 = Bomb\n💎 = Safe`,
-    `💰 Multipliers: ${MINES_MULTIPLIERS.map((x, i) => `${i + 1} safe =${x}x`).join(" · ")}`
+    `💰 Multipliers: ${MINES_MULTIPLIERS.map(
+      (x, i) =>
+        `${i + 1} safe =${x}x`
+    ).join(" · ")}`
   );
 
-  const collector = msg.createMessageComponentCollector({ time: 120000 });
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 120000
+    });
 
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    }
+  collector.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your game.",
+          ephemeral: true
+        });
+      }
 
-    if (finished || processing) return;
-    processing = true;
+      if (
+        finished ||
+        processing
+      ) {
+        return;
+      }
 
-    try {
-      const action = interaction.customId.split(":")[2];
+      processing = true;
 
-      if (action === "cash") {
-        if (!revealed.size) {
-          return interaction.reply({ content: "❌ Reveal a tile first.", ephemeral: true });
+      try {
+        const action =
+          interaction.customId.split(":")[2];
+
+        if (action === "cash") {
+          if (!revealed.size) {
+            return interaction.reply({
+              content:
+                "❌ Reveal a tile first.",
+              ephemeral: true
+            });
+          }
+
+          finished = true;
+          collector.stop();
+
+          const multiplier =
+            currentMultiplier();
+
+          const payout =
+            Math.floor(
+              bet * multiplier
+            );
+
+          user.cash += payout;
+
+          saveData();
+
+          await interaction.update({
+            embeds: [
+              embed(
+                `💰 Cashed out!\n\nPayout: **${money(payout)}** ${db.currency}.`,
+                COLOR_WIN,
+                "💣 Mines 💣"
+              )
+            ],
+            components:
+              rows(true)
+          });
+
+          return;
         }
 
-        finished = true;
-        collector.stop();
+        const index =
+          Number(action);
 
-        const multiplier = currentMultiplier();
-        const payout = Math.floor(bet * multiplier);
-        user.cash += payout;
-        saveData();
+        if (
+          !Number.isInteger(index) ||
+          index < 0 ||
+          index > 8 ||
+          revealed.has(index)
+        ) {
+          return;
+        }
 
-        await interaction.update({
-          embeds: [embed(`💰 Cashed out!\n\nPayout: **${money(payout)}** ${db.currency}.`, COLOR_WIN, "💣 Mines 💣")],
-          components: rows(true)
-        });
-        return;
-      }
+        if (index === bomb) {
+          finished = true;
+          collector.stop();
 
-      const index = Number(action);
-      if (!Number.isInteger(index) || index < 0 || index > 8 || revealed.has(index)) return;
+          saveData();
 
-      if (index === bomb) {
-        finished = true;
-        collector.stop();
-        saveData();
+          await interaction.update({
+            embeds: [
+              embed(
+                `💥 BOOM!\n\nLost **${money(bet)}** ${db.currency}.`,
+                COLOR_LOSE,
+                "💣 Mines 💣"
+              )
+            ],
+            components:
+              rows(true)
+          });
 
-        await interaction.update({
-          embeds: [embed(`💥 BOOM!\n\nLost **${money(bet)}** ${db.currency}.`, COLOR_LOSE, "💣 Mines 💣")],
-          components: rows(true)
-        });
-        return;
-      }
+          return;
+        }
 
-      await interaction.deferUpdate();
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      if (finished) return;
+        await interaction.deferUpdate();
 
-      revealed.add(index);
-      const multiplier = currentMultiplier();
+        // 550ms click delay
+        await new Promise(
+          resolve =>
+            setTimeout(
+              resolve,
+              550
+            )
+        );
 
-      if (revealed.size === 8) {
+        if (finished) return;
+
+        revealed.add(index);
+
+        const multiplier =
+          currentMultiplier();
+
+        if (
+          revealed.size === 8
+        ) {
+          await msg.edit({
+            embeds: [
+              embed(
+                `💎 All 8 safe tiles revealed!\n\n` +
+                `Multiplier: **${multiplier}x**\n` +
+                `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
+                `💰 Press **Cashout** to collect.`,
+                COLOR_ACTIVE,
+                "💣 Mines 💣"
+              )
+            ],
+            components: rows()
+          });
+
+          return;
+        }
+
         await msg.edit({
           embeds: [
-            embed(
-              `💎 All 8 safe tiles revealed!\n\nMultiplier: **${multiplier}x**\nCurrent value: **${money(bet * multiplier)}** ${db.currency}\n\n💰 Press **Cashout** to collect.`,
-              COLOR_NEUTRAL,
-              "💣 Mines 💣"
-            )
+            gameEmbed()
           ],
           components: rows()
         });
-        return;
+
+      } finally {
+        processing = false;
       }
+    }
+  );
+
+  collector.on(
+    "end",
+    async () => {
+      if (finished) return;
+
+      finished = true;
+
+      user.cash += bet;
+      saveData();
 
       await msg.edit({
-        embeds: [gameEmbed()],
-        components: rows()
-      });
-
-    } finally {
-      processing = false;
+        embeds: [
+          embed(
+            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
+            "💣 Mines 💣"
+          )
+        ],
+        components:
+          rows(true)
+      }).catch(() => {});
     }
-  });
-
-  collector.on("end", async () => {
-    if (finished) return;
-    finished = true;
-
-    user.cash += bet;
-    saveData();
-
-    await msg.edit({
-      embeds: [embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_NEUTRAL, "💣 Mines 💣")],
-      components: rows(true)
-    }).catch(() => {});
-  });
+  );
 }
 
 /* ============================================================
@@ -1892,106 +3429,265 @@ const GOLDMINE_SIZE = 24;
 const GOLDMINE_BOMBS = 14;
 
 const GOLDMINE_TREASURE_COUNTS = [
-  { key: "rock", emoji: "🪨", mult: 1.1, count: 3 },
-  { key: "coin", emoji: "🪙", mult: 2.5, count: 2 },
-  { key: "diamond", emoji: "💎", mult: 3.5, count: 2 },
-  { key: "moneybag", emoji: "💰", mult: 6.5, count: 1 },
-  { key: "lantern", emoji: "🏮", mult: 20, count: 1 }
+  {
+    key: "rock",
+    emoji: "🪨",
+    mult: 1.1,
+    count: 3
+  },
+  {
+    key: "coin",
+    emoji: "🪙",
+    mult: 2.5,
+    count: 2
+  },
+  {
+    key: "diamond",
+    emoji: "💎",
+    mult: 3.5,
+    count: 2
+  },
+  {
+    key: "moneybag",
+    emoji: "💰",
+    mult: 6.5,
+    count: 1
+  },
+  {
+    key: "lantern",
+    emoji: "🏮",
+    mult: 20,
+    count: 1
+  }
 ];
 
 function buildGoldmineBoard() {
-  const ids = shuffle([...Array(GOLDMINE_SIZE).keys()]);
-  const board = new Array(GOLDMINE_SIZE);
+  const ids =
+    shuffle([
+      ...Array(
+        GOLDMINE_SIZE
+      ).keys()
+    ]);
+
+  const board =
+    new Array(
+      GOLDMINE_SIZE
+    );
+
   let cursor = 0;
 
-  for (const index of ids.slice(cursor, cursor + GOLDMINE_BOMBS)) {
-    board[index] = { type: "bomb" };
+  for (
+    const index of ids.slice(
+      cursor,
+      cursor + GOLDMINE_BOMBS
+    )
+  ) {
+    board[index] = {
+      type: "bomb"
+    };
+
     cursor++;
   }
 
-  for (const treasure of GOLDMINE_TREASURE_COUNTS) {
-    for (const index of ids.slice(cursor, cursor + treasure.count)) {
-      board[index] = { type: "treasure", ...treasure };
+  for (
+    const treasure
+    of GOLDMINE_TREASURE_COUNTS
+  ) {
+    for (
+      const index of ids.slice(
+        cursor,
+        cursor +
+          treasure.count
+      )
+    ) {
+      board[index] = {
+        type: "treasure",
+        ...treasure
+      };
+
       cursor++;
     }
   }
 
-  board[ids[cursor]] = { type: "map" };
+  board[ids[cursor]] = {
+    type: "map"
+  };
+
   cursor++;
 
-  while (cursor < ids.length) {
-    board[ids[cursor]] = { type: "rock", emoji: "🪨", mult: 1.1 };
+  while (
+    cursor < ids.length
+  ) {
+    board[ids[cursor]] = {
+      type: "rock",
+      emoji: "🪨",
+      mult: 1.1
+    };
+
     cursor++;
   }
 
   return board;
 }
 
-async function goldmine(message, args, user) {
-  const bet = validBet(message, args);
+async function goldmine(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const board = buildGoldmineBoard();
-  const revealed = new Set();
+  const board =
+    buildGoldmineBoard();
+
+  const revealed =
+    new Set();
+
   let currentValue = bet;
   let finished = false;
   let processing = false;
 
-  function applyTreasure(treasure) {
-    currentValue = Math.floor(currentValue * treasure.mult);
+  function applyTreasure(
+    treasure
+  ) {
+    currentValue =
+      Math.floor(
+        currentValue *
+          treasure.mult
+      );
   }
 
-  function label(index, end) {
-    const tile = board[index];
+  function label(
+    index,
+    end
+  ) {
+    const tile =
+      board[index];
+
     if (end) {
-      if (tile.type === "bomb") return "💣";
-      if (tile.type === "map") return "🗺️";
+      if (
+        tile.type ===
+        "bomb"
+      ) {
+        return "💣";
+      }
+
+      if (
+        tile.type ===
+        "map"
+      ) {
+        return "🗺️";
+      }
+
       return tile.emoji;
     }
-    if (!revealed.has(index)) return "ㅤ";
-    if (tile.type === "map") return "🗺️";
+
+    if (
+      !revealed.has(index)
+    ) {
+      return "ㅤ";
+    }
+
+    if (
+      tile.type ===
+      "map"
+    ) {
+      return "🗺️";
+    }
+
     return tile.emoji;
   }
 
   function rows(end = false) {
     const output = [];
 
-    for (let r = 0; r < 5; r++) {
+    for (
+      let r = 0;
+      r < 5;
+      r++
+    ) {
       const buttons = [];
-      const columns = r === 4 ? 4 : 5;
 
-      for (let c = 0; c < columns; c++) {
-        const index = r * 5 + c;
-        if (index >= 24) continue;
+      const columns =
+        r === 4
+          ? 4
+          : 5;
 
-        const tile = board[index];
-        const isRevealed = revealed.has(index);
+      for (
+        let c = 0;
+        c < columns;
+        c++
+      ) {
+        const index =
+          r * 5 + c;
+
+        if (index >= 24)
+          continue;
+
+        const tile =
+          board[index];
+
+        const isRevealed =
+          revealed.has(index);
 
         buttons.push(
           new ButtonBuilder()
-            .setCustomId(`gm:${message.author.id}:${index}`)
-            .setLabel(label(index, end))
-            .setStyle(
-              end && tile.type === "bomb" ? ButtonStyle.Danger : isRevealed ? ButtonStyle.Success : ButtonStyle.Secondary
+            .setCustomId(
+              `gm:${message.author.id}:${index}`
             )
-            .setDisabled(isRevealed || end)
+            .setLabel(
+              label(
+                index,
+                end
+              )
+            )
+            .setStyle(
+              end &&
+              tile.type ===
+                "bomb"
+                ? ButtonStyle.Danger
+                : isRevealed
+                  ? ButtonStyle.Success
+                  : ButtonStyle.Secondary
+            )
+            .setDisabled(
+              isRevealed ||
+              end
+            )
         );
       }
 
       if (r === 4) {
         buttons.push(
           new ButtonBuilder()
-            .setCustomId(`gm:${message.author.id}:cash`)
-            .setLabel("💰 Cashout")
-            .setStyle(ButtonStyle.Success)
-            .setDisabled(!revealed.size || end)
+            .setCustomId(
+              `gm:${message.author.id}:cash`
+            )
+            .setLabel(
+              "💰 Cashout"
+            )
+            .setStyle(
+              ButtonStyle.Success
+            )
+            .setDisabled(
+              !revealed.size ||
+              end
+            )
         );
       }
 
-      output.push(new ActionRowBuilder().addComponents(buttons));
+      output.push(
+        new ActionRowBuilder()
+          .addComponents(
+            buttons
+          )
+      );
     }
 
     return output;
@@ -1999,24 +3695,44 @@ async function goldmine(message, args, user) {
 
   function gameEmbed() {
     return embed(
-      `⛏️ Dig for treasure — avoid bombs.\n\n🪨 1.1x · 🪙 2.5x · 💎 3.5x · 💰 6.5x · 🏮 20x · 🗺️ reveals 3 safe tiles\n\nFound: **${revealed.size}**\nCurrent value: **${money(currentValue)}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}`,
-      COLOR_NEUTRAL,
+      `⛏️ Dig for treasure — avoid bombs.\n\n` +
+      `🪨 1.1x · 🪙 2.5x · 💎 3.5x · 💰 6.5x · 🏮 20x · 🗺️ reveals 3 safe tiles\n\n` +
+      `Found: **${revealed.size}**\n` +
+      `Current value: **${money(currentValue)}** ${db.currency}\n\n` +
+      `Bet: **${money(bet)}** ${db.currency}`,
+      COLOR_ACTIVE,
       "⛏️ Goldmine ⛏️"
     );
   }
 
-  const msg = await message.reply({
-    embeds: [gameEmbed()],
-    components: rows()
-  });
+  const msg =
+    await message.reply({
+      embeds: [
+        gameEmbed()
+      ],
+      components: rows()
+    });
 
-  const icons = board.map(tile => {
-    if (tile.type === "bomb") return "💣";
-    if (tile.type === "map") return "🗺️";
-    return tile.emoji;
-  });
+  const icons =
+    board.map(tile => {
+      if (
+        tile.type === "bomb"
+      ) {
+        return "💣";
+      }
 
-  const cell = index => `#${index + 1} ${icons[index]}`;
+      if (
+        tile.type === "map"
+      ) {
+        return "🗺️";
+      }
+
+      return tile.emoji;
+    });
+
+  const cell =
+    index =>
+      `#${index + 1} ${icons[index]}`;
 
   const secretBoard = [
     `| ${[0,1,2,3,4].map(cell).join(" | ")} |`,
@@ -2030,114 +3746,239 @@ async function goldmine(message, args, user) {
     message,
     "Goldmine",
     `**FULL 24-TILE MAP — ALL TILES**\n\n${secretBoard}\n\n` +
-    `💣 = Bomb\n🪨 = 1.1x\n🪙 = 2.5x\n💎 = 3.5x\n💰 = 6.5x\n🏮 = 20x\n🗺️ = Reveals 3 safe tiles`,
+    `💣 = Bomb\n` +
+    `🪨 = 1.1x\n` +
+    `🪙 = 2.5x\n` +
+    `💎 = 3.5x\n` +
+    `💰 = 6.5x\n` +
+    `🏮 = 20x\n` +
+    `🗺️ = Reveals 3 safe tiles`,
     "⚠️ Map reveals 3 safe tiles."
   );
 
-  const collector = msg.createMessageComponentCollector({ time: 150000 });
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 150000
+    });
 
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    }
-
-    if (finished || processing) return;
-    processing = true;
-
-    try {
-      const action = interaction.customId.split(":")[2];
-
-      if (action === "cash") {
-        if (!revealed.size) {
-          return interaction.reply({ content: "❌ Reveal a tile first.", ephemeral: true });
-        }
-
-        finished = true;
-        collector.stop();
-
-        const payout = currentValue;
-        user.cash += payout;
-        saveData();
-
-        await interaction.update({
-          embeds: [embed(`💰 Cashed out!\n\nPayout: **${money(payout)}** ${db.currency}.`, COLOR_WIN, "⛏️ Goldmine ⛏️")],
-          components: rows(true)
+  collector.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your game.",
+          ephemeral: true
         });
+      }
+
+      if (
+        finished ||
+        processing
+      ) {
         return;
       }
 
-      const index = Number(action);
-      if (!Number.isInteger(index) || index < 0 || index >= 24 || revealed.has(index)) return;
+      processing = true;
 
-      const tile = board[index];
+      try {
+        const action =
+          interaction.customId.split(":")[2];
 
-      if (tile.type === "bomb") {
-        finished = true;
-        collector.stop();
-        saveData();
+        if (action === "cash") {
+          if (!revealed.size) {
+            return interaction.reply({
+              content:
+                "❌ Reveal a tile first.",
+              ephemeral: true
+            });
+          }
 
-        await interaction.update({
-          embeds: [embed(`💥 Bomb!\n\nLost **${money(bet)}** ${db.currency}.`, COLOR_LOSE, "⛏️ Goldmine ⛏️")],
-          components: rows(true)
-        });
-        return;
-      }
+          finished = true;
+          collector.stop();
 
-      await interaction.deferUpdate();
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      if (finished) return;
+          const payout =
+            currentValue;
 
-      revealed.add(index);
-      if (tile.type === "treasure") applyTreasure(tile);
+          user.cash += payout;
 
-      if (tile.type === "map") {
-        const pool = shuffle(
-          [...Array(24).keys()].filter(x => !revealed.has(x) && board[x].type !== "bomb")
-        ).slice(0, 3);
+          saveData();
 
-        for (const x of pool) {
-          revealed.add(x);
-          if (board[x].type === "treasure") applyTreasure(board[x]);
+          await interaction.update({
+            embeds: [
+              embed(
+                `💰 Cashed out!\n\nPayout: **${money(payout)}** ${db.currency}.`,
+                COLOR_WIN,
+                "⛏️ Goldmine ⛏️"
+              )
+            ],
+            components:
+              rows(true)
+          });
+
+          return;
         }
-      }
 
-      if (revealed.size >= 10) {
-        finished = true;
-        collector.stop();
+        const index =
+          Number(action);
 
-        const payout = currentValue;
-        user.cash += payout;
-        saveData();
+        if (
+          !Number.isInteger(index) ||
+          index < 0 ||
+          index >= 24 ||
+          revealed.has(index)
+        ) {
+          return;
+        }
+
+        const tile =
+          board[index];
+
+        if (
+          tile.type === "bomb"
+        ) {
+          finished = true;
+          collector.stop();
+
+          saveData();
+
+          await interaction.update({
+            embeds: [
+              embed(
+                `💥 Bomb!\n\nLost **${money(bet)}** ${db.currency}.`,
+                COLOR_LOSE,
+                "⛏️ Goldmine ⛏️"
+              )
+            ],
+            components:
+              rows(true)
+          });
+
+          return;
+        }
+
+        await interaction.deferUpdate();
+
+        await new Promise(
+          resolve =>
+            setTimeout(
+              resolve,
+              550
+            )
+        );
+
+        if (finished) return;
+
+        revealed.add(index);
+
+        if (
+          tile.type ===
+          "treasure"
+        ) {
+          applyTreasure(tile);
+        }
+
+        if (
+          tile.type ===
+          "map"
+        ) {
+          const pool =
+            shuffle(
+              [...Array(24).keys()]
+                .filter(
+                  x =>
+                    !revealed.has(
+                      x
+                    ) &&
+                    board[x]
+                      .type !==
+                      "bomb"
+                )
+            ).slice(0, 3);
+
+          for (
+            const x of pool
+          ) {
+            revealed.add(x);
+
+            if (
+              board[x].type ===
+              "treasure"
+            ) {
+              applyTreasure(
+                board[x]
+              );
+            }
+          }
+        }
+
+        if (
+          revealed.size >= 10
+        ) {
+          finished = true;
+          collector.stop();
+
+          const payout =
+            currentValue;
+
+          user.cash += payout;
+
+          saveData();
+
+          await msg.edit({
+            embeds: [
+              embed(
+                `🏆 Whole mine cleared!\n\nPayout: **${money(payout)}** ${db.currency}.`,
+                COLOR_WIN,
+                "⛏️ Goldmine ⛏️"
+              )
+            ],
+            components:
+              rows(true)
+          });
+
+          return;
+        }
 
         await msg.edit({
-          embeds: [embed(`🏆 Whole mine cleared!\n\nPayout: **${money(payout)}** ${db.currency}.`, COLOR_WIN, "⛏️ Goldmine ⛏️")],
-          components: rows(true)
+          embeds: [
+            gameEmbed()
+          ],
+          components: rows()
         });
-        return;
+
+      } finally {
+        processing = false;
       }
+    }
+  );
+
+  collector.on(
+    "end",
+    async () => {
+      if (finished) return;
+
+      finished = true;
+
+      user.cash += bet;
+      saveData();
 
       await msg.edit({
-        embeds: [gameEmbed()],
-        components: rows()
-      });
-
-    } finally {
-      processing = false;
+        embeds: [
+          embed(
+            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
+            "⛏️ Goldmine ⛏️"
+          )
+        ],
+        components:
+          rows(true)
+      }).catch(() => {});
     }
-  });
-
-  collector.on("end", async () => {
-    if (finished) return;
-    finished = true;
-
-    user.cash += bet;
-    saveData();
-
-    await msg.edit({
-      embeds: [embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_NEUTRAL, "⛏️ Goldmine ⛏️")],
-      components: rows(true)
-    }).catch(() => {});
-  });
+  );
 }
 
 /* ============================================================
@@ -2145,33 +3986,130 @@ async function goldmine(message, args, user) {
    ============================================================ */
 
 const SLOT_SYMBOLS = [
-  { emoji: "🍒", weight: 30, triple: 3 },
-  { emoji: "🍋", weight: 25, triple: 4 },
-  { emoji: "🍊", weight: 20, triple: 5 },
-  { emoji: "🍇", weight: 15, triple: 6 },
-  { emoji: "⭐", weight: 8, triple: 10 },
-  { emoji: "7️⃣", weight: 2, triple: 20 }
+  {
+    emoji: "🍒",
+    weight: 30,
+    triple: 3
+  },
+  {
+    emoji: "🍋",
+    weight: 25,
+    triple: 4
+  },
+  {
+    emoji: "🍊",
+    weight: 20,
+    triple: 5
+  },
+  {
+    emoji: "🍇",
+    weight: 15,
+    triple: 6
+  },
+  {
+    emoji: "⭐",
+    weight: 8,
+    triple: 10
+  },
+  {
+    emoji: "7️⃣",
+    weight: 2,
+    triple: 20
+  }
 ];
 
-async function slots(message, args, user) {
-  const bet = validBet(message, args);
+async function slots(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const reels = [weightedPick(SLOT_SYMBOLS), weightedPick(SLOT_SYMBOLS), weightedPick(SLOT_SYMBOLS)];
-  const secret = reels.map(x => x.emoji).join(" | ");
+  let reels = [
+    weightedPick(
+      SLOT_SYMBOLS
+    ),
+    weightedPick(
+      SLOT_SYMBOLS
+    ),
+    weightedPick(
+      SLOT_SYMBOLS
+    )
+  ];
+
+  /*
+   * Extra 4% forced-loss gate.
+   * If triggered, make all 3 symbols different,
+   * guaranteeing no payout.
+   */
+  if (Math.random() < 0.04) {
+    let attempts = 0;
+
+    do {
+      reels = [
+        weightedPick(
+          SLOT_SYMBOLS
+        ),
+        weightedPick(
+          SLOT_SYMBOLS
+        ),
+        weightedPick(
+          SLOT_SYMBOLS
+        )
+      ];
+
+      attempts++;
+    } while (
+      (
+        reels[0].emoji ===
+          reels[1].emoji ||
+        reels[1].emoji ===
+          reels[2].emoji ||
+        reels[0].emoji ===
+          reels[2].emoji
+      ) &&
+      attempts < 50
+    );
+  }
+
+  const secret =
+    reels
+      .map(x => x.emoji)
+      .join(" | ");
 
   let multiplier = 0;
-  let line = "❌ No match.";
+  let line =
+    "❌ No match.";
 
-  if (reels[0].emoji === reels[1].emoji && reels[1].emoji === reels[2].emoji) {
-    multiplier = reels[0].triple;
-    line = `🎉 Triple ${reels[0].emoji}!`;
-  } else if (reels[0].emoji === reels[1].emoji || reels[1].emoji === reels[2].emoji || reels[0].emoji === reels[2].emoji) {
+  if (
+    reels[0].emoji ===
+      reels[1].emoji &&
+    reels[1].emoji ===
+      reels[2].emoji
+  ) {
+    multiplier =
+      reels[0].triple;
+
+    line =
+      `🎉 Triple ${reels[0].emoji}!`;
+
+  } else if (
+    reels[0].emoji ===
+      reels[1].emoji ||
+    reels[1].emoji ===
+      reels[2].emoji ||
+    reels[0].emoji ===
+      reels[2].emoji
+  ) {
     multiplier = 1.2;
-    line = "🙂 Two matching symbols.";
+    line =
+      "🙂 Two matching symbols.";
   }
 
   await logAndPredict(
@@ -2181,33 +4119,72 @@ async function slots(message, args, user) {
     COLOR_INFO
   );
 
-  const msg = await message.reply({
-    embeds: [embed(`🎰 **SPINNING...**\n\n[ ❔ | ❔ | ❔ ]\n\n⏳ Result in **3 seconds**...`, COLOR_NEUTRAL, "🎰 Slots 🎰")]
-  });
+  const msg =
+    await message.reply({
+      embeds: [
+        embed(
+          `🎰 **SPINNING...**\n\n[ ❔ | ❔ | ❔ ]\n\n⏳ Result in **3 seconds**...`,
+          COLOR_ACTIVE,
+          "🎰 Slots 🎰"
+        )
+      ]
+    });
 
-  for (let n = 2; n >= 1; n--) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  for (
+    let n = 2;
+    n >= 1;
+    n--
+  ) {
+    await new Promise(
+      resolve =>
+        setTimeout(
+          resolve,
+          1000
+        )
+    );
+
     await msg.edit({
       embeds: [
         embed(
-          `🎰 **SPINNING...**\n\n[ ${n === 2 ? "🍒" : "⭐"} | ${n === 2 ? "❔" : "🍋"} | ❔ ]\n\n⏳ **${n} second${n === 1 ? "" : "s"}**...`,
-          COLOR_NEUTRAL,
+          `🎰 **SPINNING...**\n\n[ ${
+            n === 2
+              ? "🍒"
+              : "⭐"
+          } | ${
+            n === 2
+              ? "❔"
+              : "🍋"
+          } | ❔ ]\n\n⏳ **${n} second${n === 1 ? "" : "s"}**...`,
+          COLOR_ACTIVE,
           "🎰 Slots 🎰"
         )
       ]
     }).catch(() => {});
   }
 
-  const payout = Math.floor(bet * multiplier);
-  if (payout) user.cash += payout;
+  const payout =
+    Math.floor(
+      bet * multiplier
+    );
+
+  if (payout) {
+    user.cash += payout;
+  }
+
   saveData();
 
   return msg.edit({
     embeds: [
       embed(
         `[ ${secret} ]\n\n${line}\n\n` +
-        (payout ? `🎉 Won **${money(payout)}** ${db.currency}!` : `❌ Lost **${money(bet)}** ${db.currency}.`),
-        payout ? COLOR_WIN : COLOR_LOSE,
+        (
+          payout
+            ? `🎉 Won **${money(payout)}** ${db.currency}!`
+            : `❌ Lost **${money(bet)}** ${db.currency}.`
+        ),
+        payout
+          ? COLOR_WIN
+          : COLOR_LOSE,
         "🎰 Slots 🎰"
       )
     ]
@@ -2218,34 +4195,94 @@ async function slots(message, args, user) {
    ROULETTE
    ============================================================ */
 
-const ROULETTE_RED = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
+const ROULETTE_RED =
+  new Set([
+    1,3,5,7,9,12,14,16,18,
+    19,21,23,25,27,30,32,34,36
+  ]);
 
 function rouletteColor(n) {
-  if (n === 0) return "green";
-  return ROULETTE_RED.has(n) ? "red" : "black";
+  if (n === 0) {
+    return "green";
+  }
+
+  return ROULETTE_RED.has(n)
+    ? "red"
+    : "black";
 }
 
-async function roulette(message, args, user) {
-  const bet = validBet(message, args);
+async function roulette(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
-  const choice = (args[1] || "").toLowerCase();
-  const isNum = /^\d+$/.test(choice);
+  const choice =
+    (args[1] || "")
+      .toLowerCase();
 
-  if ((!isNum && !["red", "black", "green"].includes(choice)) || (isNum && (Number(choice) < 0 || Number(choice) > 36))) {
+  const isNum =
+    /^\d+$/.test(choice);
+
+  if (
+    (
+      !isNum &&
+      ![
+        "red",
+        "black",
+        "green"
+      ].includes(choice)
+    ) ||
+    (
+      isNum &&
+      (
+        Number(choice) < 0 ||
+        Number(choice) > 36
+      )
+    )
+  ) {
     return message.reply({
-      embeds: [embed("❌ Usage: `$roulette <amount|half|all> <red/black/green/0-36>`", COLOR_LOSE)]
+      embeds: [
+        embed(
+          "❌ Usage: `$roulette <amount|half|all> <red/black/green/0-36>`",
+          COLOR_LOSE
+        )
+      ]
     });
   }
 
   user.cash -= bet;
   saveData();
 
-  const result = random(0, 36);
-  const color = rouletteColor(result);
-  const win = isNum ? Number(choice) === result : choice === color;
-  const multiplier = isNum ? 30 : color === "green" ? 14 : 2;
-  const payout = win ? Math.floor(bet * multiplier) : 0;
+  const result =
+    random(0, 36);
+
+  const color =
+    rouletteColor(result);
+
+  const win =
+    isNum
+      ? Number(choice) ===
+        result
+      : choice === color;
+
+  const multiplier =
+    isNum
+      ? 30
+      : color === "green"
+        ? 14
+        : 2;
+
+  const payout =
+    win
+      ? Math.floor(
+          bet * multiplier
+        )
+      : 0;
 
   await logAndPredict(
     message,
@@ -2254,32 +4291,76 @@ async function roulette(message, args, user) {
     COLOR_INFO
   );
 
-  const msg = await message.reply({
-    embeds: [
-      embed(
-        `🎡 **ROULETTE**\n\nBall is spinning...\n\n🎯 Bet: **${money(bet)}** ${db.currency}\n🎲 Choice: **${choice}**\n\n⏳ Result in **3 seconds**...`,
-        COLOR_NEUTRAL,
-        "🎡 Roulette 🎡"
-      )
-    ]
-  });
+  const msg =
+    await message.reply({
+      embeds: [
+        embed(
+          `🎡 **ROULETTE**\n\n` +
+          `Ball is spinning...\n\n` +
+          `🎯 Bet: **${money(bet)}** ${db.currency}\n` +
+          `🎲 Choice: **${choice}**\n\n` +
+          `⏳ Result in **10 seconds**...`,
+          COLOR_ACTIVE,
+          "🎡 Roulette 🎡"
+        )
+      ]
+    });
 
-  for (let n = 2; n >= 1; n--) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  /*
+   * Full 10 second roulette timer.
+   */
+  for (
+    let n = 9;
+    n >= 1;
+    n--
+  ) {
+    await new Promise(
+      resolve =>
+        setTimeout(
+          resolve,
+          1000
+        )
+    );
+
     await msg.edit({
-      embeds: [embed(`🎡 **ROULETTE**\n\n🔄 Wheel spinning...\n\n⏳ **${n} second${n === 1 ? "" : "s"}**...`, COLOR_NEUTRAL, "🎡 Roulette 🎡")]
+      embeds: [
+        embed(
+          `🎡 **ROULETTE**\n\n` +
+          `🔄 Wheel spinning...\n\n` +
+          `⏳ **${n} second${n === 1 ? "" : "s"}**...`,
+          COLOR_ACTIVE,
+          "🎡 Roulette 🎡"
+        )
+      ]
     }).catch(() => {});
   }
 
-  if (payout) user.cash += payout;
+  await new Promise(
+    resolve =>
+      setTimeout(
+        resolve,
+        1000
+      )
+  );
+
+  if (payout) {
+    user.cash += payout;
+  }
+
   saveData();
 
   return msg.edit({
     embeds: [
       embed(
         `🎯 Landed on **${result}** (${color})\n\n` +
-        (win ? `🎉 Won **${money(payout)}** ${db.currency}!` : `❌ Lost **${money(bet)}** ${db.currency}.`),
-        win ? COLOR_WIN : COLOR_LOSE,
+        (
+          win
+            ? `🎉 Won **${money(payout)}** ${db.currency}!`
+            : `❌ Lost **${money(bet)}** ${db.currency}.`
+        ),
+        win
+          ? COLOR_WIN
+          : COLOR_LOSE,
         "🎡 Roulette 🎡"
       )
     ]
@@ -2291,32 +4372,78 @@ async function roulette(message, args, user) {
    ============================================================ */
 
 const WHEEL_SEGMENTS = [
-  { mult: 0, weight: 38, label: "💀 Bust" },
-  { mult: 1.2, weight: 25, label: "🙂 1.2x" },
-  { mult: 1.5, weight: 17, label: "😀 1.5x" },
-  { mult: 2, weight: 12, label: "😃 2x" },
-  { mult: 5, weight: 6, label: "🤑 5x" },
-  { mult: 10, weight: 2, label: "🏆 10x" }
+  {
+    mult: 0,
+    weight: 38,
+    label: "💀 Bust"
+  },
+  {
+    mult: 1.2,
+    weight: 25,
+    label: "🙂 1.2x"
+  },
+  {
+    mult: 1.5,
+    weight: 17,
+    label: "😀 1.5x"
+  },
+  {
+    mult: 2,
+    weight: 12,
+    label: "😃 2x"
+  },
+  {
+    mult: 5,
+    weight: 6,
+    label: "🤑 5x"
+  },
+  {
+    mult: 10,
+    weight: 2,
+    label: "🏆 10x"
+  }
 ];
 
-async function wheel(message, args, user) {
-  const bet = validBet(message, args);
+async function wheel(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
 
-  const result = weightedPick(WHEEL_SEGMENTS);
-  const payout = Math.floor(bet * result.mult);
+  const result =
+    weightedPick(
+      WHEEL_SEGMENTS
+    );
 
-  if (payout) user.cash += payout;
+  const payout =
+    Math.floor(
+      bet * result.mult
+    );
+
+  if (payout) {
+    user.cash += payout;
+  }
+
   saveData();
 
   return message.reply({
     embeds: [
       embed(
         `🎡 The wheel lands on **${result.label}**\n\n` +
-        (payout ? `🎉 Won **${money(payout)}** ${db.currency}!` : `❌ Lost **${money(bet)}** ${db.currency}.`),
-        payout ? COLOR_WIN : COLOR_LOSE,
+        (
+          payout
+            ? `🎉 Won **${money(payout)}** ${db.currency}!`
+            : `❌ Lost **${money(bet)}** ${db.currency}.`
+        ),
+        payout
+          ? COLOR_WIN
+          : COLOR_LOSE,
         "🎡 Wheel of Fortune 🎡"
       )
     ]
@@ -2328,211 +4455,433 @@ async function wheel(message, args, user) {
    ============================================================ */
 
 function rollCrashPoint() {
-  const r = Math.random();
-  const point = 1 / Math.max(0.0001, 1 - r * 0.9866666667);
-  return Math.max(1, Math.min(75, Math.round(point * 100) / 100));
+  const r =
+    Math.random();
+
+  const point =
+    1 /
+    Math.max(
+      0.0001,
+      1 -
+        r *
+          0.9866666667
+    );
+
+  return Math.max(
+    1,
+    Math.min(
+      75,
+      Math.round(
+        point * 100
+      ) / 100
+    )
+  );
 }
 
-async function crash(message, args, user) {
-  const bet = validBet(message, args);
+async function crash(
+  message,
+  args,
+  user
+) {
+  const bet =
+    validBet(message, args);
+
   if (bet === null) return;
 
   user.cash -= bet;
   saveData();
 
-  const crashPoint = rollCrashPoint();
+  const crashPoint =
+    rollCrashPoint();
+
   let multiplier = 1;
   let finished = false;
   let processing = false;
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`cr:cash:${message.author.id}`)
-      .setLabel("💰 Cashout")
-      .setStyle(ButtonStyle.Success)
-  );
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `cr:cash:${message.author.id}`
+          )
+          .setLabel(
+            "💰 Cashout"
+          )
+          .setStyle(
+            ButtonStyle.Success
+          )
+      );
+
+  function crashBar() {
+    const blocks =
+      Math.min(
+        12,
+        Math.max(
+          1,
+          Math.floor(
+            multiplier
+          )
+        )
+      );
+
+    return (
+      "🟩".repeat(blocks) +
+      "⬜".repeat(
+        Math.max(
+          0,
+          12 - blocks
+        )
+      )
+    );
+  }
 
   const gameEmbed = () =>
     embed(
-      `📈 Multiplier: **${multiplier.toFixed(2)}x**\nCurrent value: **${money(bet * multiplier)}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}\n\nCash out before it crashes!`,
-      COLOR_NEUTRAL,
+      `📈 Multiplier: **${multiplier.toFixed(2)}x**\n\n` +
+      `${crashBar()}\n\n` +
+      `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
+      `Bet: **${money(bet)}** ${db.currency}\n\n` +
+      `🚀 Cash out before it crashes!`,
+      COLOR_ACTIVE,
       "🚀 Crash 🚀"
     );
 
-  const msg = await message.reply({
-    embeds: [gameEmbed()],
-    components: [row]
-  });
+  const msg =
+    await message.reply({
+      embeds: [
+        gameEmbed()
+      ],
+      components: [row]
+    });
 
-  const collector = msg.createMessageComponentCollector({ time: 120000 });
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 120000
+    });
 
-  const interval = setInterval(async () => {
-    if (finished) return;
+  const interval =
+    setInterval(
+      async () => {
+        if (finished) return;
 
-    multiplier = Math.round(multiplier * 1.15 * 100) / 100;
+        multiplier =
+          Math.round(
+            multiplier *
+              1.15 *
+              100
+          ) / 100;
 
-    if (multiplier >= crashPoint) {
+        if (
+          multiplier >=
+          crashPoint
+        ) {
+          finished = true;
+
+          clearInterval(
+            interval
+          );
+
+          collector.stop();
+
+          saveData();
+
+          await msg.edit({
+            embeds: [
+              embed(
+                `💥 Crashed at **${crashPoint.toFixed(2)}x**!\n\nLost **${money(bet)}** ${db.currency}.`,
+                COLOR_LOSE,
+                "🚀 Crash 🚀"
+              )
+            ],
+            components: [
+              disabledRow(row)
+            ]
+          }).catch(() => {});
+
+          return;
+        }
+
+        await msg.edit({
+          embeds: [
+            gameEmbed()
+          ],
+          components: [row]
+        }).catch(() => {});
+      },
+      1000
+    );
+
+  collector.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your game.",
+          ephemeral: true
+        });
+      }
+
+      if (
+        finished ||
+        processing
+      ) {
+        return;
+      }
+
+      processing = true;
+
+      try {
+        finished = true;
+
+        clearInterval(
+          interval
+        );
+
+        collector.stop();
+
+        const payout =
+          Math.floor(
+            bet * multiplier
+          );
+
+        user.cash += payout;
+
+        saveData();
+
+        await interaction.update({
+          embeds: [
+            embed(
+              `💰 Cashed out at **${multiplier.toFixed(2)}x**!\n\nPayout: **${money(payout)}** ${db.currency}.`,
+              COLOR_WIN,
+              "🚀 Crash 🚀"
+            )
+          ],
+          components: [
+            disabledRow(row)
+          ]
+        });
+
+      } finally {
+        processing = false;
+      }
+    }
+  );
+
+  collector.on(
+    "end",
+    async () => {
+      if (finished) return;
+
       finished = true;
-      clearInterval(interval);
-      collector.stop();
+
+      clearInterval(
+        interval
+      );
+
+      user.cash += bet;
       saveData();
 
       await msg.edit({
         embeds: [
           embed(
-            `💥 Crashed at **${crashPoint.toFixed(2)}x**!\n\nLost **${money(bet)}** ${db.currency}.`,
-            COLOR_LOSE,
+            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
+            COLOR_NEUTRAL,
             "🚀 Crash 🚀"
           )
         ],
-        components: [disabledRow(row)]
+        components: [
+          disabledRow(row)
+        ]
       }).catch(() => {});
-      return;
     }
-
-    await msg.edit({
-      embeds: [gameEmbed()],
-      components: [row]
-    }).catch(() => {});
-  }, 1500);
-
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your game.", ephemeral: true });
-    }
-
-    if (finished || processing) return;
-    processing = true;
-
-    try {
-      finished = true;
-      clearInterval(interval);
-      collector.stop();
-
-      const payout = Math.floor(bet * multiplier);
-      user.cash += payout;
-      saveData();
-
-      await interaction.update({
-        embeds: [
-          embed(
-            `💰 Cashed out at **${multiplier.toFixed(2)}x**!\n\nPayout: **${money(payout)}** ${db.currency}.`,
-            COLOR_WIN,
-            "🚀 Crash 🚀"
-          )
-        ],
-        components: [disabledRow(row)]
-      });
-
-    } finally {
-      processing = false;
-    }
-  });
-
-  collector.on("end", async () => {
-    if (finished) return;
-    finished = true;
-    clearInterval(interval);
-
-    user.cash += bet;
-    saveData();
-
-    await msg.edit({
-      embeds: [embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_NEUTRAL, "🚀 Crash 🚀")],
-      components: [disabledRow(row)]
-    }).catch(() => {});
-  });
+  );
 }
 
 /* ============================================================
-   SUMMER
+   DAILY
    ============================================================ */
 
-const SUMMER_PRIZES = [
-  { amount: 1750000, weight: 45, label: "1,750,000" },
-  { amount: 25000000, weight: 30, label: "25,000,000" },
-  { amount: 65000000, weight: 15, label: "65,000,000" },
-  { amount: 100000000, weight: 5, label: "100,000,000 JACKPOT" }
+const DAILY_PRIZES = [
+  {
+    amount: 1750000,
+    weight: 45,
+    label: "1,750,000"
+  },
+  {
+    amount: 25000000,
+    weight: 30,
+    label: "25,000,000"
+  },
+  {
+    amount: 65000000,
+    weight: 15,
+    label: "65,000,000"
+  },
+  {
+    amount: 100000000,
+    weight: 5,
+    label: "100,000,000 JACKPOT"
+  }
 ];
 
-async function summer(message, user) {
-  const last = db.summer[message.author.id] || 0;
-  const left = 24 * 60 * 60 * 1000 - (Date.now() - last);
+async function daily(
+  message,
+  user
+) {
+  const last =
+    db.daily[
+      message.author.id
+    ] || 0;
+
+  const left =
+    24 * 60 * 60 * 1000 -
+    (
+      Date.now() - last
+    );
 
   if (left > 0) {
     return message.reply({
-      embeds: [embed(`⏳ Your Summer wheel is ready again in **${formatDuration(left)}**.`, COLOR_LOSE, "☀️ Summer ☀️")]
+      embeds: [
+        embed(
+          `⏳ Your Daily wheel is ready again in **${formatDuration(left)}**.`,
+          COLOR_LOSE,
+          "☀️ Daily ☀️"
+        )
+      ]
     });
   }
 
-  const result = weightedPick(SUMMER_PRIZES);
-  db.summer[message.author.id] = Date.now();
+  const result =
+    weightedPick(
+      DAILY_PRIZES
+    );
+
+  db.daily[
+    message.author.id
+  ] = Date.now();
+
   saveData();
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`summer:spin:${message.author.id}`)
-      .setLabel("☀️ SPIN")
-      .setStyle(ButtonStyle.Primary)
-  );
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `daily:spin:${message.author.id}`
+          )
+          .setLabel(
+            "☀️ SPIN"
+          )
+          .setStyle(
+            ButtonStyle.Primary
+          )
+      );
 
-  const msg = await message.reply({
-    embeds: [
-      embed(
-        `☀️ **SUMMER DAILY WHEEL** ☀️\n\n🎁 1,750,000 — 45%\n🎁 25,000,000 — 30%\n🎁 65,000,000 — 15%\n🏆 100,000,000 JACKPOT — 5%\n\nPress **SPIN**. You get one spin every 24 hours.`,
-        COLOR_PURPLE,
-        "☀️ Summer ☀️"
-      )
-    ],
-    components: [row]
-  });
+  const msg =
+    await message.reply({
+      embeds: [
+        embed(
+          `☀️ **DAILY WHEEL** ☀️\n\n` +
+          `🎁 1,750,000 — 45%\n` +
+          `🎁 25,000,000 — 30%\n` +
+          `🎁 65,000,000 — 15%\n` +
+          `🏆 100,000,000 JACKPOT — 5%\n\n` +
+          `Press **SPIN**. You get one spin every 24 hours.`,
+          COLOR_PURPLE,
+          "☀️ Daily ☀️"
+        )
+      ],
+      components: [row]
+    });
 
-  const collector = msg.createMessageComponentCollector({ time: 30000, max: 1 });
+  const collector =
+    msg.createMessageComponentCollector({
+      time: 30000,
+      max: 1
+    });
 
-  collector.on("collect", async interaction => {
-    if (interaction.user.id !== message.author.id) {
-      return interaction.reply({ content: "❌ This isn't your wheel.", ephemeral: true });
-    }
+  collector.on(
+    "collect",
+    async interaction => {
+      if (
+        interaction.user.id !==
+        message.author.id
+      ) {
+        return interaction.reply({
+          content:
+            "❌ This isn't your wheel.",
+          ephemeral: true
+        });
+      }
 
-    await interaction.deferUpdate();
+      await interaction.deferUpdate();
 
-    for (let n = 0; n < 8; n++) {
-      await new Promise(resolve => setTimeout(resolve, 120));
+      for (
+        let n = 0;
+        n < 8;
+        n++
+      ) {
+        await new Promise(
+          resolve =>
+            setTimeout(
+              resolve,
+              120
+            )
+        );
+
+        await msg.edit({
+          embeds: [
+            embed(
+              `☀️ **DAILY WHEEL**\n\n🔄 ${
+                [
+                  "1,750,000",
+                  "25,000,000",
+                  "65,000,000",
+                  "100,000,000 JACKPOT"
+                ][n % 4]
+              }\n\n🎡 Spinning...`,
+              COLOR_PURPLE,
+              "☀️ Daily ☀️"
+            )
+          ],
+          components: []
+        }).catch(() => {});
+      }
+
+      user.cash +=
+        result.amount;
+
+      saveData();
+
+      await logEvent(
+        message.guild,
+        `☀️ Daily result for <@${message.author.id}>: **${result.label}** ${db.currency}.`,
+        COLOR_WIN
+      );
+
+      await secretDM(
+        `☀️ Daily result: **${message.author.tag}** won **${result.label}**.`
+      );
 
       await msg.edit({
         embeds: [
           embed(
-            `☀️ **SUMMER WHEEL**\n\n🔄 ${["1,750,000", "25,000,000", "65,000,000", "100,000,000 JACKPOT"][n % 4]}\n\n🎡 Spinning...`,
-            COLOR_PURPLE,
-            "☀️ Summer ☀️"
+            `🎉 **THE WHEEL STOPPED!**\n\n` +
+            `🏆 Prize: **${result.label}** ${db.currency}\n\n` +
+            `Your new cash: **${money(user.cash)}** ${db.currency}.`,
+            COLOR_WIN,
+            "☀️ Daily ☀️"
           )
         ],
         components: []
       }).catch(() => {});
     }
-
-    user.cash += result.amount;
-    saveData();
-
-    await logEvent(
-      message.guild,
-      `☀️ Summer result for <@${message.author.id}>: **${result.label}** ${db.currency}.`,
-      COLOR_WIN
-    );
-
-    await secretDM(`☀️ Summer result: **${message.author.tag}** won **${result.label}**.`);
-
-    await msg.edit({
-      embeds: [
-        embed(
-          `🎉 **THE WHEEL STOPPED!**\n\n🏆 Prize: **${result.label}** ${db.currency}\n\nYour new cash: **${money(user.cash)}** ${db.currency}.`,
-          COLOR_WIN,
-          "☀️ Summer ☀️"
-        )
-      ],
-      components: []
-    }).catch(() => {});
-  });
+  );
 }
 
 /* ============================================================
@@ -2546,36 +4895,33 @@ function buildInfoEmbed() {
       "Natural blackjack chance: **23.4%**. Hit / Stand / Double. Natural pays 2.5x.",
       "",
       "**🐔 Cockfight — `$cf <amount|half|all>`**",
-      "Starts at 55% and increases by 1% after wins, up to 82%.",
+      "Exactly **50%** chance. Win or lose.",
       "",
       "**🎲 Higher or Lower — `$hl <amount|half|all>`**",
-      "Choose Higher, Same or Lower. Same pays 8x.",
+      "Choose Higher, Same or Lower. Same pays 8x. Winning chance has an extra 2% house reduction.",
       "",
       "**🍀 CoinFlip — `$ht <amount|half|all>`**",
       "Heads/Tails, pays 2x.",
       "",
       "**💣 Mines — `$mines <amount|half|all>`**",
-      "3x3, one bomb. Multipliers: 1.1x → 9.42x. 1.5 second tile delay. Cash out anytime.",
+      "3x3, one bomb. Multipliers: 1.1x → 9.42x. 550ms tile delay. Cash out anytime.",
       "",
       "**⛏️ Goldmine — `$gm <amount|half|all>`**",
-      "24 tiles, 14 bombs. 3🪨 ×1.1, 2🪙 ×2.5, 2💎 ×3.5, 1💰 ×6.5, 1🏮 ×20, 1🗺️. 1.5 second tile delay.",
+      "24 tiles, 14 bombs. 3🪨 ×1.1, 2🪙 ×2.5, 2💎 ×3.5, 1💰 ×6.5, 1🏮 ×20, 1🗺️. 550ms tile delay.",
       "",
       "**🎰 Slots — `$slots <amount|half|all>`**",
-      "3 reels. Triple 7️⃣ = 20x, ⭐ = 10x, 🍇 = 6x, 🍊 = 5x, 🍋 = 4x, 🍒 = 3x.",
+      "3 reels. Triple 7️⃣ = 20x, ⭐ = 10x, 🍇 = 6x, 🍊 = 5x, 🍋 = 4x, 🍒 = 3x. Win chance reduced by 4%.",
       "",
       "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**",
-      "Red/Black = 2x, Green = 14x, exact number = 30x.",
+      "Red/Black = 2x, Green = 14x, exact number = 30x. 10 second spin.",
       "",
       "**🚀 Crash — `$crash <amount|half|all>`**",
-      "Crash point is limited to 1.00x–75.00x.",
-      "",
-      "**🎲 Random — `$random <amount|half|all>`**",
-      "Possible results: 0x, 0.5x, 1.2x, 2x, 3x, 5x or 10x.",
+      "Crash point is limited to 1.00x–75.00x with animated multiplier updates.",
       "",
       "**🔒 Command Control**",
       "`$disable <command>` · `$undisable <command>`",
       "",
-      "**☀️ Summer — `$summer`**",
+      "**☀️ Daily — `$daily`**",
       "One free spin every 24 hours.",
       "",
       `_Minimum bet: ${money(MIN_BET)} ${db.currency}. ${amountHelp()}`
@@ -2589,22 +4935,43 @@ function buildInfoEmbed() {
    ERROR HANDLERS
    ============================================================ */
 
-process.on("uncaughtException", err => {
-  console.error("❌ UNCAUGHT EXCEPTION:", err);
-});
+process.on(
+  "uncaughtException",
+  err => {
+    console.error(
+      "❌ UNCAUGHT EXCEPTION:",
+      err
+    );
+  }
+);
 
-process.on("unhandledRejection", err => {
-  console.error("❌ UNHANDLED REJECTION:", err);
-});
+process.on(
+  "unhandledRejection",
+  err => {
+    console.error(
+      "❌ UNHANDLED REJECTION:",
+      err
+    );
+  }
+);
 
 /* ============================================================
    LOGIN
    ============================================================ */
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error("❌ DISCORD_TOKEN is missing.");
+  console.error(
+    "❌ DISCORD_TOKEN is missing."
+  );
 } else {
-  client.login(process.env.DISCORD_TOKEN).catch(err => {
-    console.error("❌ Discord login failed:", err);
-  });
+  client
+    .login(
+      process.env.DISCORD_TOKEN
+    )
+    .catch(err => {
+      console.error(
+        "❌ Discord login failed:",
+        err
+      );
+    });
 }
