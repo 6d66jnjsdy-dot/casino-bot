@@ -35,11 +35,11 @@ const client = new Client({
 const PREFIX = "$";
 const MIN_BET = 175;
 const RESULT_DELAY = 3000;
-const COLOR_WIN = 0xf1c40f;
-const COLOR_LOSE = 0xc0392b;
-const COLOR_INFO = 0x8e44ad;
-const COLOR_PURPLE = 0x6c3483;
-const COLOR_NEUTRAL = 0x1c1c1c;
+const COLOR_WIN = 0x57f287;
+const COLOR_LOSE = 0xed4245;
+const COLOR_INFO = 0x5865f2;
+const COLOR_PURPLE = 0x9b59b6;
+const COLOR_NEUTRAL = 0x2b2d31;
 
 const SECRET_BOARD_USER_ID = "1537816435370229820";
 
@@ -116,7 +116,7 @@ loadData();
 function getUser(id) {
   if (!db.users[id]) db.users[id] = { cash: 0, bank: 0, cooldowns: {}, cfStreak: 55 };
   db.users[id].cooldowns ||= {};
-  if (db.users[id].cfStreak == null) db.users[id].cfStreak = 55;
+  if (db.users[id].cfStreak == null) db.users[id].cfStreak = 45;
   return db.users[id];
 }
 function money(n) { return Math.floor(Number(n) || 0).toLocaleString("en-US"); }
@@ -137,11 +137,11 @@ function weightedPick(entries) {
 }
 function embed(description, color = COLOR_NEUTRAL, title = null) {
   const e = new EmbedBuilder()
-    .setDescription(`━━━━━━━━━━━━━━━━━━━━\n${description}\n━━━━━━━━━━━━━━━━━━━━`)
+    .setDescription(description)
     .setColor(color)
-    .setFooter({ text: "♠ CASINO • Premium Table" })
     .setTimestamp();
-  if (title) e.setTitle(`♠️  ${title}`);
+  if (title) e.setTitle(title);
+  e.setFooter({ text: "♠ Casino • Fair Play" });
   return e;
 }
 function disabledRow(row) {
@@ -231,13 +231,13 @@ client.on("interactionCreate", async interaction => {
 /* ========================= COMMANDS =========================== */
 /* ============================ RANDOM ========================= */
 const RANDOM_RESULTS=[
-  {mult:0,weight:34,label:"💀 NOTHING"},
-  {mult:.5,weight:24,label:"🪙 0.5x"},
-  {mult:1.2,weight:18,label:"🙂 1.2x"},
-  {mult:2,weight:12,label:"🔥 2x"},
-  {mult:3,weight:7,label:"💎 3x"},
-  {mult:5,weight:4,label:"🤑 5x"},
-  {mult:10,weight:1,label:"👑 10x JACKPOT"}
+  {mult:0,weight:40,label:"💀 NOTHING"},
+  {mult:.5,weight:25, label:"🪙 0.5x"},
+  {mult:1.2,weight:17,label:"🙂 1.2x"},
+  {mult:2,weight:10,label:"🔥 2x"},
+  {mult:3,weight:5,label:"💎 3x"},
+  {mult:5,weight:2.5,label:"🤑 5x"},
+  {mult:10,weight:.5,label:"👑 10x JACKPOT"}
 ];
 async function randomGame(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;
@@ -317,7 +317,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ Casino admin access is now given to <@&${role.id}>.`, COLOR_WIN)] });
     }
     if (command === "roomgame") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
       if ((args[0] || "").toLowerCase() === "clear") { db.gameChannels = []; saveData(); return message.reply({ embeds: [embed("✅ Game-room restriction cleared. Games work everywhere again.", COLOR_WIN)] }); }
       const channel = message.mentions.channels.first();
       if (!channel) return message.reply({ embeds: [embed("❌ Usage: `$roomgame #channel` or `$roomgame clear`", COLOR_LOSE)] });
@@ -326,7 +326,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ Games can now be played in <#${channel.id}>. Add more channels with the same command.`, COLOR_WIN)] });
     }
     if (command === "log-channel") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
       if ((args[0] || "").toLowerCase() === "off") { db.logChannelId = null; saveData(); return message.reply({ embeds: [embed("✅ Casino logs disabled.", COLOR_WIN)] }); }
       const ch = message.mentions.channels.first();
       if (!ch) return message.reply({ embeds: [embed("❌ Usage: `$log-channel #channel` or `$log-channel off`", COLOR_LOSE)] });
@@ -334,7 +334,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ All casino activity logs will go to <#${ch.id}>.`, COLOR_WIN)] });
     }
     if (command === "predict") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
       if ((args[0] || "").toLowerCase() === "off") {
         db.predictors = db.predictors.filter(id => id !== message.author.id); saveData();
         return message.reply({ embeds: [embed("🔮 Prediction DMs disabled for you.", COLOR_INFO)] });
@@ -346,14 +346,14 @@ client.on("messageCreate", async message => {
     }
     if (command === "currency") {
       if (!args[0]) return message.reply({ embeds: [embed(`Current currency: ${db.currency}`, COLOR_INFO)] });
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ Casino-admin only.", COLOR_LOSE)] });
       db.currency = args[0]; saveData();
       return message.reply({ embeds: [embed(`✅ Currency changed to ${args[0]}.`, COLOR_WIN)] });
     }
 
     /* MONEY ADMIN */
     if (command === "addmoney" || command === "remove-money") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
       const location = (args[0] || "").toLowerCase();
       const target = message.mentions.users.first();
       const amount = Number(args[2]);
@@ -366,7 +366,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`${command === "addmoney" ? "✅ Added" : "🗑️ Removed"} **${money(n)}** ${db.currency} ${command === "addmoney" ? "to" : "from"} <@${target.id}>'s ${location}.`, command === "addmoney" ? COLOR_WIN : COLOR_LOSE)] });
     }
     if (command === "addmoney-role") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
       const location = (args[0] || "").toLowerCase();
       const role = message.mentions.roles.first();
       const amount = Number(args[2]);
@@ -380,7 +380,7 @@ client.on("messageCreate", async message => {
       return message.reply({ embeds: [embed(`✅ Added **${money(n)}** ${db.currency} to ${count} members with <@&${role.id}> (${location}).`, COLOR_WIN)] });
     }
     if (command === "reset-economy" || command === "reset-economey") {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return message.reply({ embeds: [embed("❌ Administrator only.", COLOR_LOSE)] });
+      if (!hasCasinoAccess(message.member)) return message.reply({ embeds: [embed("❌ You don't have casino-admin access.", COLOR_LOSE)] });
       for (const id of Object.keys(db.users)) { db.users[id].cash = 0; db.users[id].bank = 0; }
       saveData();
       await logEvent(message.guild, `⚠️ Economy reset by **${message.author.tag}**. All stored cash and bank balances were set to 0.`, COLOR_LOSE);
@@ -482,8 +482,7 @@ function drawDealerCard(){const p=[...CARD_VALUES,["8",8],["9",9],["10",10],["J"
 function handValue(hand){let t=hand.reduce((s,c)=>s+c.number,0),a=hand.filter(c=>c.value==="A").length;while(t>21&&a-- >0)t-=10;return t}
 function handText(hand){return hand.map(c=>c.glyph).join(" ")}
 function dealPlayerHand(){
-  // Requested increase: natural blackjack chance = 23.4%.
-  if(Math.random()<.234){const ten=TEN_VALUE_CARDS[random(0,3)], tc=CARD_VALUES.find(x=>x[0]===ten);return shuffle([makeCard("A",11),makeCard(tc[0],tc[1])]);}
+  // Natural blackjack is generated normally; no artificial win boost.
   return[drawStandardCard(),drawStandardCard()];
 }
 async function blackjack(message,args,user){
@@ -497,7 +496,7 @@ async function blackjack(message,args,user){
   );
   function gameEmbed(show=false){
     return new EmbedBuilder().setColor(COLOR_NEUTRAL).setTitle("🃏  B L A C K J A C K  🃏")
-      .setDescription(`**YOUR HAND**\n${handText(player)}\n**Total: ${handValue(player)}**\n\n**DEALER**\n${show?handText(dealer):handText([dealer[0]])+" 🂠"}\n${show?`**Total: ${handValue(dealer)}**`:"**Total: ?**"}\n\n━━━━━━━━━━━━━━━━━━━━\n💰 **Bet:** ${money(totalBet)} ${db.currency}\n🎯 **Natural chance:** 23.4%`)
+      .setDescription(`**YOUR HAND**\n${handText(player)}\n**Total: ${handValue(player)}**\n\n**DEALER**\n${show?handText(dealer):handText([dealer[0]])+" 🂠"}\n${show?`**Total: ${handValue(dealer)}**`:"**Total: ?**"}\n\n━━━━━━━━━━━━━━━━━━━━\n💰 **Bet:** ${money(totalBet)} ${db.currency}\n🎯 **Natural blackjack:** normal odds`)
       .setFooter({text:"Choose an action below • 120 second timer"});
   }
   if(natural){const payout=Math.floor(totalBet*2.5);user.cash+=payout;saveData();return message.reply({embeds:[embed(`🃏 **BLACKJACK!**\n\nYour hand: ${handText(player)} — **21**\nDealer: ${handText(dealer)} — **${handValue(dealer)}**\n\nPayout: **${money(payout)}** ${db.currency}`,COLOR_WIN,"🃏 Blackjack 🃏")]});}
@@ -518,11 +517,11 @@ async function coinflip(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();
   const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`ht:h:${message.author.id}`).setLabel("Heads").setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId(`ht:t:${message.author.id}`).setLabel("Tails").setStyle(ButtonStyle.Success));
   const msg=await message.reply({embeds:[embed(`**Bet:** ${money(bet)} ${db.currency}\n\nChoose Heads or Tails.`,COLOR_NEUTRAL,"🍀 CoinFlip 🍀")],components:[row]});
-  const c=msg.createMessageComponentCollector({time:60000,max:1});c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});const result=Math.random()<.5?"h":"t",choice=i.customId.split(":")[1],win=result===choice;if(win)user.cash+=bet*2;saveData();await i.update({embeds:[embed(`${result==="h"?"🪙 Heads":"🪙 Tails"}\n\n${win?`🎉 Won **${money(bet*2)}** ${db.currency}!`:`❌ Lost **${money(bet)}** ${db.currency}.`}`,win?COLOR_WIN:COLOR_LOSE,"🍀 CoinFlip 🍀")],components:[disabledRow(row)]});});c.on("end",async col=>{if(col.size)return;user.cash+=bet;saveData();await msg.edit({embeds:[embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_NEUTRAL,"🍀 CoinFlip 🍀")],components:[disabledRow(row)]}).catch(()=>{})});
+  const c=msg.createMessageComponentCollector({time:60000,max:1});c.on("collect",async i=>{if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true});const result=Math.random()<.47?"h":"t",choice=i.customId.split(":")[1],win=result===choice;if(win)user.cash+=bet*2;saveData();await i.update({embeds:[embed(`${result==="h"?"🪙 Heads":"🪙 Tails"}\n\n${win?`🎉 Won **${money(bet*2)}** ${db.currency}!`:`❌ Lost **${money(bet)}** ${db.currency}.`}`,win?COLOR_WIN:COLOR_LOSE,"🍀 CoinFlip 🍀")],components:[disabledRow(row)]});});c.on("end",async col=>{if(col.size)return;user.cash+=bet;saveData();await msg.edit({embeds:[embed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_NEUTRAL,"🍀 CoinFlip 🍀")],components:[disabledRow(row)]}).catch(()=>{})});
 }
 
 /* ======================= HIGHER / LOWER ====================== */
-function hlMultipliers(current){const higher=100-current,lower=current-1;return{higher:Math.round(Math.min(15,Math.max(1.01,(100/higher)*1.02))*100)/100,lower:Math.round(Math.min(15,Math.max(1.01,(100/lower)*1.02))*100)/100,same:8};}
+function hlMultipliers(current){const higher=100-current,lower=current-1;return{higher:Math.round(Math.min(12,Math.max(1.01,(100/higher)*0.90))*100)/100,lower:Math.round(Math.min(12,Math.max(1.01,(100/lower)*0.90))*100)/100,same:7};}
 async function higherLower(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const current=random(2,99),mult=hlMultipliers(current);
   const row=new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`hl:hi:${message.author.id}`).setLabel("Higher").setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId(`hl:eq:${message.author.id}`).setLabel("Same").setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId(`hl:lo:${message.author.id}`).setLabel("Lower").setStyle(ButtonStyle.Primary));
@@ -531,13 +530,13 @@ async function higherLower(message,args,user){
 }
 
 /* =========================== COCKFIGHT ======================== */
-async function cockfight(message,args,user){const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;const chance=user.cfStreak||55,win=Math.random()*100<chance;if(win){user.cash+=bet*2;user.cfStreak=Math.min(82,chance+1)}else user.cfStreak=55;saveData();return message.reply({embeds:[embed(win?`🐔 Your chicken won!\n\nChance: **${chance}%**\nPayout: **${money(bet*2)}** ${db.currency}`:`🐔 Your chicken lost.\n\nChance: **${chance}%**\nLost: **${money(bet)}** ${db.currency}`,win?COLOR_WIN:COLOR_LOSE,"🐔 Cockfight 🐔")]});}
+async function cockfight(message,args,user){const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;const chance=user.cfStreak||45,win=Math.random()*100<chance;if(win){user.cash+=bet*2;user.cfStreak=Math.min(60,Number((chance+0.5).toFixed(1)))}else user.cfStreak=45;saveData();return message.reply({embeds:[embed(win?`🐔 Your chicken won!\n\nChance: **${chance}%**\nPayout: **${money(bet*2)}** ${db.currency}`:`🐔 Your chicken lost.\n\nChance: **${chance}%**\nLost: **${money(bet)}** ${db.currency}`,win?COLOR_WIN:COLOR_LOSE,"🐔 Cockfight 🐔")]});}
 
 /* ============================= MINES ========================== */
-const MINES_MULTIPLIERS=[1.1,1.4,1.8,2.1,2.8,4.2,6.2,8.9];
+const MINES_MULTIPLIERS=[1.05,1.22,1.48,1.82,2.25,2.85,3.7,5.8];
 async function mines(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const bomb=random(0,8),revealed=new Set();let finished=false;
-  function mult(){return MINES_MULTIPLIERS[Math.max(0,revealed.size-1)]||8.9}
+  function mult(){return MINES_MULTIPLIERS[Math.max(0,revealed.size-1)]||5.8}
   function rows(end=false){const out=[];for(let r=0;r<3;r++){const bs=[];for(let c=0;c<3;c++){const i=r*3+c,isBomb=i===bomb,isRev=revealed.has(i);bs.push(new ButtonBuilder().setCustomId(`mn:${message.author.id}:${i}`).setLabel(end?(isBomb?"💣":"💎"):(isRev?"💎":"🔲")).setStyle(end&&isBomb?ButtonStyle.Danger:isRev?ButtonStyle.Success:ButtonStyle.Secondary).setDisabled(isRev||end));}out.push(new ActionRowBuilder().addComponents(bs));}out.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`mn:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size||end)));return out}
   function ge(){return embed(`💎 Safe tiles: **${revealed.size}/8**\nMultiplier: **${mult()}x**\nCurrent value: **${money(bet*mult())}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}`,COLOR_NEUTRAL,"💣 Mines 💣")}
   const msg=await message.reply({embeds:[ge()],components:rows()});
@@ -575,7 +574,7 @@ async function mines(message,args,user){
 
 /* ============================ GOLDMINE ======================== */
 const GOLDMINE_SIZE=24,GOLDMINE_BOMBS=12;
-const GOLDMINE_TREASURE_COUNTS=[{key:"rock",emoji:"🪨",mult:1.2,count:4},{key:"coin",emoji:"🪙",mult:2.5,count:3},{key:"diamond",emoji:"💎",mult:3.5,count:2},{key:"moneybag",emoji:"💰",mult:6.5,count:1},{key:"lantern",emoji:"🏮",mult:20,count:1}];
+const GOLDMINE_TREASURE_COUNTS=[{key:"rock",emoji:"🪨",mult:1.08,count:4},{key:"coin",emoji:"🪙",mult:1.45,count:3},{key:"diamond",emoji:"💎",mult:2.1,count:2},{key:"moneybag",emoji:"💰",mult:3.5,count:1},{key:"lantern",emoji:"🏮",mult:8,count:1}];
 function buildGoldmineBoard(){const ids=shuffle([...Array(24).keys()]),b=new Array(24);let c=0;for(const i of ids.slice(c,c+12)){b[i]={type:"bomb"};c++;}for(const d of GOLDMINE_TREASURE_COUNTS){for(const i of ids.slice(c,c+d.count)){b[i]={type:"treasure",...d};c++;}}b[ids[c]]={type:"map"};return b}
 async function goldmine(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();const board=buildGoldmineBoard(),revealed=new Set();let mult=1,finished=false;
@@ -620,11 +619,11 @@ async function goldmine(message,args,user){
 }
 
 /* ============================== SLOTS ========================= */
-const SLOT_SYMBOLS=[{emoji:"🍒",weight:30,triple:3},{emoji:"🍋",weight:25,triple:4},{emoji:"🍊",weight:20,triple:5},{emoji:"🍇",weight:15,triple:6},{emoji:"⭐",weight:8,triple:10},{emoji:"7️⃣",weight:2,triple:20}];
+const SLOT_SYMBOLS=[{emoji:"🍒",weight:32,triple:2.5},{emoji:"🍋",weight:26,triple:3.2},{emoji:"🍊",weight:20,triple:4},{emoji:"🍇",weight:13,triple:5},{emoji:"⭐",weight:7,triple:8},{emoji:"7️⃣",weight:2,triple:15}];
 async function slots(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;saveData();
   const reels=[weightedPick(SLOT_SYMBOLS),weightedPick(SLOT_SYMBOLS),weightedPick(SLOT_SYMBOLS)],secret=reels.map(x=>x.emoji).join(" | ");
-  let mult=0,line="❌ No match.";if(reels[0].emoji===reels[1].emoji&&reels[1].emoji===reels[2].emoji){mult=reels[0].triple;line=`🎉 Triple ${reels[0].emoji}!`}else if(reels[0].emoji===reels[1].emoji||reels[1].emoji===reels[2].emoji||reels[0].emoji===reels[2].emoji){mult=1.2;line="🙂 Two matching symbols."}
+  let mult=0,line="❌ No match.";if(reels[0].emoji===reels[1].emoji&&reels[1].emoji===reels[2].emoji){mult=reels[0].triple;line=`🎉 Triple ${reels[0].emoji}!`}else if(reels[0].emoji===reels[1].emoji||reels[1].emoji===reels[2].emoji||reels[0].emoji===reels[2].emoji){mult=1.1;line="🙂 Two matching symbols."}
   await logAndPredict(message,`Slots started — bet ${money(bet)}.`,`🎰 Hidden reels: **${secret}**`,COLOR_INFO);
   const msg=await message.reply({embeds:[embed(`🎰 **SPINNING...**\n\n[ ❔ | ❔ | ❔ ]\n\n⏳ Result in **3 seconds**...`,COLOR_NEUTRAL,"🎰 Slots 🎰")]});
   for(let n=2;n>=1;n--){await new Promise(r=>setTimeout(r,1000));await msg.edit({embeds:[embed(`🎰 **SPINNING...**\n\n[ ${n===2?"🍒":"⭐"} | ${n===2?"❔":"🍋"} | ❔ ]\n\n⏳ **${n} second${n===1?"":"s"}**...`,COLOR_NEUTRAL,"🎰 Slots 🎰")] }).catch(()=>{});}
@@ -637,7 +636,7 @@ function rouletteColor(n){return n===0?"green":ROULETTE_RED.has(n)?"red":"black"
 async function roulette(message,args,user){
   const bet=validBet(message,args);if(bet===null)return;const choice=(args[1]||"").toLowerCase(),isNum=/^\d+$/.test(choice);
   if((!isNum&&!['red','black','green'].includes(choice))||(isNum&&(Number(choice)<0||Number(choice)>36)))return message.reply({embeds:[embed("❌ Usage: `$roulette <amount|half|all> <red/black/green/0-36>`",COLOR_LOSE)]});
-  user.cash-=bet;saveData();const result=random(0,36),color=rouletteColor(result),win=(isNum?Number(choice)===result:choice===color),mult=isNum?30:(color==="green"?14:2),payout=win?Math.floor(bet*mult):0;
+  user.cash-=bet;saveData();const result=random(0,36),color=rouletteColor(result),win=(isNum?Number(choice)===result:choice===color),mult=isNum?30:(color==="green"?12:1.9),payout=win?Math.floor(bet*mult):0;
   await logAndPredict(message,`Roulette started — bet ${money(bet)}, choice ${choice}.`,`🎡 Hidden result: **${result} (${color})**`,COLOR_INFO);
   const msg=await message.reply({embeds:[embed(`🎡 **ROULETTE**\n\nBall is spinning...\n\n🎯 Bet: **${money(bet)}** ${db.currency}\n🎲 Choice: **${choice}**\n\n⏳ Result in **3 seconds**...`,COLOR_NEUTRAL,"🎡 Roulette 🎡")]});
   for(let n=2;n>=1;n--){await new Promise(r=>setTimeout(r,1000));await msg.edit({embeds:[embed(`🎡 **ROULETTE**\n\n🔄 Wheel spinning...\n\n⏳ **${n} second${n===1?"":"s"}**...`,COLOR_NEUTRAL,"🎡 Roulette 🎡")] }).catch(()=>{});}
@@ -646,7 +645,7 @@ async function roulette(message,args,user){
 }
 
 /* ============================== WHEEL ========================= */
-const WHEEL_SEGMENTS=[{mult:0,weight:38,label:"💀 Bust"},{mult:1.2,weight:25,label:"🙂 1.2x"},{mult:1.5,weight:17,label:"😀 1.5x"},{mult:2,weight:12,label:"😃 2x"},{mult:5,weight:6,label:"🤑 5x"},{mult:10,weight:2,label:"🏆 10x"}];
+const WHEEL_SEGMENTS=[{mult:0,weight:45,label:"💀 Bust"},{mult:1.1,weight:28,label:"🙂 1.1x"},{mult:1.4,weight:16,label:"😀 1.4x"},{mult:2,weight:8,label:"😃 2x"},{mult:4,weight:2.5,label:"🤑 4x"},{mult:8,weight:.5,label:"🏆 8x"}];
 async function wheel(message,args,user){const bet=validBet(message,args);if(bet===null)return;user.cash-=bet;const r=weightedPick(WHEEL_SEGMENTS),p=Math.floor(bet*r.mult);if(p)user.cash+=p;saveData();return message.reply({embeds:[embed(`🎡 The wheel lands on **${r.label}**\n\n${p?`🎉 Won **${money(p)}** ${db.currency}!`:`❌ Lost **${money(bet)}** ${db.currency}.`}`,p?COLOR_WIN:COLOR_LOSE,"🎡 Wheel of Fortune 🎡")]});}
 
 /* ============================== CRASH ========================= */
@@ -677,17 +676,17 @@ async function summer(message,user){
 
 /* ============================== INFO ========================== */
 function buildInfoEmbed(){return embed([
-  "**🃏 Blackjack — `$bj <amount|half|all>`**","Natural blackjack chance: **23.4%**. Hit / Stand / Double. Natural pays 2.5x.","",
-  "**🐔 Cockfight — `$cf <amount|half|all>`**","Starts at 55% and increases by 1% after wins, up to 82%.","",
-  "**🎲 Higher or Lower — `$hl <amount|half|all>`**","Choose Higher, Same or Lower. Same pays 8x.","",
+  "**🃏 Blackjack — `$bj <amount|half|all>`**","Normal blackjack odds. Hit / Stand / Double. Natural pays 2.5x.","",
+  "**🐔 Cockfight — `$cf <amount|half|all>`**","Starts at 45% and rises gradually, capped at 60%.","",
+  "**🎲 Higher or Lower — `$hl <amount|half|all>`**","Choose Higher, Same or Lower. Same pays 7x.","",
   "**🍀 CoinFlip — `$ht <amount|half|all>`**","Heads/Tails, pays 2x.","",
-  "**💣 Mines — `$mines <amount|half|all>`**","3x3, one bomb. Multipliers: 1.1x → 8.9x. Cash out anytime.","",
+  "**💣 Mines — `$mines <amount|half|all>`**","3x3, one bomb. Multipliers: 1.05x → 5.8x. Cash out anytime.","",
   "**⛏️ Goldmine — `$gm <amount|half|all>`**","24 tiles, 12 bombs, treasure multipliers compound. Final board is revealed in the casino log/prediction feed.","",
-  "**🎰 Slots — `$slots <amount|half|all>`**","3 reels. Triple 7️⃣ = 20x, ⭐ = 10x, 🍇 = 6x, 🍊 = 5x, 🍋 = 4x, 🍒 = 3x. Two matching = 1.2x. 3-second reveal.","",
-  "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**","Red/Black = 2x, Green = 14x, exact number = 30x. 3-second reveal.","",
-  "**🎡 Wheel — `$wheel <amount|half|all>`**","0x, 1.2x, 1.5x, 2x, 5x or 10x.","",
+  "**🎰 Slots — `$slots <amount|half|all>`**","3 reels. Triple 7️⃣ = 15x, ⭐ = 8x, 🍇 = 5x, 🍊 = 4x, 🍋 = 3.2x, 🍒 = 2.5x. Two matching = 1.1x. 3-second reveal.","",
+  "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**","Red/Black = 1.9x, Green = 12x, exact number = 30x. 3-second reveal.","",
+  "**🎡 Wheel — `$wheel <amount|half|all>`**","0x, 1.1x, 1.4x, 2x, 4x or 8x.","",
   "**🚀 Crash — `$crash <amount|half|all>`**","Cash out before the multiplier crashes.","",
-  "**🎲 Random — `$random <amount|half|all>`**","One mystery roll. Possible results: 0x, 0.5x, 1.2x, 2x, 3x, 5x or 10x jackpot.","",
+  "**🎲 Random — `$random <amount|half|all>`**","One mystery roll. Possible results: 0x, 0.5x, 1.2x, 2x, 3x, 5x or rare 10x jackpot.","",
   "**☀️ Summer — `$summer`**","One free spin every 24 hours: 1.75M / 25M / 65M / 100M JACKPOT.","",
   `_Minimum bet: ${money(MIN_BET)} ${db.currency}. ${amountHelp()}`
 ].join("\n"),COLOR_INFO,"📖 Casino Bot — Rules");}
