@@ -190,6 +190,7 @@ async function finishBlackjack(game, message, result, payout = 0) {
     resultText = `💀 **You lost.**`;
   }
 
+  // תיקון: משתמשים ב-message.edit() בבטחה מבלי להסתמך על אובייקט האינטראקציה הישיר
   await message.edit({
     embeds: [
       embed(
@@ -239,9 +240,9 @@ async function handleBlackjackButton(interaction) {
     return true;
   }
 
+  // תיקון 1: שימוש ב-deferUpdate() נשמר כדי למנוע קריסת כפתור (Unknown Interaction)
   await interaction.deferUpdate();
 
-  // אם נבחר Hit או שהגענו ל-21 בעקבות פגיעה
   if (actionType === "hit") {
     const card = game.deck.pop();
     game.player.push(card);
@@ -251,15 +252,13 @@ async function handleBlackjackButton(interaction) {
     if (value > 21) {
       await finishBlackjack(
         game,
-        interaction.message,
+        interaction.message, // תיקון 2: העברת אובייקט ההודעה המקורי לעדכון
         "lose"
       );
       return true;
     }
 
     if (value === 21) {
-      // עובר אוטומטית لل-Stand אם הגענו ל-21
-      // נריץ את הלוגיקה של stand ישירות
       while (handValue(game.dealer) < 17) {
         game.dealer.push(game.deck.pop());
       }
@@ -279,6 +278,7 @@ async function handleBlackjackButton(interaction) {
       return true;
     }
 
+    // תיקון 2: עדכון ההודעה דרך interaction.message.edit
     await interaction.message.edit({
       embeds: [
         embed(
@@ -297,44 +297,30 @@ async function handleBlackjackButton(interaction) {
   }
 
   if (actionType === "stand") {
-    while (
-      handValue(game.dealer) < 17
-    ) {
-      game.dealer.push(
-        game.deck.pop()
-      );
+    while (handValue(game.dealer) < 17) {
+      game.dealer.push(game.deck.pop());
     }
 
-    const playerValue =
-      handValue(game.player);
+    const playerValue = handValue(game.player);
+    const dealerValue = handValue(game.dealer);
 
-    const dealerValue =
-      handValue(game.dealer);
-
-    if (
-      dealerValue > 21 ||
-      playerValue > dealerValue
-    ) {
+    if (dealerValue > 21 || playerValue > dealerValue) {
       await finishBlackjack(
         game,
         interaction.message,
         "win",
         game.bet * 2
       );
-
       return true;
     }
 
-    if (
-      playerValue === dealerValue
-    ) {
+    if (playerValue === dealerValue) {
       await finishBlackjack(
         game,
         interaction.message,
         "push",
         game.bet
       );
-
       return true;
     }
 
