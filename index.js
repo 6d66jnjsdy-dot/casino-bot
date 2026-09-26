@@ -1,751 +1,235 @@
-/* ============================================================
-   CASINO BOT — MAIN INDEX
-   discord.js v14
-   Old commands + New modular games
-   ============================================================ */
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { COLORS } = require('../config'); // מייבא את מערך הצבעים של הבוט שלך
 
-const express = require("express");
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder
-} = require("discord.js");
-
-/* ========================= CONFIG ========================= */
-
-const {
-  PREFIX,
-  MIN_BET,
-  CURRENCY,
-  COLORS,
-  PORT
-} = require("./config");
-
-const {
-  getUser,
-  saveData,
-  forceSaveData,
-  db
-} = require("./database");
-
-const {
-  embed,
-  money,
-  parseBet,
-  validBet,
-  amountHelp,
-  normalizeCommand,
-  isCommandDisabled,
-  gameRoomCheck,
-  hasCasinoAccess,
-  setupSecretDM,
-  logEvent
-} = require("./helpers");
-
-/* ========================= ECONOMY ========================= */
-
-const {
-  balance,
-  deposit,
-  withdraw,
-  pay,
-  work,
-  crime,
-  rob,
-  leaderboard
-} = require("./economy");
-
-/* =========================== DAILY =========================== */
-
-const {
-  daily
-} = require("./daily");
-
-/* =========================== ADMIN =========================== */
-
-const {
-  casinoRole,
-  roomGame,
-  logChannel,
-  currency,
-  predict,
-  addMoney,
-  removeMoney,
-  addMoneyRole,
-  resetEconomy,
-  disableCommand,
-  undisableCommand
-} = require("./admin");
-
-/* =========================== GAMES =========================== */
-
-const {
-  blackjack,
-  handleBlackjackButton
-} = require("./games/blackjack");
-
-const {
-  coinflip,
-  handleCoinflipButton
-} = require("./games/coinflip");
-
-const {
-  higherLower,
-  handleHigherLowerButton
-} = require("./games/higherlower");
-
-const {
-  cockfight,
-  handleCockfightButton
-} = require("./games/cockfight");
-
-const {
-  mines,
-  handleMinesButton
-} = require("./games/mines");
-
-const {
-  goldmine,
-  handleGoldmineButton
-} = require("./games/goldmine");
-
-const {
-  slots,
-  handleSlotsButton
-} = require("./games/slots");
-
-const {
-  roulette,
-  handleRouletteButton
-} = require("./games/roulette");
-
-const {
-  wheel,
-  handleWheelButton
-} = require("./games/wheel");
-
-const {
-  crash,
-  handleCrashButton
-} = require("./games/crash");
-
-/* ========================= KEEP ALIVE ========================= */
-
-const app = express();
-
-app.get("/", (req, res) => {
-  res.send("Casino Bot is Online 24/7!");
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Web server running on port ${PORT}`);
-});
-
-/* ============================= BOT ============================= */
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
-  ]
-});
-
-/* ========================= COMMAND ALIASES ========================= */
-
-const ALIASES = {
-  bal: "balance",
-  cash: "balance",
-  balance: "balance",
-
-  dep: "deposit",
-  deposit: "deposit",
-
-  with: "withdraw",
-  wd: "withdraw",
-  withdraw: "withdraw",
-
-  lb: "leaderboard",
-  top: "leaderboard",
-  leaderboard: "leaderboard",
-
-  bj: "blackjack",
-  blackjack: "blackjack",
-
-  ht: "coinflip",
-  coinflip: "coinflip",
-
-  hl: "higherlower",
-  higherlower: "higherlower",
-
-  cf: "cockfight",
-  cockfight: "cockfight",
-  chickenfight: "cockfight",
-
-  mines: "mines",
-  mine: "mines",
-
-  gm: "goldmine",
-  goldmine: "goldmine",
-
-  slots: "slots",
-  slot: "slots",
-
-  roulette: "roulette",
-  rl: "roulette",
-
-  wheel: "wheel",
-
-  crash: "crash",
-
-  daily: "daily",
-  summer: "daily",
-
-  "reset-economey": "reset-economy",
-  "reset-economy": "reset-economy",
-
-  "remove-money": "remove-money",
-  removemoney: "remove-money",
-
-  "log-channel": "log-channel",
-  logchannel: "log-channel",
-
-  casinorole: "casinorole",
-  roomgame: "roomgame",
-
-  addmoney: "addmoney",
-  "addmoney-role": "addmoney-role",
-
-  predict: "predict",
-  currency: "currency",
-
-  disable: "disable",
-  undisable: "undisable",
-
-  help: "help",
-  info: "info",
-
-  work: "work",
-  crime: "crime",
-  rob: "rob",
-  pay: "pay"
-};
-
-/* ========================= NORMALIZE ========================= */
-
-function commandName(raw) {
-  const normalized = normalizeCommand(raw);
-  return ALIASES[normalized] || normalized;
+// פונקציית עזר להגרלת קלף
+function drawCard() {
+    const values = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+    return values[Math.floor(Math.random() * values.length)];
 }
 
-/* ========================= FLEXIBLE BET ========================= */
-
-function getBet(message, args) {
-  const user = getUser(message.author.id);
-
-  const raw = String(args[0] || "").toLowerCase();
-
-  let bet;
-
-  if (raw === "all") {
-    bet = user.cash;
-  } else if (raw === "half") {
-    bet = Math.floor(user.cash / 2);
-  } else {
-    bet = Number(raw);
-  }
-
-  if (!Number.isFinite(bet)) {
-    message.reply({
-      embeds: [
-        embed(
-          `❌ Usage: \`${PREFIX}<amount|half|all>\`\n\n${amountHelp()}`,
-          COLORS.LOSE
-        )
-      ]
-    }).catch(() => {});
-
-    return null;
-  }
-
-  bet = Math.floor(bet);
-
-  if (bet < MIN_BET) {
-    message.reply({
-      embeds: [
-        embed(
-          `❌ Minimum bet is **${money(MIN_BET)}** ${CURRENCY}.`,
-          COLORS.LOSE
-        )
-      ]
-    }).catch(() => {});
-
-    return null;
-  }
-
-  if (bet > user.cash) {
-    message.reply({
-      embeds: [
-        embed(
-          `❌ You only have **${money(user.cash)}** ${CURRENCY} in cash.`,
-          COLORS.LOSE
-        )
-      ]
-    }).catch(() => {});
-
-    return null;
-  }
-
-  return bet;
+// פונקציה לחישוב ערך היד (מתחשב ב-A כ-1 או 11)
+function calculateHandValue(hand) {
+    let value = 0;
+    let aces = 0;
+    for (const card of hand) {
+        if (['J', 'Q', 'K'].includes(card)) value += 10;
+        else if (card === 'A') { aces += 1; value += 11; }
+        else value += parseInt(card);
+    }
+    while (value > 21 && aces > 0) { value -= 10; aces -= 1; }
+    return value;
 }
 
-/* ============================= HELP ============================= */
-
-function helpEmbed() {
-  return embed(
-    [
-      "**💰 Economy**",
-      `\`${PREFIX}bal\` · \`${PREFIX}cash\` · \`${PREFIX}balance\``,
-      `\`${PREFIX}work\` · \`${PREFIX}crime\` · \`${PREFIX}rob @user\``,
-      `\`${PREFIX}deposit/$dep <amount|half|all>\``,
-      `\`${PREFIX}withdraw/$with <amount|half|all>\``,
-      `\`${PREFIX}pay @user <amount|half|all>\``,
-      `\`${PREFIX}lb\` · \`${PREFIX}top\``,
-      "",
-      `**🎰 Games — minimum ${money(MIN_BET)} ${CURRENCY}**`,
-      `\`${PREFIX}bj\` — Blackjack`,
-      `\`${PREFIX}cf\` — Cockfight`,
-      `\`${PREFIX}hl\` — Higher / Lower`,
-      `\`${PREFIX}ht\` — CoinFlip`,
-      `\`${PREFIX}mines\` — Mines`,
-      `\`${PREFIX}gm\` — Goldmine`,
-      `\`${PREFIX}slots\` — Slots`,
-      `\`${PREFIX}roulette\` — Roulette`,
-      `\`${PREFIX}wheel\` — Wheel`,
-      `\`${PREFIX}crash\` — Crash`,
-      "",
-      `Every game accepts **amount**, \`half\`, or \`all\`.`,
-      "",
-      "**🎁 Daily**",
-      `\`${PREFIX}daily\` · \`${PREFIX}summer\``,
-      "",
-      "**🛠️ Admin**",
-      `\`${PREFIX}addmoney cash/bank @user <amount>\``,
-      `\`${PREFIX}remove-money cash/bank @user <amount>\``,
-      `\`${PREFIX}addmoney-role cash/bank @role <amount>\``,
-      `\`${PREFIX}reset-economy\``,
-      `\`${PREFIX}casinorole @role\``,
-      `\`${PREFIX}roomgame #channel\``,
-      `\`${PREFIX}log-channel #channel\``,
-      `\`${PREFIX}predict\` / \`${PREFIX}predict off\``,
-      `\`${PREFIX}currency <emoji>\``,
-      `\`${PREFIX}disable <command>\``,
-      `\`${PREFIX}undisable <command>\``
-    ].join("\n"),
-    COLORS.INFO,
-    "🎰 Casino Bot"
-  );
+// פונקציה שמפרמטת את תצוגת הקלפים לפי התמונה ששלחת
+function formatHand(hand, hideSecond = false) {
+    if (hideSecond) {
+        return `\` ${hand[0]} \`, \` 🟥 \``; // הקלף השני חסוי עם ריבוע אדום
+    }
+    return hand.map(c => `\` ${c} \``).join(', ');
 }
 
-/* ============================= INFO ============================= */
+async function blackjack(message, args, user) {
+    // שליפת סכום ההימור מהפונקציה הגלובלית שנמצאת ב-index.js
+    // (הפונקציה getBet מחזירה null אם ההימור לא תקין ומטפלת בזה בעצמה)
+    const getBet = message.client.listeners('messageCreate')[0].toString().includes('getBet') 
+        ? global.getBet 
+        : null; 
+    
+    // בגלל ששאר הפקודות באינדקס משתמשות במבנה הזה, נשלוף את ה-args בצורה פשוטה
+    let betAmount;
+    const raw = String(args[0] || "").toLowerCase();
+    if (raw === "all") betAmount = user.cash;
+    else if (raw === "half") betAmount = Math.floor(user.cash / 2);
+    else betAmount = Math.floor(Number(raw));
 
-function infoEmbed() {
-  return embed(
-    [
-      "**🃏 Blackjack**",
-      "Hit / Stand and beat the dealer.",
-      "",
-      "**🍀 CoinFlip**",
-      "Heads or Tails — 50/50.",
-      "",
-      "**🎲 Higher / Lower**",
-      "Predict whether the next number is higher or lower.",
-      "",
-      "**🐔 Cockfight**",
-      "Choose your chicken and fight.",
-      "",
-      "**💣 Mines**",
-      "Reveal safe tiles and cash out before hitting a mine.",
-      "",
-      "**⛏️ Goldmine**",
-      "Dig for treasures while avoiding bombs.",
-      "",
-      "**🎰 Slots**",
-      "Spin the reels for matching combinations.",
-      "",
-      "**🎡 Roulette**",
-      "Red, Black, Green or an exact number.",
-      "",
-      "**🎡 Wheel**",
-      "Spin for different multipliers.",
-      "",
-      "**🚀 Crash**",
-      "Cash out before the multiplier crashes.",
-      "",
-      `Minimum bet: **${money(MIN_BET)}** ${CURRENCY}`
-    ].join("\n"),
-    COLORS.INFO,
-    "📖 Casino Info"
-  );
-}
+    if (!betAmount || isNaN(betAmount) || betAmount > user.cash) return; // הגנה בסיסית
 
-/* ============================= READY ============================= */
+    // הורדת כסף על ההימור הראשוני
+    user.cash -= betAmount;
 
-client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
+    // חוק 53% סיכוי שהבית/דילר ינצח
+    const isRiggedLoss = Math.random() < 0.53;
 
-/* ========================= MESSAGES ========================= */
+    let playerHand = [drawCard(), drawCard()];
+    let dealerHand = [drawCard(), drawCard()];
 
-client.on("messageCreate", async message => {
-  if (message.author.bot) return;
-  if (!message.guild) return;
-  if (!message.content.startsWith(PREFIX)) return;
+    let playerValue = calculateHandValue(playerHand);
+    let dealerValue = calculateHandValue(dealerHand);
 
-  const parts = message.content
-    .slice(PREFIX.length)
-    .trim()
-    .split(/\s+/);
+    // בניית ה-Embed אחד לאחד לפי צילום המסך (במצב פעיל הקו צהוב/זהב)
+    const buildEmbed = (status = 'active') => {
+        let embedColor = 0xFEE75C; // ברירת מחדל צהוב במהלך משחק
+        let winBonusText = '';
 
-  const rawCommand = (parts.shift() || "").toLowerCase();
-  const args = parts;
+        if (status === 'win') {
+            embedColor = 0x57F287; // קו ירוק בווין
+        } else if (status === 'win_21') {
+            embedColor = 0x57F287; // קו ירוק ב-21
+            winBonusText = ' (💥 +30% Multiplier Bonus!)';
+        } else if (status === 'lose') {
+            embedColor = 0xED4245; // קו אדום בהפסד
+        } else if (status === 'tie') {
+            embedColor = 0xE67E22; // קו כתום בתיקו
+        }
 
-  const command = commandName(rawCommand);
-  const user = getUser(message.author.id);
+        return new EmbedBuilder()
+            .setAuthor({ name: `\${message.author.username}'s Game`, iconURL: message.author.displayAvatarURL() })
+            .setTitle(`🃏 Blackjack\${winBonusText}`)
+            .setColor(embedColor)
+            .addFields(
+                { name: 'Your Hand', value: formatHand(playerHand), inline: false },
+                { name: 'Value: ' + playerValue, value: '\u200b', inline: false },
+                { name: 'Dealer', value: formatHand(dealerHand, status === 'active'), inline: false },
+                { name: 'Value: ' + (status === 'active' ? calculateHandValue([dealerHand[0]]) : dealerValue), value: '\u200b', inline: false }
+            );
+    };
 
-  try {
-    /* ========================= LOG ========================= */
-
-    await logEvent(
-      message.guild,
-      `Command **${message.content}** used by **${message.author.tag}**.`,
-      COLORS.INFO
+    // יצירת שורת הכפתורים המעוצבת אחד לאחד לפי התמונה
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`bj:hit:message.author.id:{betAmount}`).setLabel('Hit').setStyle(ButtonStyle.Primary),       // כחול
+        new ButtonBuilder().setCustomId(`bj:stand:message.author.id:{betAmount}`).setLabel('Stand').setStyle(ButtonStyle.Success),   // ירוק
+        new ButtonBuilder().setCustomId(`bj:double:message.author.id:{betAmount}`).setLabel('Double').setStyle(ButtonStyle.Danger),  // אדום
+        new ButtonBuilder().setCustomId(`bj:split:message.author.id:{betAmount}`).setLabel('Split').setStyle(ButtonStyle.Secondary).setDisabled(true) // אפור מושבת
     );
 
-    /* ========================= HELP ========================= */
-
-    if (command === "help") {
-      return message.reply({
-        embeds: [helpEmbed()]
-      });
-    }
-
-    if (command === "info") {
-      return message.reply({
-        embeds: [infoEmbed()]
-      });
-    }
-
-    /* ========================= DISABLE ========================= */
-
-    if (command === "disable") {
-      return disableCommand(message, args);
-    }
-
-    if (command === "undisable") {
-      return undisableCommand(message, args);
-    }
-
-    /* ========================= DAILY ========================= */
-
-    if (command === "daily") {
-      return daily(message);
-    }
-
-    /* ========================= ADMIN ========================= */
-
-    if (command === "casinorole") {
-      return casinoRole(message, args);
-    }
-
-    if (command === "roomgame") {
-      return roomGame(message, args);
-    }
-
-    if (command === "log-channel") {
-      return logChannel(message, args);
-    }
-
-    if (command === "currency") {
-      return currency(message, args);
-    }
-
-    if (command === "predict") {
-      return predict(message, args);
-    }
-
-    if (command === "addmoney") {
-      return addMoney(message, args);
-    }
-
-    if (command === "remove-money") {
-      return removeMoney(message, args);
-    }
-
-    if (command === "addmoney-role") {
-      return addMoneyRole(message, args);
-    }
-
-    if (command === "reset-economy") {
-      return resetEconomy(message, args);
-    }
-
-    /* ========================= DISABLED COMMANDS ========================= */
-
-    if (isCommandDisabled(command)) {
-      return message.reply({
-        embeds: [
-          embed(
-            `❌ The command \`${PREFIX}${rawCommand}\` is currently disabled.`,
-            COLORS.LOSE
-          )
-        ]
-      });
-    }
-
-    /* ========================= ECONOMY ========================= */
-
-    if (command === "balance") {
-      return balance(message, args);
-    }
-
-    if (command === "deposit") {
-      return deposit(message, args);
-    }
-
-    if (command === "withdraw") {
-      return withdraw(message, args);
-    }
-
-    if (command === "pay") {
-      return pay(message, args);
-    }
-
-    if (command === "work") {
-      return work(message, args);
-    }
-
-    if (command === "crime") {
-      return crime(message, args);
-    }
-
-    if (command === "rob") {
-      return rob(message, args);
-    }
-
-    if (command === "leaderboard") {
-      return leaderboard(message, args);
-    }
-
-    /* ========================= GAME ACCESS ========================= */
-
-    const gameCommands = [
-      "blackjack",
-      "coinflip",
-      "higherlower",
-      "cockfight",
-      "mines",
-      "goldmine",
-      "slots",
-      "roulette",
-      "wheel",
-      "crash"
-    ];
-
-    if (gameCommands.includes(command)) {
-      if (!gameRoomCheck(message)) return;
-    }
-
-    /* ========================= BLACKJACK ========================= */
-
-    if (command === "blackjack") {
-      return blackjack(message, args, user);
-    }
-
-    /* ========================= COINFLIP ========================= */
-
-    if (command === "coinflip") {
-      return coinflip(message, args, user);
-    }
-
-    /* ========================= HIGHER / LOWER ========================= */
-
-    if (command === "higherlower") {
-      return higherLower(message, args, user);
-    }
-
-    /* ========================= COCKFIGHT ========================= */
-
-    if (command === "cockfight") {
-      return cockfight(message, args, user);
-    }
-
-    /* ========================= MINES ========================= */
-
-    if (command === "mines") {
-      return mines(message, args, user);
-    }
-
-    /* ========================= GOLDMINE ========================= */
-
-    if (command === "goldmine") {
-      return goldmine(message, args, user);
-    }
-
-    /* ========================= SLOTS ========================= */
-
-    if (command === "slots") {
-      return slots(message, args, user);
-    }
-
-    /* ========================= ROULETTE ========================= */
-
-    if (command === "roulette") {
-      return roulette(message, args, user);
-    }
-
-    /* ========================= WHEEL ========================= */
-
-    if (command === "wheel") {
-      return wheel(message, args, user);
-    }
-
-    /* ========================= CRASH ========================= */
-
-    if (command === "crash") {
-      return crash(message, args, user);
-    }
-
-  } catch (error) {
-    console.error("Command error:", error);
-
-    return message.reply({
-      embeds: [
-        embed(
-          "❌ Something went wrong while running this command.",
-          COLORS.LOSE
-        )
-      ]
-    }).catch(() => {});
-  }
-});
-
-/* ========================= BUTTONS ========================= */
-
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isButton()) return;
-
-  try {
-    const id = interaction.customId;
-
-    /* ========================= BLACKJACK ========================= */
-
-    if (id.startsWith("bj:")) {
-      return handleBlackjackButton(interaction);
-    }
-
-    /* ========================= COINFLIP ========================= */
-
-    if (id.startsWith("cf:") || id.startsWith("ht:")) {
-      return handleCoinflipButton(interaction);
-    }
-
-    /* ========================= HIGHER / LOWER ========================= */
-
-    if (id.startsWith("hl:")) {
-      return handleHigherLowerButton(interaction);
-    }
-
-    /* ========================= COCKFIGHT ========================= */
-
-    if (id.startsWith("cfight:")) {
-      return handleCockfightButton(interaction);
-    }
-
-    /* ========================= MINES ========================= */
-
-    if (id.startsWith("mines:")) {
-      return handleMinesButton(interaction);
-    }
-
-    /* ========================= GOLDMINE ========================= */
-
-    if (id.startsWith("goldmine:")) {
-      return handleGoldmineButton(interaction);
-    }
-
-    /* ========================= SLOTS ========================= */
-
-    if (id.startsWith("slots:")) {
-      return handleSlotsButton(interaction);
-    }
-
-    /* ========================= ROULETTE ========================= */
-
-    if (id.startsWith("roulette:")) {
-      return handleRouletteButton(interaction);
-    }
-
-    /* ========================= WHEEL ========================= */
-
-    if (id.startsWith("wheel:")) {
-      return handleWheelButton(interaction);
-    }
-
-    /* ========================= CRASH ========================= */
-
-    if (id.startsWith("crash:")) {
-      return handleCrashButton(interaction);
-    }
-
-  } catch (error) {
-    console.error("Button error:", error);
-
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: "❌ Something went wrong.",
-        ephemeral: true
-      }).catch(() => {});
-    }
-  }
-});
-
-/* ========================= SAFETY ========================= */
-
-process.on("unhandledRejection", error => {
-  console.error("Unhandled rejection:", error);
-});
-
-process.on("uncaughtException", error => {
-  console.error("Uncaught exception:", error);
-});
-
-/* ========================= SHUTDOWN ========================= */
-
-async function shutdown(signal) {
-  console.log(`Received ${signal}. Saving database...`);
-
-  try {
-    await forceSaveData();
-  } catch (e) {
-    console.error("Final save failed:", e);
-  }
-
-  process.exit(0);
+    // שליחת המשחק
+    const gameMessage = await message.reply({
+        embeds: [buildEmbed('active')],
+        components: [row]
+    });
+
+    // שמירת נתוני המשחק הזמניים על ההודעה כדי שהמנגנון ב-Interaction יוכל לקרוא אותם
+    gameMessage.gameState = {
+        playerHand,
+        dealerHand,
+        isRiggedLoss,
+        user
+    };
 }
 
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+// פונקציית הטיפול בלחיצות על הכפתורים (שמופעלת מה-InteractionCreate באינדקס)
+async function handleBlackjackButton(interaction) {
+    const [prefix, action, userId, betRaw] = interaction.customId.split(':');
+    let betAmount = parseInt(betRaw);
 
-/* ========================= LOGIN ========================= */
+    // בדיקה שהמשתמש שלחץ הוא הבעלים של המשחק
+    if (interaction.user.id !== userId) {
+        return interaction.reply({ content: '❌ זה לא המשחק שלך!', ephemeral: true });
+    }
 
-if (!process.env.DISCORD_TOKEN) {
-  console.error("❌ DISCORD_TOKEN is missing.");
-} else {
-  client.login(process.env.DISCORD_TOKEN)
-    .then(() => console.log("✅ Discord login started."))
-    .catch(error => {
-      console.error("❌ Discord login failed:", error);
+    // שחזור המצב מתוך ההודעה
+    const message = interaction.message;
+    if (!message.gameState) {
+        return interaction.reply({ content: '❌ משחק זה פג תוקף.', ephemeral: true });
+    }
+
+    let { playerHand, dealerHand, isRiggedLoss, user } = message.gameState;
+    await interaction.deferUpdate();
+
+    let playerValue = calculateHandValue(playerHand);
+    let dealerValue = calculateHandValue(dealerHand);
+
+    const finishGame = async (status) => {
+        let payout = 0;
+        if (status === 'win') payout = betAmount * 2;
+        else if (status === 'win_21') payout = Math.floor(betAmount * 2.3); // תוספת 30% לרווח ב-21 מושלם (2.3 במקום 2)
+        else if (status === 'tie') payout = betAmount;
+
+        user.cash += payout; // עדכון ה-Database המקומי שלך
+
+        // בניית ה-Embed הסופי (הצבעים ישתנו אוטומטית בפנים) והסרת הכפתורים
+        const endEmbed = new EmbedBuilder()
+            .setAuthor({ name: `\${interaction.user.username}'s Game`, iconURL: interaction.user.displayAvatarURL() })
+            .setTitle(`🃏 Blackjack \${status === 'win_21' ? '(💥 21 מושלם!)' : ''}`)
+            .setColor(status === 'lose' ? 0xED4245 : (status === 'tie' ? 0xE67E22 : 0x57F287))
+            .addFields(
+                { name: 'Your Hand', value: playerHand.map(c => `\` ${c} \``).join(', '), inline: false },
+                { name: 'Value: ' + calculateHandValue(playerHand), value: '\u200b', inline: false },
+                { name: 'Dealer', value: dealerHand.map(c => `\` ${c} \``).join(', '), inline: false },
+                { name: 'Value: ' + calculateHandValue(dealerHand), value: '\u200b', inline: false }
+            );
+
+        await interaction.editReply({
+            embeds: [endEmbed],
+            components: []
+        });
+        
+        delete message.gameState; // ניקוי הזיכרון
+    };
+
+    // --- כפתור HIT ---
+    if (action === 'hit') {
+        playerHand.push(drawCard());
+        playerValue = calculateHandValue(playerHand);
+
+        if (playerValue > 21 || isRiggedLoss) {
+            return finishGame('lose');
+        } else if (playerValue === 21) {
+            return finishGame('win_21');
+        }
+    }
+
+    // --- כפתור DOUBLE ---
+    if (action === 'double') {
+        if (user.cash < betAmount) {
+            return interaction.followUp({ content: '❌ אין לך מספיק כסף בקופה כדי לבצע Double!', ephemeral: true });
+        }
+        user.cash -= betAmount;
+        betAmount = betAmount * 2; // הכפלת סכום ההימור
+
+        playerHand.push(drawCard());
+        playerValue = calculateHandValue(playerHand);
+
+        if (playerValue > 21 || isRiggedLoss) {
+            return finishGame('lose');
+        }
+        
+        // בבלאקג'ק, אחרי דאבל מקבלים קלף אחד והתור עובר ישר לדילר:
+        while (dealerValue < 17) {
+            dealerHand.push(drawCard());
+            dealerValue = calculateHandValue(dealerHand);
+        }
+        if (dealerValue > 21 || playerValue > dealerValue) return finishGame(playerValue === 21 ? 'win_21' : 'win');
+        else if (playerValue < dealerValue) return finishGame('lose');
+        else return finishGame('tie');
+    }
+
+    // --- כפתור STAND ---
+    if (action === 'stand') {
+        while (dealerValue < 17) {
+            dealerHand.push(drawCard());
+            dealerValue = calculateHandValue(dealerHand);
+        }
+
+        if (isRiggedLoss) {
+            return finishGame('lose');
+        } else if (dealerValue > 21 || playerValue > dealerValue) {
+            return finishGame(playerValue === 21 ? 'win_21' : 'win');
+        } else if (playerValue < dealerValue) {
+            return finishGame('lose');
+        } else {
+            return finishGame('tie');
+        }
+    }
+
+    // עדכון המשחק הנוכחי על המסך במידה והמשחק עדיין פעיל (אחרי Hit רגיל)
+    const updateEmbed = new EmbedBuilder()
+        .setAuthor({ name: `\${interaction.user.username}'s Game`, iconURL: interaction.user.displayAvatarURL() })
+        .setTitle(`🃏 Blackjack`)
+        .setColor(0xFEE75C)
+        .addFields(
+            { name: 'Your Hand', value: playerHand.map(c => `\` ${c} \``).join(', '), inline: false },
+            { name: 'Value: ' + playerValue, value: '\u200b', inline: false },
+            { name: 'Dealer', value: formatHand(dealerHand, true), inline: false },
+            { name: 'Value: ' + calculateHandValue([dealerHand[0]]), value: '\u200b', inline: false }
+        );
+
+    await interaction.editReply({
+        embeds: [updateEmbed]
     });
 }
+
+module.exports = {
+    blackjack,
+    handleBlackjackButton
+};
