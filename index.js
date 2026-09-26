@@ -16,11 +16,11 @@ const {
 
 const {
   PREFIX,
-  PORT
+  PORT,
+  CURRENCY
 } = require("./config");
 
 const {
-  saveData,
   forceSaveData
 } = require("./database");
 
@@ -80,52 +80,52 @@ const {
 const {
   blackjack,
   handleBlackjackButton
-} = require("./games/blackjack");
+} = require("./Games/blackjack");
 
 const {
   coinflip,
   handleCoinflipButton
-} = require("./games/coinflip");
+} = require("./Games/coinflip");
 
 const {
   higherLower,
   handleHigherLowerButton
-} = require("./games/higherlower");
+} = require("./Games/higherlower");
 
 const {
   cockfight,
   handleCockfightButton
-} = require("./games/cockfight");
+} = require("./Games/cockfight");
 
 const {
   mines,
   handleMinesButton
-} = require("./games/mines");
+} = require("./Games/mines");
 
 const {
   goldmine,
   handleGoldmineButton
-} = require("./games/goldmine");
+} = require("./Games/goldmine");
 
 const {
   slots,
   handleSlotsButton
-} = require("./games/slots");
+} = require("./Games/slots");
 
 const {
   roulette,
   handleRouletteButton
-} = require("./games/roulette");
+} = require("./Games/roulette");
 
 const {
   wheel,
   handleWheelButton
-} = require("./games/wheel");
+} = require("./Games/wheel");
 
 const {
   crash,
   handleCrashButton
-} = require("./games/crash");
+} = require("./Games/crash");
 
 /* ============================================================
    EXPRESS KEEP ALIVE
@@ -138,9 +138,7 @@ app.get("/", (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `🌐 Keep Alive running on port ${PORT}`
-  );
+  console.log(`🌐 Keep Alive running on port ${PORT}`);
 });
 
 /* ============================================================
@@ -161,17 +159,9 @@ const client = new Client({
    ============================================================ */
 
 client.once("ready", async () => {
-  console.log(
-    `✅ Logged in as ${client.user.tag}`
-  );
-
-  console.log(
-    `🌐 Servers: ${client.guilds.cache.size}`
-  );
-
-  console.log(
-    `🎰 Prefix: ${PREFIX}`
-  );
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`🌐 Servers: ${client.guilds.cache.size}`);
+  console.log(`🎰 Prefix: ${PREFIX}`);
 
   setupSecretDM(client);
 });
@@ -200,10 +190,9 @@ client.on("messageCreate", async message => {
 
     const parts = raw.split(/\s+/);
 
-    const command =
-      normalizeCommand(
-        parts.shift().toLowerCase()
-      );
+    const command = normalizeCommand(
+      parts.shift().toLowerCase()
+    );
 
     const args = parts;
 
@@ -211,9 +200,7 @@ client.on("messageCreate", async message => {
        DISABLED COMMAND CHECK
        ======================================================== */
 
-    if (
-      isCommandDisabled(command)
-    ) {
+    if (isCommandDisabled(command)) {
       return message.reply(
         "❌ This command is currently disabled."
       );
@@ -304,7 +291,7 @@ client.on("messageCreate", async message => {
     }
 
     /* ========================================================
-       GAME ROOM CHECK
+       CASINO COMMANDS
        ======================================================== */
 
     const casinoCommands = new Set([
@@ -320,141 +307,65 @@ client.on("messageCreate", async message => {
       "crash"
     ]);
 
-    if (
-      casinoCommands.has(command)
-    ) {
-      if (
-        !gameRoomCheck(message)
-      ) {
-        return;
-      }
+    if (!casinoCommands.has(command)) {
+      return;
     }
 
     /* ========================================================
-       BET REQUIRED
+       GAME ROOM CHECK
        ======================================================== */
 
-    if (
-      casinoCommands.has(command)
-    ) {
-      const bet = parseBet(args[0]);
+    if (!gameRoomCheck(message)) {
+      return;
+    }
 
-      if (!validBet(bet)) {
-        return message.reply(
-          `❌ Minimum bet is **175** ${require("./config").CURRENCY || "💸"}.\n` +
-          `Usage: \`${PREFIX}${command} <bet>\``
-        );
-      }
+    /* ========================================================
+       BET CHECK
+       ======================================================== */
 
-      /* ==============================================
-         BLACKJACK
-         ============================================== */
+    const bet = parseBet(args[0]);
 
-      if (command === "bj") {
-        return blackjack(
-          message,
-          bet
-        );
-      }
+    if (!validBet(bet)) {
+      return message.reply(
+        `❌ Minimum bet is **175** ${CURRENCY || "💸"}.\n` +
+        `Usage: \`${PREFIX}${command} <bet>\``
+      );
+    }
 
-      /* ==============================================
-         COINFLIP
-         ============================================== */
+    /* ========================================================
+       GAME DISPATCH
+       ======================================================== */
 
-      if (command === "ht") {
-        return coinflip(
-          message,
-          bet
-        );
-      }
+    switch (command) {
+      case "bj":
+        return blackjack(message, bet);
 
-      /* ==============================================
-         HIGHER / LOWER
-         ============================================== */
+      case "ht":
+        return coinflip(message, bet);
 
-      if (command === "hl") {
-        return higherLower(
-          message,
-          bet
-        );
-      }
+      case "hl":
+        return higherLower(message, bet);
 
-      /* ==============================================
-         COCKFIGHT
-         ============================================== */
+      case "cf":
+        return cockfight(message, bet);
 
-      if (command === "cf") {
-        return cockfight(
-          message,
-          bet
-        );
-      }
+      case "mines":
+        return mines(message, bet);
 
-      /* ==============================================
-         MINES
-         ============================================== */
+      case "gm":
+        return goldmine(message, bet);
 
-      if (command === "mines") {
-        return mines(
-          message,
-          bet
-        );
-      }
+      case "slots":
+        return slots(message, bet);
 
-      /* ==============================================
-         GOLDMINE
-         ============================================== */
+      case "roulette":
+        return roulette(message, bet);
 
-      if (command === "gm") {
-        return goldmine(
-          message,
-          bet
-        );
-      }
+      case "wheel":
+        return wheel(message, bet);
 
-      /* ==============================================
-         SLOTS
-         ============================================== */
-
-      if (command === "slots") {
-        return slots(
-          message,
-          bet
-        );
-      }
-
-      /* ==============================================
-         ROULETTE
-         ============================================== */
-
-      if (command === "roulette") {
-        return roulette(
-          message,
-          bet
-        );
-      }
-
-      /* ==============================================
-         WHEEL
-         ============================================== */
-
-      if (command === "wheel") {
-        return wheel(
-          message,
-          bet
-        );
-      }
-
-      /* ==============================================
-         CRASH
-         ============================================== */
-
-      if (command === "crash") {
-        return crash(
-          message,
-          bet
-        );
-      }
+      case "crash":
+        return crash(message, bet);
     }
 
   } catch (error) {
@@ -483,87 +394,72 @@ client.on(
         return;
       }
 
-      /*
-       * Each game handler returns true when it owns
-       * the button interaction.
-       */
-
+      /* BLACKJACK */
       if (
-        await handleBlackjackButton(
-          interaction
-        )
+        await handleBlackjackButton(interaction)
       ) {
         return;
       }
 
+      /* COINFLIP */
       if (
-        await handleCoinflipButton(
-          interaction
-        )
+        await handleCoinflipButton(interaction)
       ) {
         return;
       }
 
+      /* HIGHER / LOWER */
       if (
-        await handleHigherLowerButton(
-          interaction
-        )
+        await handleHigherLowerButton(interaction)
       ) {
         return;
       }
 
+      /* COCKFIGHT */
       if (
-        await handleCockfightButton(
-          interaction
-        )
+        await handleCockfightButton(interaction)
       ) {
         return;
       }
 
+      /* MINES */
       if (
-        await handleMinesButton(
-          interaction
-        )
+        await handleMinesButton(interaction)
       ) {
         return;
       }
 
+      /* GOLDMINE */
       if (
-        await handleGoldmineButton(
-          interaction
-        )
+        await handleGoldmineButton(interaction)
       ) {
         return;
       }
 
+      /* SLOTS */
       if (
-        await handleSlotsButton(
-          interaction
-        )
+        await handleSlotsButton(interaction)
       ) {
         return;
       }
 
+      /* ROULETTE */
       if (
-        await handleRouletteButton(
-          interaction
-        )
+        await handleRouletteButton(interaction)
       ) {
         return;
       }
 
+      /* WHEEL */
       if (
-        await handleWheelButton(
-          interaction
-        )
+        await handleWheelButton(interaction)
       ) {
         return;
       }
 
+      /* CRASH */
       if (
-        await handleCrashButton(
-          interaction
-        )
+        await handleCrashButton(interaction)
       ) {
         return;
       }
@@ -606,61 +502,4 @@ process.on(
 
 process.on(
   "unhandledRejection",
-  error => {
-    console.error(
-      "❌ Unhandled Rejection:",
-      error
-    );
-  }
-);
-
-/* ============================================================
-   SAVE BEFORE SHUTDOWN
-   ============================================================ */
-
-async function shutdown(signal) {
-  console.log(
-    `🛑 Received ${signal}. Saving data...`
-  );
-
-  try {
-    forceSaveData();
-  } catch (error) {
-    console.error(
-      "❌ Failed to save data:",
-      error
-    );
-  }
-
-  try {
-    client.destroy();
-  } catch {}
-
-  process.exit(0);
-}
-
-process.on(
-  "SIGINT",
-  () => shutdown("SIGINT")
-);
-
-process.on(
-  "SIGTERM",
-  () => shutdown("SIGTERM")
-);
-
-/* ============================================================
-   LOGIN
-   ============================================================ */
-
-if (!process.env.DISCORD_TOKEN) {
-  console.error(
-    "❌ DISCORD_TOKEN environment variable is missing."
-  );
-
-  process.exit(1);
-}
-
-client.login(
-  process.env.DISCORD_TOKEN
-);
+  error =>
