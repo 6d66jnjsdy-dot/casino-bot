@@ -1,5 +1,5 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { COLORS } = require('../config'); // מייבא את מערך הצבעים של הבוט שלך
+const { COLORS } = require('../config'); 
 
 // פונקציית עזר להגרלת קלף
 function drawCard() {
@@ -20,29 +20,27 @@ function calculateHandValue(hand) {
     return value;
 }
 
-// פונקציה שמפרמטת את תצוגת הקלפים לפי התמונה ששלחת
+// פונקציה שמפרמטת את תצוגת הקלפים
 function formatHand(hand, hideSecond = false) {
     if (hideSecond) {
-        return `\` ${hand[0]} \`, \` 🟥 \``; // הקלף השני חסוי עם ריבוע אדום
+        return `\` ${hand[0]} \`, \` 🟥 \``; 
     }
     return hand.map(c => `\` ${c} \``).join(', ');
 }
 
 async function blackjack(message, args, user) {
-    // שליפת סכום ההימור מהפונקציה הגלובלית שנמצאת ב-index.js
-    // (הפונקציה getBet מחזירה null אם ההימור לא תקין ומטפלת בזה בעצמה)
-    const getBet = message.client.listeners('messageCreate')[0].toString().includes('getBet') 
-        ? global.getBet 
-        : null; 
-    
-    // בגלל ששאר הפקודות באינדקס משתמשות במבנה הזה, נשלוף את ה-args בצורה פשוטה
     let betAmount;
     const raw = String(args[0] || "").toLowerCase();
+    
+    // בדיקת סוג ההימור והפיכתו למספרים מתאימים
     if (raw === "all") betAmount = user.cash;
     else if (raw === "half") betAmount = Math.floor(user.cash / 2);
     else betAmount = Math.floor(Number(raw));
 
-    if (!betAmount || isNaN(betAmount) || betAmount > user.cash) return; // הגנה בסיסית
+    // הגנה בסיסית מפני הימורים לא תקינים או חריגה מהתקציב
+    if (!betAmount || isNaN(betAmount) || betAmount <= 0 || betAmount > user.cash) {
+        return message.reply("❌ סכום ההימור אינו תקין או שאין לך מספיק כסף.");
+    }
 
     // הורדת כסף על ההימור הראשוני
     user.cash -= betAmount;
@@ -54,22 +52,21 @@ async function blackjack(message, args, user) {
     let dealerHand = [drawCard(), drawCard()];
 
     let playerValue = calculateHandValue(playerHand);
-    let dealerValue = calculateHandValue(dealerHand);
 
-    // בניית ה-Embed אחד לאחד לפי צילום המסך (במצב פעיל הקו צהוב/זהב)
+    // בניית ה-Embed (תיקון ה-Template Literals עם גרש נטוי ` `)
     const buildEmbed = (status = 'active') => {
-        let embedColor = 0xFEE75C; // ברירת מחדל צהוב במהלך משחק
+        let embedColor = 0xFEE75C; 
         let winBonusText = '';
 
         if (status === 'win') {
-            embedColor = 0x57F287; // קו ירוק בווין
+            embedColor = 0x57F287; 
         } else if (status === 'win_21') {
-            embedColor = 0x57F287; // קו ירוק ב-21
+            embedColor = 0x57F287; 
             winBonusText = ' (💥 +30% Multiplier Bonus!)';
         } else if (status === 'lose') {
-            embedColor = 0xED4245; // קו אדום בהפסד
+            embedColor = 0xED4245; 
         } else if (status === 'tie') {
-            embedColor = 0xE67E22; // קו כתום בתיקו
+            embedColor = 0xE67E22; 
         }
 
         return new EmbedBuilder()
@@ -80,25 +77,25 @@ async function blackjack(message, args, user) {
                 { name: 'Your Hand', value: formatHand(playerHand), inline: false },
                 { name: 'Value: ' + playerValue, value: '\u200b', inline: false },
                 { name: 'Dealer', value: formatHand(dealerHand, status === 'active'), inline: false },
-                { name: 'Value: ' + (status === 'active' ? calculateHandValue([dealerHand[0]]) : dealerValue), value: '\u200b', inline: false }
+                { name: 'Value: ' + (status === 'active' ? calculateHandValue([dealerHand[0]]) : calculateHandValue(dealerHand)), value: '\u200b', inline: false }
             );
     };
 
-    // יצירת שורת הכפתורים המעוצבת אחד לאחד לפי התמונה
+    // תיקון קריטי: הכנסת המשתנים userId ו-betAmount בצורה דינמית לתוך ה-CustomId של הכפתורים
     const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`bj:hit:message.author.id:{betAmount}`).setLabel('Hit').setStyle(ButtonStyle.Primary),       // כחול
-        new ButtonBuilder().setCustomId(`bj:stand:message.author.id:{betAmount}`).setLabel('Stand').setStyle(ButtonStyle.Success),   // ירוק
-        new ButtonBuilder().setCustomId(`bj:double:message.author.id:{betAmount}`).setLabel('Double').setStyle(ButtonStyle.Danger),  // אדום
-        new ButtonBuilder().setCustomId(`bj:split:message.author.id:{betAmount}`).setLabel('Split').setStyle(ButtonStyle.Secondary).setDisabled(true) // אפור מושבת
+        new ButtonBuilder().setCustomId(`bj:hit:message.author.id:{betAmount}`).setLabel('Hit').setStyle(ButtonStyle.Primary),       
+        new ButtonBuilder().setCustomId(`bj:stand:message.author.id:{betAmount}`).setLabel('Stand').setStyle(ButtonStyle.Success),   
+        new ButtonBuilder().setCustomId(`bj:double:message.author.id:{betAmount}`).setLabel('Double').setStyle(ButtonStyle.Danger),  
+        new ButtonBuilder().setCustomId(`bj:split:message.author.id:{betAmount}`).setLabel('Split').setStyle(ButtonStyle.Secondary).setDisabled(true) 
     );
 
-    // שליחת המשחק
+    // שליחת הודעת המשחק
     const gameMessage = await message.reply({
         embeds: [buildEmbed('active')],
         components: [row]
     });
 
-    // שמירת נתוני המשחק הזמניים על ההודעה כדי שהמנגנון ב-Interaction יוכל לקרוא אותם
+    // שמירת המצב הזמני על גבי ההודעה
     gameMessage.gameState = {
         playerHand,
         dealerHand,
@@ -107,17 +104,15 @@ async function blackjack(message, args, user) {
     };
 }
 
-// פונקציית הטיפול בלחיצות על הכפתורים (שמופעלת מה-InteractionCreate באינדקס)
 async function handleBlackjackButton(interaction) {
     const [prefix, action, userId, betRaw] = interaction.customId.split(':');
     let betAmount = parseInt(betRaw);
 
-    // בדיקה שהמשתמש שלחץ הוא הבעלים של המשחק
+    // וידוא שהמשתמש שלחץ הוא בעל המשחק
     if (interaction.user.id !== userId) {
         return interaction.reply({ content: '❌ זה לא המשחק שלך!', ephemeral: true });
     }
 
-    // שחזור המצב מתוך ההודעה
     const message = interaction.message;
     if (!message.gameState) {
         return interaction.reply({ content: '❌ משחק זה פג תוקף.', ephemeral: true });
@@ -132,12 +127,12 @@ async function handleBlackjackButton(interaction) {
     const finishGame = async (status) => {
         let payout = 0;
         if (status === 'win') payout = betAmount * 2;
-        else if (status === 'win_21') payout = Math.floor(betAmount * 2.3); // תוספת 30% לרווח ב-21 מושלם (2.3 במקום 2)
+        else if (status === 'win_21') payout = Math.floor(betAmount * 2.3); 
         else if (status === 'tie') payout = betAmount;
 
-        user.cash += payout; // עדכון ה-Database המקומי שלך
+        user.cash += payout; 
 
-        // בניית ה-Embed הסופי (הצבעים ישתנו אוטומטית בפנים) והסרת הכפתורים
+        // יצירת ה-Embed הסופי והסרת הכפתורים
         const endEmbed = new EmbedBuilder()
             .setAuthor({ name: `\${interaction.user.username}'s Game`, iconURL: interaction.user.displayAvatarURL() })
             .setTitle(`🃏 Blackjack \${status === 'win_21' ? '(💥 21 מושלם!)' : ''}`)
@@ -154,7 +149,7 @@ async function handleBlackjackButton(interaction) {
             components: []
         });
         
-        delete message.gameState; // ניקוי הזיכרון
+        delete message.gameState; 
     };
 
     // --- כפתור HIT ---
@@ -175,7 +170,7 @@ async function handleBlackjackButton(interaction) {
             return interaction.followUp({ content: '❌ אין לך מספיק כסף בקופה כדי לבצע Double!', ephemeral: true });
         }
         user.cash -= betAmount;
-        betAmount = betAmount * 2; // הכפלת סכום ההימור
+        betAmount = betAmount * 2; 
 
         playerHand.push(drawCard());
         playerValue = calculateHandValue(playerHand);
@@ -184,7 +179,6 @@ async function handleBlackjackButton(interaction) {
             return finishGame('lose');
         }
         
-        // בבלאקג'ק, אחרי דאבל מקבלים קלף אחד והתור עובר ישר לדילר:
         while (dealerValue < 17) {
             dealerHand.push(drawCard());
             dealerValue = calculateHandValue(dealerHand);
@@ -212,7 +206,7 @@ async function handleBlackjackButton(interaction) {
         }
     }
 
-    // עדכון המשחק הנוכחי על המסך במידה והמשחק עדיין פעיל (אחרי Hit רגיל)
+    // עדכון תצוגה זמנית במהלך המשחק
     const updateEmbed = new EmbedBuilder()
         .setAuthor({ name: `\${interaction.user.username}'s Game`, iconURL: interaction.user.displayAvatarURL() })
         .setTitle(`🃏 Blackjack`)
