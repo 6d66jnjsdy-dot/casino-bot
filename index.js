@@ -1,110 +1,98 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+require('dotenv').config();
 const fs = require('fs');
+const path = require('path');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
+
+const { loadEconomy, saveEconomy, loadConfig, saveConfig } = require('./src/data');
+const { COLORS, baseEmbed } = require('./src/embeds');
+const { isAllowedChannel } = require('./src/permissions');
+
+const PREFIX = process.env.PREFIX || '$';
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers
+  ],
+  partials: [Partials.Channel]
 });
 
-const DB_FILE = './database.json';
+// ---- Load all command modules ----
+const commands = new Map();
+const RESTRICTED_TO_GAME_ROOM = new Set([
+  'gm', 'mines', 'cf', 'hl', 'ht', 'slots', 'crash', 'bj',
+  'work', 'crime', 'rob', 'pay'
+]);
 
-// Load or initialize database
-let db = {};
-if (fs.existsSync(DB_FILE)) {
-    try {
-        db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    } catch (e) {
-        db = {};
-    }
+function loadCommandsFrom(dir) {
+  const full = path.join(__dirname, dir);
+  if (!fs.existsSync(full)) return;
+  for (const file of fs.readdirSync(full)) {
+    if (!file.endsWith('.js')) continue;
+    const cmd = require(path.join(full, file));
+    if (!cmd || !cmd.name || typeof cmd.execute !== 'function') continue;
+    commands.set(cmd.name, cmd);
+    for (const alias of cmd.aliases || []) commands.set(alias, cmd);
+  }
 }
 
-function saveDB() {
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-}
+loadCommandsFrom('src/commands/economy');
+loadCommandsFrom('src/commands/games');
+loadCommandsFrom('src/commands/admin');
 
-function getUserBalance(userId) {
-    if (!db[userId]) {
-        db[userId] = { balance: 1000 }; // Starting balance
-        saveDB();
-    }
-    return db[userId].balance;
-}
+// ---- Shared context passed to every command ----
+let economy = loadEconomy();
+let config = loadConfig();
 
-function updateUserBalance(userId, amount) {
-    getUserBalance(userId);
-    db[userId].balance += amount;
-    saveDB();
+function makeContext() {
+  return {
+    economy,
+    config,
+    saveEconomy,
+    saveConfig,
+    COLORS,
+    embed: (opts) => baseEmbed(opts)
+  };
 }
 
 client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}!`);
+  console.log(`Logged in as ${client.user.tag}. Prefix: ${PREFIX}`);
 });
 
-client.on('messageCreate', async message => {
+client.on('messageCreate', async (message) => {
+  try {
     if (message.author.bot) return;
+    if (!message.content.startsWith(PREFIX)) return;
+    if (!message.guild) return; // casino only works in servers
 
-    const prefix = '!';
-    if (!message.content.startsWith(prefix)) return;
+    const withoutPrefix = message.content.slice(PREFIX.length).trim();
+    if (!withoutPrefix) return;
+    const [rawName, ...args] = withoutPrefix.split(/\s+/);
+    const name = rawName.toLowerCase();
 
-    const args = message.content.slice(prefix.length).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
+    const command = commands.get(name);
+    if (!command) return;
 
-    if (command === 'balance' || command === 'bal') {
-        const balance = getUserBalance(message.author.id);
-        return message.reply(`יש לך ${balance} מטבעות בחשבון! 🪙`);
+    if (RESTRICTED_TO_GAME_ROOM.has(command.name) && !isAllowedChannel(message.channel.id, config)) {
+      const allowed = config.gameRooms.map((id) => `<#${id}>`).join(', ');
+      return message.reply({
+        embeds: [baseEmbed({ color: COLORS.loss, description: `Casino commands can only be used in: ${allowed}` })]
+      });
     }
 
-    if (command === 'daily') {
-        const userId = message.author.id;
-        getUserBalance(userId);
-        
-        const now = Date.now();
-        const cooldown = 24 * 60 * 60 * 1000; // 24 hours
-        
-        if (db[userId].lastDaily && now - db[userId].lastDaily < cooldown) {
-            const timeLeft = Math.ceil((cooldown - (now - db[userId].lastDaily)) / (1000 * 60 * 60));
-            return message.reply(`כבר אספת את המתנה היומית שלך! תוכל לאסוף שוב בעוד כ-${timeLeft} שעות.`);
-        }
-
-        db[userId].lastDaily = now;
-        updateUserBalance(userId, 500);
-        return message.reply(`אספת בהצלחה את הבונוס היומי שלך: 500 מטבעות! 🎁`);
-    }
-
-    if (command === 'help') {
-        const embed = new EmbedBuilder()
-            .setTitle('🎰 פקודות בוט הקזינו')
-            .setDescription('הנה רשימת הפקודות הזמינות בבוט:')
-            .addFields(
-                { name: '!bal / !balance', value: 'בדיקת יתרת המטבעות שלך', inline: false },
-                { name: '!daily', value: 'קבלת בונוס מטבעות יומי', inline: false },
-                { name: '!mines <הימור>', value: 'משחק המוקשים הקלאסי', inline: false },
-                { name: '!goldmine <הימור>', value: 'משחק מכרה הזהב', inline: false }
-            )
-            .setColor('Gold');
-        return message.reply({ embeds: [embed] });
-    }
-
-    if (command === 'mines') {
-        const bet = parseInt(args[0]);
-        const userId = message.author.id;
-        const balance = getUserBalance(userId);
-
-        if (isNaN(bet) || bet <= 0) {
-            return message.reply('אנא הכנס סכום הימור תקין. דוגמה: `!mines 100`');
-        }
-        if (bet > balance) {
-            return message.reply('אין לך מספיק מטבעות בשביל ההימור הזה!');
-        }
-
-        updateUserBalance(userId, -bet);
-        return message.reply(`התחלת משחק Mines על סך ${bet} מטבעות! (המערכת מוכנה לפעולה)`);
-    }
+    await command.execute(message, args, makeContext());
+  } catch (err) {
+    console.error(`Error running command from message "${message.content}":`, err);
+    message.reply('⚠️ Something went wrong running that command.').catch(() => {});
+  }
 });
 
-// Login using Render environment variable
-client.login(process.env.DISCORD_TOKEN);
+const token = process.env.DISCORD_TOKEN;
+if (!token) {
+  console.error('Missing DISCORD_TOKEN in your .env file. Copy .env.example to .env and fill it in.');
+  process.exit(1);
+}
+
+client.login(token);
