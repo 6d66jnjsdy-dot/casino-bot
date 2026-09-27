@@ -1,6 +1,198 @@
-<input id="predictInput" placeholder="$predict Discord message link">
-<button onclick="runPredict()">Predict</button>
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mines Predict</title>
 
-<div id="output"></div>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
 
-<script src="script.js"></script>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: #111827;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+
+    .box {
+      width: 100%;
+      max-width: 600px;
+      background: #1f2937;
+      padding: 25px;
+      border-radius: 16px;
+      box-shadow: 0 10px 35px rgba(0,0,0,.35);
+    }
+
+    h1 {
+      text-align: center;
+      margin: 0 0 25px;
+    }
+
+    input {
+      width: 100%;
+      padding: 14px;
+      border: 0;
+      outline: none;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      font-size: 15px;
+      background: #374151;
+      color: white;
+    }
+
+    input::placeholder {
+      color: #9ca3af;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      border: 0;
+      border-radius: 10px;
+      background: #5865f2;
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      opacity: .9;
+    }
+
+    #output {
+      margin-top: 18px;
+      padding: 15px;
+      min-height: 55px;
+      border-radius: 10px;
+      background: #111827;
+      line-height: 1.8;
+      word-break: break-word;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="box">
+    <h1>💣 Mines Predict</h1>
+
+    <input
+      id="predictInput"
+      autocomplete="off"
+      placeholder="$predict https://discord.com/channels/..."
+    >
+
+    <button onclick="runPredict()">Predict</button>
+
+    <div id="output">
+      הכנס קישור למשחק Debug.
+    </div>
+  </div>
+
+  <script>
+    function getDiscordIds(link) {
+      const match = link.trim().match(
+        /^https?:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)$/
+      );
+
+      if (!match) return null;
+
+      return {
+        guildId: match[1],
+        channelId: match[2],
+        messageId: match[3]
+      };
+    }
+
+    async function runPredict() {
+      const input = document.getElementById("predictInput");
+      const output = document.getElementById("output");
+
+      let text = input.value.trim();
+
+      if (text.startsWith("$predict ")) {
+        text = text.slice(9).trim();
+      }
+
+      const ids = getDiscordIds(text);
+
+      if (!ids) {
+        output.innerHTML = "❌ קישור Discord לא תקין.";
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/games", {
+          cache: "no-store"
+        });
+
+        const games = await response.json();
+        const game = games[ids.messageId];
+
+        if (!game) {
+          output.innerHTML =
+            "❌ לא מצאתי משחק לפי הקישור הזה.<br><br>" +
+            "ודא שה־Message ID קיים ב־games.json.";
+          return;
+        }
+
+        if (
+          String(game.guildId) !== ids.guildId ||
+          String(game.channelId) !== ids.channelId
+        ) {
+          output.innerHTML = "❌ נתוני המשחק לא תואמים לקישור.";
+          return;
+        }
+
+        if (game.debug !== true) {
+          output.innerHTML = "🔒 המשחק אינו במצב Debug.";
+          return;
+        }
+
+        const bomb = Number(game.bomb);
+
+        if (
+          !Number.isInteger(bomb) ||
+          bomb < 0 ||
+          bomb > 24
+        ) {
+          output.innerHTML = "❌ מיקום הפצצה אינו תקין.";
+          return;
+        }
+
+        const row = Math.floor(bomb / 5) + 1;
+        const column = (bomb % 5) + 1;
+
+        output.innerHTML = `
+          🔮 <b>PREDICT — DEBUG</b><br><br>
+          💣 משבצת: <b>${bomb + 1}</b><br>
+          📍 שורה: <b>${row}</b><br>
+          📍 עמודה: <b>${column}</b><br><br>
+          📨 Message ID: ${ids.messageId}
+        `;
+
+      } catch (error) {
+        output.innerHTML = "❌ שגיאה בטעינת נתוני המשחק.";
+      }
+    }
+
+    document
+      .getElementById("predictInput")
+      .addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+          runPredict();
+        }
+      });
+  </script>
+
+</body>
+</html>
