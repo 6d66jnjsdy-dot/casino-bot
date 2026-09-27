@@ -89,7 +89,6 @@ client.on('messageCreate', async message => {
         return message.reply({ embeds: [embed] });
     }
 
-    // Mines game implementation placeholder
     if (command === 'mines') {
         const bet = parseInt(args[0]);
         const userId = message.author.id;
@@ -107,5 +106,5 @@ client.on('messageCreate', async message => {
     }
 });
 
-// Replace with your bot token
-client.login('YOUR_BOT_TOKEN');
+// Login using Render environment variable
+client.login(process.env.DISCORD_TOKEN);
