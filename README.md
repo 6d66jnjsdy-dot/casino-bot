@@ -1,34 +1,63 @@
-# 🎰 Discord Casino & Economy Bot
+# Casino Bot
 
-An advanced, feature-rich Discord casino and economy bot featuring popular games, a robust currency system, 1v1 multiplayer games (like Texas Hold'em), and full button-based interactive UI.
+Discord economy/casino bot (discord.js v14).
 
----
+## התקנה
 
-## ✨ Key Features
+```bash
+npm install
+```
 
-* **💰 Full Economy System:** Work, crime, and robbery commands, fund transfers (`pay`), deposits/withdrawals, and leaderboards (`leaderboard`).
-* **🃏 Immersive Casino Games:**
-  * **Blackjack (`$bj`)** – Visual card distribution, Double option, and enhanced payout for Naturals (23.4% chance).
-  * **Cockfight (`$cf`)** – Compact chicken fight starting at 55% win rate and increasing with wins.
-  * **Mines (`$mines`)** – 3x3 grid with gems and dynamic profit multipliers.
-  * **Goldmine (`$gm`)** – Wide board with bombs, hidden treasures, and maps.
-  * **Texas Hold'em (`$texas`)** – 1v1 poker game against another player with secret private cards sent via Direct Message (DM).
-  * Other games: Higher/Lower (`$hl`), Coinflip (`$ht`), Slots (`$slots`), Roulette (`$roulette`), Wheel (`$wheel`), Crash (`$crash`), and daily Summer wheel (`$summer`).
-* **🛠️ Admin Tools:** Full control to add/remove money, set authorized casino roles, configure designated game rooms, and set up a logging channel for all activities.
+צור קובץ `.env` (או הגדר משתני סביבה בפלטפורמת האחסון שלך):
 
----
+```
+DISCORD_TOKEN=הטוקן_של_הבוט
+PORT=10000
+DATA_DIR=/path/to/persistent/disk   # ראה סעיף "שמירת נתונים" למטה — קריטי!
+```
 
-## ⚙️ System Requirements
+הרצה:
 
-* **Node.js** (Version 16.x or higher recommended)
-* **discord.js** (Version 14)
-* **express** (To keep the bot alive 24/7)
+```bash
+npm start
+```
 
 ---
 
-## 🚀 Installation & Setup
+## ⚠️ שמירת נתונים אחרי ריסטארט — הדבר הכי חשוב לקרוא
 
-1. Clone or download the project files to your local directory.
-2. Install the required dependencies using your terminal:
-   ```bash
-   npm install discord.js express
+זו כנראה הסיבה שהכסף התאפס לך שוב ושוב, וזה **לא** משהו שקוד לבד יכול לתקן.
+
+הקוד עצמו כותב לדיסק בצורה בטוחה (atomic write + קובץ גיבוי `data.backup.json`), וטוען את הנתונים מחדש בכל הפעלה. הבעיה היא ברוב אירוח קונטיינרים (Render free tier, Railway, Replit וכו') — **הדיסק הוא "ephemeral"**, כלומר בכל ריסטארט/דיפלוי מחדש כל הקבצים שנכתבו בזמן ריצה (כולל `data.json`) נמחקים ומתחילים מאפס מה-repo. זה קורה גם אם קוד השמירה מושלם.
+
+### הפתרון
+
+צריך **Persistent Disk / Volume** אמיתי, מחובר (mounted) לנתיב קבוע, ואז להצביע את `DATA_DIR` לשם:
+
+- **Render**: בעמוד השירות → Disks → Add Disk → תן לו mount path כמו `/data` → הגדר `DATA_DIR=/data` במשתני הסביבה.
+- **Railway**: הוסף Volume לשירות, קבע mount path (למשל `/data`) → `DATA_DIR=/data`.
+- **VPS משלך (DigitalOcean/Hetzner/וכו')**: הדיסק הוא כבר persistent, פשוט תשאיר את `DATA_DIR` כברירת מחדל (תיקיית `data/` ליד `index.js`) או תצביע לתיקייה קבועה כלשהי.
+
+בלי דיסק persistent — כל דיפלוי מחדש = איפוס. עם דיסק persistent — הקובץ נשאר בין ריסטארטים והבוט טוען אותו מחדש אוטומטית בעלייה (`✅ Loaded persistent data from: ...` יופיע בלוגים).
+
+יש גם `data.backup.json` — אם `data.json` נפגם או לא ניתן לקריאה, הבוט טוען מהגיבוי אוטומטית.
+
+---
+
+## מה השתנה בגרסה הזו
+
+- **כלכלה**: כל הרווחים (`$work`, `$crime`, `$rob`, `$daily`, ניצחונות במשחקים) נכנסים ישירות ל**בנק**. הימורים נמשכים אוטומטית מ-cash+bank יחד, כך שאין יותר צורך ב-`$deposit` לפני משחק. `$deposit`/`$withdraw` עדיין עובדים אם תרצה להעביר ידנית.
+- **`$daily`** — הפקודה שהייתה `$summer` שונתה ל-`$daily` (אותו לוגיקה/פרסים).
+- **`$predict`** — מוגבל עכשיו למשתמש אחד בלבד (ה-ID שנתת), לא לכל אדמין קזינו.
+- **`$disable` / `$undisable`** — הוחזרו ותוקנו (היו קיימים בגרסה קודמת אבל לא היו מחוברים בפועל לבדיקה בכל פקודה — עכשיו כל פקודת משחק בודקת אם היא מנוטרלת).
+- **עיצוב** — בלאק ג'ק, קוינפליפ, קוקפייט, מיינס, גולדמיין, ועוד עודכנו כדי להתאים לתמונות ששלחת (צבעים: ירוק=ניצחון, אדום=הפסד, צהוב=באמצע משחק; פורמט "You climbed X rows" עם בלוק קוד למיינס/גולדמיין וכו').
+- **קראש** — אנימציית טיפוס עם פס התקדמות ויזואלי (🚀 על 🟩/⬛) שמשתנה צבע לפי רמת סיכון.
+- **רולטה** — אנימציית סיבוב גלגל (כדור "מתגלגל" על פס, מאט בהדרגה) לפני שהתוצאה נחשפת.
+
+### הערה לגבי `$bal`
+
+בתמונה ששלחת (image 16) יש תגובה שבורה ל-`$bal` שמגיעה מבוט בשם **"Oribot"**, לא מהקוד שנתת לי. זה כנראה בוט נפרד שרץ באותו שרת ומגיב לאותו prefix — לא קשור לקובץ הזה. `$bal`/`$balance` בקוד כאן מציג Cash/Bank/Total כרגיל ועובד תקין.
+
+## פקודות
+
+הרץ `$help` בשרת לרשימה מלאה, או `$info` להסבר מפורט על כל משחק.
