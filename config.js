@@ -1,4 +1,0 @@
-{
-  "casinoRoleId": null,
-  "gameRooms": []
-}
