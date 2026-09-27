@@ -64,10 +64,6 @@
       cursor: pointer;
     }
 
-    button:hover {
-      opacity: .9;
-    }
-
     #output {
       margin-top: 18px;
       padding: 15px;
@@ -87,46 +83,28 @@
 
     <input
       id="predictInput"
+      type="text"
+      inputmode="numeric"
       autocomplete="off"
-      placeholder="$predict https://discord.com/channels/..."
+      placeholder="הכנס Message ID"
     >
 
     <button onclick="runPredict()">Predict</button>
 
     <div id="output">
-      הכנס קישור למשחק Debug.
+      הכנס Message ID של המשחק.
     </div>
   </div>
 
   <script>
-    function getDiscordIds(link) {
-      const match = link.trim().match(
-        /^https?:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)$/
-      );
-
-      if (!match) return null;
-
-      return {
-        guildId: match[1],
-        channelId: match[2],
-        messageId: match[3]
-      };
-    }
-
     async function runPredict() {
       const input = document.getElementById("predictInput");
       const output = document.getElementById("output");
 
-      let text = input.value.trim();
+      const messageId = input.value.trim();
 
-      if (text.startsWith("$predict ")) {
-        text = text.slice(9).trim();
-      }
-
-      const ids = getDiscordIds(text);
-
-      if (!ids) {
-        output.innerHTML = "❌ קישור Discord לא תקין.";
+      if (!/^\d+$/.test(messageId)) {
+        output.innerHTML = "❌ הכנס Message ID תקין.";
         return;
       }
 
@@ -136,20 +114,11 @@
         });
 
         const games = await response.json();
-        const game = games[ids.messageId];
+        const game = games[messageId];
 
         if (!game) {
           output.innerHTML =
-            "❌ לא מצאתי משחק לפי הקישור הזה.<br><br>" +
-            "ודא שה־Message ID קיים ב־games.json.";
-          return;
-        }
-
-        if (
-          String(game.guildId) !== ids.guildId ||
-          String(game.channelId) !== ids.channelId
-        ) {
-          output.innerHTML = "❌ נתוני המשחק לא תואמים לקישור.";
+            "❌ לא נמצא משחק עם ה־Message ID הזה.";
           return;
         }
 
@@ -160,11 +129,7 @@
 
         const bomb = Number(game.bomb);
 
-        if (
-          !Number.isInteger(bomb) ||
-          bomb < 0 ||
-          bomb > 24
-        ) {
+        if (!Number.isInteger(bomb) || bomb < 0 || bomb > 24) {
           output.innerHTML = "❌ מיקום הפצצה אינו תקין.";
           return;
         }
@@ -177,7 +142,7 @@
           💣 משבצת: <b>${bomb + 1}</b><br>
           📍 שורה: <b>${row}</b><br>
           📍 עמודה: <b>${column}</b><br><br>
-          📨 Message ID: ${ids.messageId}
+          📨 Message ID: ${messageId}
         `;
 
       } catch (error) {
@@ -185,13 +150,11 @@
       }
     }
 
-    document
-      .getElementById("predictInput")
-      .addEventListener("keydown", event => {
-        if (event.key === "Enter") {
-          runPredict();
-        }
-      });
+    document.getElementById("predictInput").addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        runPredict();
+      }
+    });
   </script>
 
 </body>
