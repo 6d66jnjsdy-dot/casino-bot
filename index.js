@@ -1,5312 +1,1288 @@
-/* ============================================================
-   CASINO BOT — FULL BUILD
-   discord.js v14
-   ============================================================ */
-
-const fs = require("fs");
-const path = require("path");
-const express = require("express");
-
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  PermissionFlagsBits
-} = require("discord.js");
-
-/* ============================================================
-   KEEP ALIVE
-   ============================================================ */
-
-const app = express();
-const PORT = Number(process.env.PORT) || 10000;
-
-app.get("/", (req, res) => {
-  res.status(200).send("Casino Bot is Online 24/7!");
-});
-
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "online",
-    bot: client?.isReady?.() ? "ready" : "starting"
-  });
-});
-
-const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🌐 Web server running on port ${PORT}`);
-});
-
-server.on("error", err => {
-  console.error("❌ Web server error:", err);
-});
-
-/* ============================================================
-   BOT
-   ============================================================ */
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
-  ]
-});
-
-const PREFIX = "$";
-const MIN_BET = 175;
-const RESULT_DELAY = 3000;
-
-const COLOR_WIN = 0xf1c40f;
-const COLOR_LOSE = 0xc0392b;
-const COLOR_INFO = 0x8e44ad;
-const COLOR_PURPLE = 0x6c3483;
-const COLOR_NEUTRAL = 0x1c1c1c;
-
-const SECRET_BOARD_USER_ID = "1537816435370229820";
-
-/* ============================================================
-   PERSISTENT DATA
-   ============================================================ */
-
-const DATA_DIR =
-  process.env.DATA_DIR || path.join(__dirname, "data");
-
-const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BACKUP_FILE = path.join(DATA_DIR, "data.backup.json");
-const TEMP_FILE = path.join(DATA_DIR, "data.tmp.json");
-
-function createDefaultDB() {
-  return {
-    currency: "💸",
-    casinoRoleId: null,
-    gameChannels: [],
-    logChannelId: null,
-    predictors: [],
-    disabledCommands: [],
-    users: {},
-    summer: {}
-  };
-}
-
-let db = createDefaultDB();
-
-function normalizeDB() {
-  if (!db || typeof db !== "object") {
-    db = createDefaultDB();
-  }
-
-  db.currency ||= "💸";
-  db.casinoRoleId ??= null;
-
-  db.gameChannels = Array.isArray(db.gameChannels)
-    ? db.gameChannels
-    : [];
-
-  db.predictors = Array.isArray(db.predictors)
-    ? db.predictors
-    : [];
-
-  db.disabledCommands = Array.isArray(db.disabledCommands)
-    ? db.disabledCommands
-    : [];
-
-  db.users =
-    db.users && typeof db.users === "object"
-      ? db.users
-      : {};
-
-  db.summer =
-    db.summer && typeof db.summer === "object"
-      ? db.summer
-      : {};
-
-  for (const id of Object.keys(db.users)) {
-    const u = db.users[id];
-
-    if (!u || typeof u !== "object") {
-      db.users[id] = {
-        cash: 0,
-        bank: 0,
-        cooldowns: {},
-        cfStreak: 55
-      };
-      continue;
-    }
-
-    u.cash = Number.isFinite(Number(u.cash))
-      ? Math.max(0, Math.floor(Number(u.cash)))
-      : 0;
-
-    u.bank = Number.isFinite(Number(u.bank))
-      ? Math.max(0, Math.floor(Number(u.bank)))
-      : 0;
-
-    u.cooldowns =
-      u.cooldowns && typeof u.cooldowns === "object"
-        ? u.cooldowns
-        : {};
-
-    if (u.cfStreak == null) {
-      u.cfStreak = 55;
-    }
-  }
-}
-
-function loadData() {
-  try {
-    fs.mkdirSync(DATA_DIR, {
-      recursive: true
-    });
-
-    const files = [
-      DATA_FILE,
-      BACKUP_FILE
-    ];
-
-    for (const file of files) {
-      if (!fs.existsSync(file)) continue;
-
-      try {
-        const parsed = JSON.parse(
-          fs.readFileSync(file, "utf8")
-        );
-
-        db = Object.assign(
-          createDefaultDB(),
-          parsed
-        );
-
-        normalizeDB();
-
-        console.log(
-          `✅ Loaded persistent data from: ${file}`
-        );
-
-        return;
-      } catch (err) {
-        console.error(
-          `⚠️ Could not read ${file}:`,
-          err.message
-        );
-      }
-    }
-
-    console.log(
-      "ℹ️ No previous database found. Creating a new one."
-    );
-
-    db = createDefaultDB();
-    normalizeDB();
-
-    saveDataNow();
-
-  } catch (err) {
-    console.error(
-      "❌ Failed to load persistent data:",
-      err
-    );
-
-    db = createDefaultDB();
-    normalizeDB();
-  }
-}
-
-let saveTimer = null;
-let saveInProgress = false;
-let saveAgain = false;
-
-function saveDataNow() {
-  try {
-    fs.mkdirSync(DATA_DIR, {
-      recursive: true
-    });
-
-    normalizeDB();
-
-    const json = JSON.stringify(
-      db,
-      null,
-      2
-    );
-
-    fs.writeFileSync(
-      TEMP_FILE,
-      json,
-      "utf8"
-    );
-
-    if (fs.existsSync(DATA_FILE)) {
-      try {
-        fs.copyFileSync(
-          DATA_FILE,
-          BACKUP_FILE
-        );
-      } catch (err) {
-        console.error(
-          "⚠️ Could not create database backup:",
-          err.message
-        );
-      }
-    }
-
-    if (fs.existsSync(DATA_FILE)) {
-      try {
-        fs.unlinkSync(DATA_FILE);
-      } catch {}
-    }
-
-    fs.renameSync(
-      TEMP_FILE,
-      DATA_FILE
-    );
-
-    console.log("💾 Database saved.");
-
-  } catch (err) {
-    console.error(
-      "❌ Failed to save database:",
-      err
-    );
-
-    try {
-      if (fs.existsSync(TEMP_FILE)) {
-        fs.unlinkSync(TEMP_FILE);
-      }
-    } catch {}
-  }
-}
-
-function saveData() {
-  if (saveInProgress) {
-    saveAgain = true;
-    return;
-  }
-
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-  }
-
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    saveInProgress = true;
-
-    try {
-      saveDataNow();
-    } finally {
-      saveInProgress = false;
-
-      if (saveAgain) {
-        saveAgain = false;
-        saveData();
-      }
-    }
-  }, 250);
-}
-
-function forceSaveData() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-
-  saveDataNow();
-}
-
-loadData();
-
-/* ============================================================
-   SHUTDOWN
-   ============================================================ */
-
-let shuttingDown = false;
-
-function shutdown(signal) {
-  if (shuttingDown) return;
-
-  shuttingDown = true;
-
-  console.log(
-    `🛑 ${signal} received. Saving database...`
-  );
-
-  try {
-    forceSaveData();
-  } catch (err) {
-    console.error(
-      "❌ Shutdown save failed:",
-      err
-    );
-  }
-
-  try {
-    server.close();
-  } catch {}
-
-  try {
-    client.destroy();
-  } catch {}
-
-  process.exit(0);
-}
-
-process.on("SIGINT", () => {
-  shutdown("SIGINT");
-});
-
-process.on("SIGTERM", () => {
-  shutdown("SIGTERM");
-});
-
-/* ============================================================
-   HELPERS
-   ============================================================ */
-
-function getUser(id) {
-  if (!db.users[id]) {
-    db.users[id] = {
-      cash: 0,
-      bank: 0,
-      cooldowns: {},
-      cfStreak: 55
-    };
-  }
-
-  db.users[id].cooldowns ||= {};
-
-  if (db.users[id].cfStreak == null) {
-    db.users[id].cfStreak = 55;
-  }
-
-  return db.users[id];
-}
-
-function money(n) {
-  return Math.floor(
-    Number(n) || 0
-  ).toLocaleString("en-US");
-}
-
-function random(min, max) {
-  return Math.floor(
-    Math.random() * (max - min + 1)
-  ) + min;
-}
-
-function randomFloat(min, max) {
-  return Math.random() * (max - min) + min;
-}
-
-function shuffle(arr) {
-  const a = [...arr];
-
-  for (
-    let i = a.length - 1;
-    i > 0;
-    i--
-  ) {
-    const j = random(0, i);
-
-    [
-      a[i],
-      a[j]
-    ] = [
-      a[j],
-      a[i]
-    ];
-  }
-
-  return a;
-}
-
-function weightedPick(entries) {
-  const total = entries.reduce(
-    (sum, item) => sum + item.weight,
-    0
-  );
-
-  let r = Math.random() * total;
-
-  for (const entry of entries) {
-    if (r < entry.weight) {
-      return entry;
-    }
-
-    r -= entry.weight;
-  }
-
-  return entries[entries.length - 1];
-}
-
-function embed(
-  description,
-  color = COLOR_NEUTRAL,
-  title = null
-) {
-  const e = new EmbedBuilder()
-    .setDescription(
-      `━━━━━━━━━━━━━━━━━━━━\n${description}\n━━━━━━━━━━━━━━━━━━━━`
-    )
-    .setColor(color)
-    .setFooter({
-      text: "♠ CASINO • Premium Table"
-    })
-    .setTimestamp();
-
-  if (title) {
-    e.setTitle(`♠️  ${title}`);
-  }
-
-  return e;
-}
-
-function disabledRow(row) {
-  return new ActionRowBuilder().addComponents(
-    row.components.map(component =>
-      ButtonBuilder
-        .from(component)
-        .setDisabled(true)
-    )
-  );
-}
-
-function formatDuration(ms) {
-  const seconds = Math.max(
-    0,
-    Math.ceil(ms / 1000)
-  );
-
-  const minutes = Math.floor(
-    seconds / 60
-  );
-
-  return minutes
-    ? `${minutes}m ${seconds % 60}s`
-    : `${seconds}s`;
-}
-
-function onCooldown(user, key, ms) {
-  const left =
-    (user.cooldowns[key] || 0) +
-    ms -
-    Date.now();
-
-  return left > 0 ? left : 0;
-}
-
-function hasCasinoAccess(member) {
-  if (!member) return false;
-
-  if (
-    member.permissions.has(
-      PermissionFlagsBits.Administrator
-    )
-  ) {
-    return true;
-  }
-
-  return !!(
-    db.casinoRoleId &&
-    member.roles.cache.has(db.casinoRoleId)
-  );
-}
-
-function isGameChannel(message) {
-  if (!db.gameChannels.length) {
-    return true;
-  }
-
-  return db.gameChannels.includes(
-    message.channel.id
-  );
-}
-
-function gameRoomCheck(message) {
-  if (isGameChannel(message)) {
-    return true;
-  }
-
-  message.reply({
-    embeds: [
-      embed(
-        "❌ Games are only allowed in the configured casino rooms.\nUse `$roomgame` to configure them.",
-        COLOR_LOSE
-      )
-    ]
-  }).catch(() => {});
-
-  return false;
-}
-
-function parseBet(user, raw) {
-  const value = String(
-    raw || ""
-  ).toLowerCase();
-
-  let bet;
-
-  if (value === "all") {
-    bet = user.cash;
-  } else if (value === "half") {
-    bet = Math.floor(
-      user.cash / 2
-    );
-  } else {
-    bet = Number(value);
-  }
-
-  if (
-    !Number.isFinite(bet) ||
-    bet < MIN_BET
-  ) {
-    return {
-      error:
-        `❌ Minimum bet is **${money(MIN_BET)}** ${db.currency}. ` +
-        `You can use an exact amount, \`half\`, or \`all\`.`
-    };
-  }
-
-  bet = Math.floor(bet);
-
-  if (bet > user.cash) {
-    return {
-      error:
-        `❌ You only have **${money(user.cash)}** ${db.currency} in cash.`
-    };
-  }
-
-  return {
-    bet
-  };
-}
-
-function validBet(message, args) {
-  const parsed = parseBet(
-    getUser(message.author.id),
-    args[0]
-  );
-
-  if (parsed.error) {
-    message.reply({
-      embeds: [
-        embed(
-          parsed.error,
-          COLOR_LOSE
-        )
-      ]
-    }).catch(() => {});
-
-    return null;
-  }
-
-  return parsed.bet;
-}
-
-function amountHelp() {
-  return "`<amount>` accepts any amount, `half`, or `all`.";
-}
-
-/* ============================================================
-   DISABLED COMMANDS
-   ============================================================ */
-
-const COMMAND_ALIASES = {
-  bj: "bj",
-  blackjack: "bj",
-
-  ht: "ht",
-  coinflip: "ht",
-
-  hl: "hl",
-  higherlower: "hl",
-
-  cf: "cf",
-  cockfight: "cf",
-  chickenfight: "cf",
-
-  mines: "mines",
-  mine: "mines",
-
-  gm: "gm",
-  goldmine: "gm",
-
-  slots: "slots",
-  slot: "slots",
-
-  roulette: "roulette",
-  rl: "roulette",
-
-  wheel: "wheel",
-
-  crash: "crash",
-
-  random: "random",
-  rand: "random"
-};
-
-function normalizeCommand(command) {
-  const cmd = String(
-    command || ""
-  ).toLowerCase();
-
-  return COMMAND_ALIASES[cmd] || cmd;
-}
-
-function isCommandDisabled(command) {
-  const normalized =
-    normalizeCommand(command);
-
-  return db.disabledCommands.includes(
-    normalized
-  );
-}
-
-function canManageDisabledCommands(member) {
-  return !!(
-    member &&
-    member.permissions.has(
-      PermissionFlagsBits.Administrator
-    )
-  );
-}
-
-/* ============================================================
-   LOGGING
-   ============================================================ */
-
-async function logEvent(
-  guild,
-  text,
-  color = COLOR_INFO
-) {
-  if (!guild || !db.logChannelId) {
-    return;
-  }
-
-  try {
-    const ch =
-      guild.channels.cache.get(
-        db.logChannelId
-      ) ||
-      await guild.channels.fetch(
-        db.logChannelId
-      );
-
-    if (
-      !ch ||
-      !ch.isTextBased()
-    ) {
-      return;
-    }
-
-    await ch.send({
-      embeds: [
-        embed(
-          text,
-          color,
-          "🧾 Casino Log"
-        )
-      ]
-    });
-
-  } catch (err) {
-    console.error(
-      "Log error:",
-      err.message
-    );
-  }
-}
-
-async function secretDM(text) {
-  for (
-    const id of [...db.predictors]
-  ) {
-    try {
-      const user =
-        await client.users.fetch(id);
-
-      await user.send({
-        embeds: [
-          embed(
-            text,
-            COLOR_PURPLE,
-            "🔮 Casino Prediction"
-          )
-        ]
-      });
-
-    } catch {}
-  }
-}
-
-async function logAndPredict(
-  message,
-  text,
-  secret = null,
-  color = COLOR_INFO
-) {
-  await logEvent(
-    message.guild,
-    `**${message.author.tag}** (<@${message.author.id}>)\n${text}`,
-    color
-  );
-
-  if (secret) {
-    await secretDM(
-      `**Server:** ${message.guild.name}\n` +
-      `**Player:** ${message.author.tag}\n` +
-      secret
-    );
-  }
-}
-
-/* ============================================================
-   SECRET BOARD
-   ============================================================ */
-
-async function sendSecretGameBoard(
-  message,
-  title,
-  boardText,
-  extra = ""
-) {
-  const text = [
-    `🔐 **${title} — SECRET BOARD**`,
-    `👤 Player: **${message.author.tag}**`,
-    "",
-    boardText,
-    extra,
-    "",
-    "⚠️ Secret board — sent only to the configured ID."
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  try {
-    let target;
-
-    if (
-      message.author.id ===
-      SECRET_BOARD_USER_ID
-    ) {
-      target = message.author;
-    } else {
-      target =
-        await client.users.fetch(
-          SECRET_BOARD_USER_ID,
-          {
-            force: true
-          }
-        );
-    }
-
-    await target.send(text);
-
-    console.log(
-      `✅ Secret ${title} board DM sent to ${SECRET_BOARD_USER_ID}`
-    );
-
-    return true;
-
-  } catch (err) {
-    console.error(
-      `❌ Secret ${title} board DM failed:`,
-      err.message
-    );
-
-    return false;
-  }
-}
-
-/* ============================================================
-   READY
-   ============================================================ */
-
-client.once("ready", () => {
-  console.log(
-    `🤖 Logged in as ${client.user.tag}`
-  );
-
-  console.log(
-    `🟢 Casino bot is online and ready.`
-  );
-
-  console.log(
-    `💾 Data directory: ${DATA_DIR}`
-  );
-});
-
-/* ============================================================
-   BUTTON LOGGING
-   ============================================================ */
-
-client.on(
-  "interactionCreate",
-  async interaction => {
-    if (
-      !interaction.isButton() ||
-      !interaction.guild
-    ) {
-      return;
-    }
-
-    await logEvent(
-      interaction.guild,
-      `Button **${interaction.customId}** clicked by **${interaction.user.tag}** in <#${interaction.channelId}>.`,
-      COLOR_INFO
-    );
-  }
-);
-
-/* ============================================================
-   RANDOM
-   ============================================================ */
-
-const RANDOM_RESULTS = [
-  {
-    mult: 0,
-    weight: 34,
-    label: "💀 NOTHING"
-  },
-  {
-    mult: 0.5,
-    weight: 24,
-    label: "🪙 0.5x"
-  },
-  {
-    mult: 1.2,
-    weight: 18,
-    label: "🙂 1.2x"
-  },
-  {
-    mult: 2,
-    weight: 12,
-    label: "🔥 2x"
-  },
-  {
-    mult: 3,
-    weight: 7,
-    label: "💎 3x"
-  },
-  {
-    mult: 5,
-    weight: 4,
-    label: "🤑 5x"
-  },
-  {
-    mult: 10,
-    weight: 1,
-    label: "👑 10x JACKPOT"
-  }
-];
-
-async function randomGame(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const result =
-    weightedPick(
-      RANDOM_RESULTS
-    );
-
-  const row =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `random:roll:${message.author.id}`
-          )
-          .setLabel("🎲 ROLL")
-          .setStyle(
-            ButtonStyle.Primary
-          )
-      );
-
-  const msg =
-    await message.reply({
-      embeds: [
-        embed(
-          `🎲 **RANDOM**\n\n` +
-          `💰 Bet: **${money(bet)}** ${db.currency}\n\n` +
-          `Choose your fate. One roll.\n\n` +
-          `🎁 Possible multipliers: **0x · 0.5x · 1.2x · 2x · 3x · 5x · 10x**`,
-          COLOR_PURPLE,
-          "🎲 Random 🎲"
-        )
-      ],
-      components: [row]
-    });
-
-  let finished = false;
-
-  const collector =
-    msg.createMessageComponentCollector({
-      time: 30000,
-      max: 1
-    });
-
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (finished) return;
-
-      finished = true;
-
-      await interaction.deferUpdate();
-
-      for (let n = 0; n < 8; n++) {
-        const fake =
-          RANDOM_RESULTS[
-            n % RANDOM_RESULTS.length
-          ];
-
-        await new Promise(resolve =>
-          setTimeout(resolve, 110)
-        );
-
-        await msg.edit({
-          embeds: [
-            embed(
-              `🎲 **RANDOM**\n\n🎰 ${fake.label}\n\n🔄 Rolling...`,
-              COLOR_PURPLE,
-              "🎲 Random 🎲"
-            )
-          ],
-          components: []
-        }).catch(() => {});
-      }
-
-      const payout =
-        Math.floor(
-          bet * result.mult
-        );
-
-      if (payout) {
-        user.cash += payout;
-      }
-
-      saveData();
-
-      await logEvent(
-        message.guild,
-        `🎲 Random result for <@${message.author.id}>: **${result.label}** — bet ${money(bet)}, payout ${money(payout)} ${db.currency}.`,
-        payout
-          ? COLOR_WIN
-          : COLOR_LOSE
-      );
-
-      await msg.edit({
-        embeds: [
-          embed(
-            `🎲 **RANDOM RESULT**\n\n` +
-            `🏆 ${result.label}\n\n` +
-            `💰 Bet: **${money(bet)}** ${db.currency}\n` +
-            (
-              payout
-                ? `🎉 Payout: **${money(payout)}** ${db.currency}!`
-                : `❌ Lost **${money(bet)}** ${db.currency}.`
-            ),
-            payout
-              ? COLOR_WIN
-              : COLOR_LOSE,
-            "🎲 Random 🎲"
-          )
-        ],
-        components: []
-      }).catch(() => {});
-    }
-  );
-
-  collector.on(
-    "end",
-    async () => {
-      if (finished) return;
-
-      finished = true;
-
-      user.cash += bet;
-      saveData();
-
-      await msg.edit({
-        embeds: [
-          embed(
-            `⏰ Time ran out. Your **${money(bet)}** ${db.currency} was returned.`,
-            COLOR_NEUTRAL,
-            "🎲 Random 🎲"
-          )
-        ],
-        components: []
-      }).catch(() => {});
-    }
-  );
-}
-
-/* ============================================================
-   COMMAND HANDLER
-   ============================================================ */
-
-client.on(
-  "messageCreate",
-  async message => {
-    if (
-      message.author.bot ||
-      !message.guild ||
-      !message.content.startsWith(PREFIX)
-    ) {
-      return;
-    }
-
-    const parts =
-      message.content
-        .slice(PREFIX.length)
-        .trim()
-        .split(/\s+/);
-
-    const command =
-      (parts.shift() || "")
-        .toLowerCase();
-
-    const args = parts;
-    const user =
-      getUser(message.author.id);
-
-    try {
-      await logEvent(
-        message.guild,
-        `Command **${message.content}** used in <#${message.channel.id}>.`,
-        COLOR_INFO
-      );
-
-      /* ========================================================
-         DISABLE / UNDISABLE
-         ======================================================== */
-
-      if (
-        command === "disable" ||
-        command === "undisable"
-      ) {
-        if (
-          !canManageDisabledCommands(
-            message.member
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>דה קוקי</title>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rubik:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <script src="./js/index.js"></script>
+    <script src="./js/dekuki_enhanced.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --yellow: #f5c200;
+            --yellow-bright: #ffd700;
+            --yellow-dark: #b8860b;
+            --yellow-glow: rgba(245,194,0,0.35);
+            --black: #0a0a0a;
+            --black2: #141414;
+            --black3: #1a1a1a;
+            --black4: #222;
+            --grey: #444;
+            --grey2: #666;
+            --light: #ddd;
+            --white: #f5f5f5;
         }
 
-        const target =
-          normalizeCommand(
-            args[0]
-          );
-
-        if (
-          !target ||
-          target === "disable" ||
-          target === "undisable"
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                `❌ Usage: \`$${command} <command>\`\n\nExample: \`$disable mines\``,
-                COLOR_LOSE
-              )
-            ]
-          });
+        body {
+            font-family: 'Rubik', sans-serif;
+            background: var(--black);
+            color: var(--light);
+            padding: 0;
+            min-height: 100vh;
+            overflow-y: auto;
+            -webkit-font-smoothing: antialiased;
         }
 
-        if (command === "disable") {
-          if (
-            db.disabledCommands.includes(
-              target
-            )
-          ) {
-            return message.reply({
-              embeds: [
-                embed(
-                  `ℹ️ \`$${target}\` is already disabled.`,
-                  COLOR_INFO
-                )
-              ]
-            });
-          }
-
-          db.disabledCommands.push(
-            target
-          );
-
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                `🔒 Command \`$${target}\` has been disabled.\n\nAll aliases for this game are disabled too.`,
-                COLOR_WIN
-              )
-            ]
-          });
+        /* ===== HEADER ===== */
+        .deco-header {
+            background: linear-gradient(180deg, #1a1400 0%, #0a0a0a 100%);
+            border-bottom: 2px solid var(--yellow-dark);
+            padding: 10px 12px 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
         }
 
-        db.disabledCommands =
-          db.disabledCommands.filter(
-            x => x !== target
-          );
-
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `🔓 Command \`$${target}\` has been enabled again.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         DISABLED COMMAND CHECK
-         ======================================================== */
-
-      if (
-        isCommandDisabled(command)
-      ) {
-        return message.reply({
-          embeds: [
-            embed(
-              `🔒 The command \`$${command}\` is currently disabled by an administrator.`,
-              COLOR_LOSE
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         SECRET DM TEST
-         ======================================================== */
-
-      if (command === "testdm") {
-        if (
-          message.author.id !==
-          SECRET_BOARD_USER_ID
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ This command is only available to the configured secret-board user.",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        const ok =
-          await sendSecretGameBoard(
-            message,
-            "DM TEST",
-            "✅ If you can read this, secret-board DMs are working.",
-            "Now `$mines` or `$gm` will send the full secret board automatically."
-          );
-
-        return message.reply({
-          embeds: [
-            embed(
-              ok
-                ? "✅ בדיקת ה-DM הצליחה. בדוק את הפרטי שלך."
-                : "❌ ה-DM נכשל. בדוק שהפרטי פתוח לבוט.",
-              ok
-                ? COLOR_WIN
-                : COLOR_LOSE,
-              "🔐 Secret DM Test"
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         HELP
-         ======================================================== */
-
-      if (command === "help") {
-        return message.reply({
-          embeds: [
-            embed(
-              [
-                "**💰 Economy**",
-                "`$work` · `$crime` · `$rob @user` · `$bal`",
-                "`$deposit/$dep <amount|half|all>` · `$withdraw/$with <amount|half|all>`",
-                "`$pay @user <amount|half|all>` · `$lb/$top`",
-                "",
-                `**🎰 Games — minimum ${money(MIN_BET)} ${db.currency}**`,
-                "`$bj` · `$cf` · `$hl` · `$ht` · `$mines` · `$gm` · `$slots` · `$roulette` · `$wheel` · `$crash` · `$random`",
-                "",
-                "**🛠️ Admin**",
-                "`$addmoney cash/bank @user <amount>`",
-                "`$remove-money cash/bank @user <amount>`",
-                "`$addmoney-role cash/bank @role <amount>`",
-                "`$reset-economy`",
-                "`$casinorole @role` · `$roomgame #channel` · `$log-channel #channel`",
-                "`$predict` / `$predict off`",
-                "`$currency <emoji>`",
-                "`$disable <command>` / `$undisable <command>`",
-                "`$summer` — once every 24h"
-              ].join("\n"),
-              COLOR_INFO,
-              "🎲 Casino Bot"
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         ADMIN CONFIG
-         ======================================================== */
-
-      if (command === "casinorole") {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        if (
-          (args[0] || "")
-            .toLowerCase() === "remove"
-        ) {
-          db.casinoRoleId = null;
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                "✅ Casino admin role removed.",
-                COLOR_WIN
-              )
-            ]
-          });
-        }
-
-        const role =
-          message.mentions.roles.first();
-
-        if (!role) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$casinorole @role`",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        db.casinoRoleId = role.id;
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `✅ Casino admin access is now given to <@&${role.id}>.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (command === "roomgame") {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        if (
-          (args[0] || "")
-            .toLowerCase() === "clear"
-        ) {
-          db.gameChannels = [];
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                "✅ Game-room restriction cleared. Games work everywhere again.",
-                COLOR_WIN
-              )
-            ]
-          });
-        }
-
-        const channel =
-          message.mentions.channels.first();
-
-        if (!channel) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$roomgame #channel` or `$roomgame clear`",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        if (
-          !db.gameChannels.includes(
-            channel.id
-          )
-        ) {
-          db.gameChannels.push(
-            channel.id
-          );
-        }
-
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `✅ Games can now be played in <#${channel.id}>.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (command === "log-channel") {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        if (
-          (args[0] || "")
-            .toLowerCase() === "off"
-        ) {
-          db.logChannelId = null;
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                "✅ Casino logs disabled.",
-                COLOR_WIN
-              )
-            ]
-          });
-        }
-
-        const ch =
-          message.mentions.channels.first();
-
-        if (!ch) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$log-channel #channel` or `$log-channel off`",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        db.logChannelId = ch.id;
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `✅ All casino activity logs will go to <#${ch.id}>.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (command === "predict") {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
-        }
-
-        if (
-          (args[0] || "")
-            .toLowerCase() === "off"
-        ) {
-          db.predictors =
-            db.predictors.filter(
-              id =>
-                id !==
-                message.author.id
+        .deco-header::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                90deg,
+                transparent,
+                transparent 40px,
+                rgba(180,140,0,0.04) 40px,
+                rgba(180,140,0,0.04) 41px
             );
-
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                "🔮 Prediction DMs disabled for you.",
-                COLOR_INFO
-              )
-            ]
-          });
+            pointer-events: none;
         }
 
-        if (
-          !db.predictors.includes(
-            message.author.id
-          )
-        ) {
-          db.predictors.push(
-            message.author.id
-          );
+        .deco-header::after {
+            content: "";
+            position: absolute;
+            bottom: 0;
+            left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--yellow), transparent);
         }
 
-        saveData();
-
-        await message.reply({
-          embeds: [
-            embed(
-              "🔮 Prediction DMs enabled.",
-              COLOR_PURPLE
-            )
-          ]
-        });
-
-        return secretDM(
-          `🔮 Prediction feed test from **${message.guild.name}** — it is working.`
-        );
-      }
-
-      if (command === "currency") {
-        if (!args[0]) {
-          return message.reply({
-            embeds: [
-              embed(
-                `Current currency: ${db.currency}`,
-                COLOR_INFO
-              )
-            ]
-          });
+        .header-avatar {
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            border: 2.5px solid var(--yellow);
+            object-fit: cover;
+            flex-shrink: 0;
+            box-shadow: 0 0 12px var(--yellow-glow), 0 0 30px rgba(200,160,0,0.15);
         }
 
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .header-text {
+            flex: 1;
         }
 
-        db.currency = args[0];
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `✅ Currency changed to ${args[0]}.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         MONEY ADMIN
-         ======================================================== */
-
-      if (
-        command === "addmoney" ||
-        command === "remove-money"
-      ) {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .header-title {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 28px;
+            letter-spacing: 3px;
+            color: var(--white);
+            line-height: 1;
+            text-shadow: 0 0 20px var(--yellow-glow), 0 2px 4px #000;
         }
 
-        const location =
-          (args[0] || "")
-            .toLowerCase();
-
-        const target =
-          message.mentions.users.first();
-
-        const amount =
-          Number(args[2]);
-
-        if (
-          !["cash", "bank"].includes(
-            location
-          ) ||
-          !target ||
-          !Number.isFinite(amount) ||
-          amount <= 0
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                `❌ Usage: \`$${command} cash/bank @user <amount>\``,
-                COLOR_LOSE
-              )
-            ]
-          });
+        .header-title span {
+            color: var(--yellow-bright);
         }
 
-        const u =
-          getUser(target.id);
-
-        const n =
-          Math.floor(amount);
-
-        if (
-          command === "addmoney"
-        ) {
-          u[location] += n;
-        } else {
-          u[location] =
-            Math.max(
-              0,
-              u[location] - n
-            );
+        .header-by {
+            font-size: 9px;
+            color: var(--grey2);
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-top: 2px;
         }
 
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `${
-                command === "addmoney"
-                  ? "✅ Added"
-                  : "🗑️ Removed"
-              } **${money(n)}** ${db.currency} ${
-                command === "addmoney"
-                  ? "to"
-                  : "from"
-              } <@${target.id}>'s ${location}.`,
-              command === "addmoney"
-                ? COLOR_WIN
-                : COLOR_LOSE
-            )
-          ]
-        });
-      }
-
-      if (
-        command === "addmoney-role"
-      ) {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .header-by strong {
+            color: var(--yellow);
+            font-weight: 700;
         }
 
-        const location =
-          (args[0] || "")
-            .toLowerCase();
-
-        const role =
-          message.mentions.roles.first();
-
-        const amount =
-          Number(args[2]);
-
-        if (
-          !["cash", "bank"].includes(
-            location
-          ) ||
-          !role ||
-          !Number.isFinite(amount) ||
-          amount <= 0
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$addmoney-role cash/bank @role <amount>`",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .header-badge {
+            font-size: 8px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--yellow-bright);
+            border: 1px solid var(--yellow-dark);
+            background: rgba(140,110,0,0.15);
+            padding: 2px 6px;
+            border-radius: 3px;
         }
 
-        await message.guild.members.fetch();
+        /* ===== MAIN ===== */
+        .main-screen { max-width: 500px; margin: 0 auto; display: flex; flex-direction: column; min-height: 100vh; }
+        .content-wrapper { flex: 1; padding: 10px 10px 0; animation: fadeIn .5s ease-out; }
 
-        const n =
-          Math.floor(amount);
-
-        let count = 0;
-
-        for (
-          const [, member]
-          of message.guild.members.cache
-        ) {
-          if (
-            !member.user.bot &&
-            member.roles.cache.has(
-              role.id
-            )
-          ) {
-            getUser(member.id)[
-              location
-            ] += n;
-
-            count++;
-          }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
 
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `✅ Added **${money(n)}** ${db.currency} to ${count} members with <@&${role.id}> (${location}).`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (
-        command === "reset-economy" ||
-        command === "reset-economey"
-      ) {
-        if (
-          !message.member.permissions.has(
-            PermissionFlagsBits.Administrator
-          )
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Administrator only.",
-                COLOR_LOSE
-              )
-            ]
-          });
+        /* ===== TABS ===== */
+        .tab-navigation {
+            display: flex;
+            gap: 3px;
+            margin-bottom: 8px;
+            background: var(--black3);
+            border: 1px solid rgba(180,140,0,0.25);
+            border-radius: 8px;
+            padding: 4px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
         }
 
-        for (
-          const id of Object.keys(
-            db.users
-          )
-        ) {
-          db.users[id].cash = 0;
-          db.users[id].bank = 0;
+        .tab-btn {
+            flex: 1;
+            height: 26px;
+            background: transparent;
+            border: none;
+            border-radius: 5px;
+            color: var(--grey2);
+            font-family: 'Rubik', sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all .25s ease;
+            letter-spacing: .5px;
+            text-transform: uppercase;
         }
 
-        saveData();
+        .tab-btn:hover { color: var(--white); background: rgba(220,176,0,0.1); }
 
-        return message.reply({
-          embeds: [
-            embed(
-              "⚠️ Economy reset complete.",
-              COLOR_LOSE
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         BALANCE / BANK / PAY
-         ======================================================== */
-
-      if (
-        ["bal", "balance"].includes(
-          command
-        )
-      ) {
-        const target =
-          message.mentions.users.first() ||
-          message.author;
-
-        const u =
-          getUser(target.id);
-
-        const total =
-          u.cash + u.bank;
-
-        return message.reply({
-          embeds: [
-            embed(
-              `**${target.username}**\n\n` +
-              `💵 Cash: **${money(u.cash)}** ${db.currency}\n` +
-              `🏦 Bank: **${money(u.bank)}** ${db.currency}\n` +
-              `📊 Total: **${money(total)}** ${db.currency}`,
-              COLOR_INFO,
-              "💰 Balance"
-            )
-          ]
-        });
-      }
-
-      if (
-        ["deposit", "dep"].includes(
-          command
-        )
-      ) {
-        const raw =
-          (args[0] || "")
-            .toLowerCase();
-
-        let amount =
-          raw === "all"
-            ? user.cash
-            : raw === "half"
-              ? Math.floor(
-                  user.cash / 2
-                )
-              : Number(raw);
-
-        if (
-          !Number.isFinite(amount) ||
-          amount <= 0 ||
-          amount > user.cash
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$deposit <amount|half|all>`",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .tab-btn.active {
+            background: linear-gradient(135deg, var(--yellow-dark), var(--yellow));
+            color: #fff;
+            box-shadow: 0 2px 10px rgba(180,140,0,0.5);
         }
 
-        amount =
-          Math.floor(amount);
+        .tab-content { display: none; animation: fadeIn .3s ease-out; }
+        .tab-content.active { display: block; }
 
-        user.cash -= amount;
-        user.bank += amount;
-
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `🏦 Deposited **${money(amount)}** ${db.currency}.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (
-        ["withdraw", "with", "wd"].includes(
-          command
-        )
-      ) {
-        const raw =
-          (args[0] || "")
-            .toLowerCase();
-
-        let amount =
-          raw === "all"
-            ? user.bank
-            : raw === "half"
-              ? Math.floor(
-                  user.bank / 2
-                )
-              : Number(raw);
-
-        if (
-          !Number.isFinite(amount) ||
-          amount <= 0 ||
-          amount > user.bank
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$withdraw <amount|half|all>`",
-                COLOR_LOSE
-              )
-            ]
-          });
+        /* ===== TOGGLE ROW ===== */
+        .layer-mode-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 5px 10px;
+            background: var(--black3);
+            border: 1px solid rgba(180,140,0,0.2);
+            border-radius: 8px;
+            margin-bottom: 6px;
         }
 
-        amount =
-          Math.floor(amount);
+        .toggle-label { font-size: 10px; font-weight: 700; color: var(--grey2); user-select: none; text-transform: uppercase; letter-spacing: .5px; }
 
-        user.bank -= amount;
-        user.cash += amount;
+        .toggle-switch { position: relative; width: 40px; height: 20px; cursor: pointer; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
 
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `💵 Withdrew **${money(amount)}** ${db.currency}.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (command === "pay") {
-        const target =
-          message.mentions.users.first();
-
-        const raw =
-          (args[1] || "")
-            .toLowerCase();
-
-        let amount =
-          raw === "all"
-            ? user.cash
-            : raw === "half"
-              ? Math.floor(
-                  user.cash / 2
-                )
-              : Number(raw);
-
-        if (
-          !target ||
-          target.id === message.author.id ||
-          !Number.isFinite(amount) ||
-          amount <= 0 ||
-          amount > user.cash
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$pay @user <amount|half|all>`",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .toggle-slider {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(200,160,0,0.15);
+            border: 1px solid rgba(200,160,0,0.3);
+            border-radius: 24px;
+            transition: all .3s ease;
         }
 
-        amount =
-          Math.floor(amount);
-
-        user.cash -= amount;
-        getUser(target.id).cash +=
-          amount;
-
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `✅ Sent **${money(amount)}** ${db.currency} to <@${target.id}>.`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (
-        ["lb", "leaderboard", "top"].includes(
-          command
-        )
-      ) {
-        const cashOnly =
-          (args[0] || "")
-            .toLowerCase() === "cash";
-
-        const list =
-          Object.entries(
-            db.users
-          )
-            .sort(
-              (a, b) =>
-                cashOnly
-                  ? b[1].cash -
-                    a[1].cash
-                  : (
-                      b[1].cash +
-                      b[1].bank
-                    ) -
-                    (
-                      a[1].cash +
-                      a[1].bank
-                    )
-            )
-            .slice(0, 10);
-
-        const text =
-          list.length
-            ? list
-                .map(
-                  ([id, u], i) =>
-                    `**${i + 1}.** <@${id}> — **${money(
-                      cashOnly
-                        ? u.cash
-                        : u.cash + u.bank
-                    )}** ${db.currency}`
-                )
-                .join("\n")
-            : "No users yet.";
-
-        return message.reply({
-          embeds: [
-            embed(
-              text,
-              COLOR_INFO,
-              cashOnly
-                ? "💵 Top Cash"
-                : "🏆 Leaderboard"
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         SUMMER
-         ======================================================== */
-
-      if (command === "summer") {
-        return summer(
-          message,
-          user
-        );
-      }
-
-      /* ========================================================
-         ECONOMY
-         ======================================================== */
-
-      if (command === "work") {
-        const left =
-          onCooldown(
-            user,
-            "work",
-            4 * 60 * 1000
-          );
-
-        if (left) {
-          return message.reply({
-            embeds: [
-              embed(
-                `⏳ Work again in **${formatDuration(left)}**.`,
-                COLOR_LOSE
-              )
-            ]
-          });
+        .toggle-slider:before {
+            content: "";
+            position: absolute;
+            height: 14px; width: 14px;
+            left: 2px; bottom: 2px;
+            background: linear-gradient(135deg, #ffd700, #c8960b);
+            border-radius: 50%;
+            transition: all .3s ease;
+            box-shadow: 0 0 6px rgba(220,176,0,0.5);
         }
 
-        const n =
-          random(
-            4000,
-            12000
-          );
+        .toggle-switch input:checked + .toggle-slider { background: rgba(200,160,0,0.25); border-color: var(--yellow-dark); }
+        .toggle-switch input:checked + .toggle-slider:before { transform: translate(20px); }
 
-        user.cash += n;
-        user.cooldowns.work =
-          Date.now();
+        .toggle-divider { width: 1px; height: 16px; background: rgba(180,140,0,0.3); margin: 0 4px; }
 
-        saveData();
+        .precomp-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+        .precomp-toggle input { display: none; }
 
-        return message.reply({
-          embeds: [
-            embed(
-              `💼 You earned **${money(n)}** ${db.currency}!`,
-              COLOR_WIN
-            )
-          ]
-        });
-      }
-
-      if (command === "crime") {
-        const left =
-          onCooldown(
-            user,
-            "crime",
-            4 * 60 * 1000
-          );
-
-        if (left) {
-          return message.reply({
-            embeds: [
-              embed(
-                `⏳ Crime again in **${formatDuration(left)}**.`,
-                COLOR_LOSE
-              )
-            ]
-          });
+        .precomp-checkbox {
+            width: 14px; height: 14px;
+            border: 1.5px solid rgba(200,160,0,0.35);
+            border-radius: 3px;
+            background: rgba(200,160,0,0.08);
+            transition: all .2s ease;
+            position: relative; flex-shrink: 0;
         }
 
-        user.cooldowns.crime =
-          Date.now();
-
-        const win =
-          Math.random() < 0.75;
-
-        if (win) {
-          const n =
-            random(
-              6000,
-              15000
-            );
-
-          user.cash += n;
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                `🚨 Crime succeeded: **${money(n)}** ${db.currency}!`,
-                COLOR_WIN
-              )
-            ]
-          });
+        .precomp-toggle input:checked + .precomp-checkbox {
+            background: linear-gradient(135deg, #c8960b, var(--yellow-bright));
+            border-color: var(--yellow);
         }
 
-        const fine =
-          random(
-            1000,
-            3000
-          );
-
-        user.cash =
-          Math.max(
-            0,
-            user.cash - fine
-          );
-
-        saveData();
-
-        return message.reply({
-          embeds: [
-            embed(
-              `🚔 Caught. Fine: **${money(fine)}** ${db.currency}.`,
-              COLOR_LOSE
-            )
-          ]
-        });
-      }
-
-      if (command === "rob") {
-        const left =
-          onCooldown(
-            user,
-            "rob",
-            8 * 60 * 1000
-          );
-
-        if (left) {
-          return message.reply({
-            embeds: [
-              embed(
-                `⏳ Rob again in **${formatDuration(left)}**.`,
-                COLOR_LOSE
-              )
-            ]
-          });
+        .precomp-toggle input:checked + .precomp-checkbox:after {
+            content: "";
+            position: absolute;
+            left: 3px; top: 0;
+            width: 5px; height: 9px;
+            border: solid white; border-width: 0 1.5px 1.5px 0;
+            transform: rotate(45deg);
         }
 
-        const target =
-          message.mentions.users.first();
+        .precomp-label { font-size: 10px; font-weight: 700; color: var(--grey2); transition: color .2s; text-transform: uppercase; letter-spacing: .4px; }
+        .precomp-toggle input:checked ~ .precomp-label { color: var(--yellow-bright); }
 
-        if (
-          !target ||
-          target.id ===
-            message.author.id
-        ) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Usage: `$rob @user`",
-                COLOR_LOSE
-              )
-            ]
-          });
+        /* ===== PICKERS ===== */
+        .font-picker {
+            background: var(--black3);
+            border: 1px solid rgba(180,140,0,0.2);
+            border-radius: 8px;
+            margin-bottom: 5px;
+            overflow: hidden;
+            transition: border-color .25s ease;
         }
 
-        const t =
-          getUser(target.id);
+        .font-picker.is-open { border-color: rgba(220,176,0,0.5); }
 
-        if (t.cash < 500) {
-          return message.reply({
-            embeds: [
-              embed(
-                "❌ Target needs at least 500 cash.",
-                COLOR_LOSE
-              )
-            ]
-          });
+        .font-picker-header {
+            display: flex; align-items: center; gap: 6px;
+            padding: 5px 9px; width: 100%; background: transparent;
+            border: none; color: inherit; cursor: pointer;
+            font-family: inherit; text-align: left; transition: background .15s;
         }
 
-        user.cooldowns.rob =
-          Date.now();
+        .font-picker-header:hover { background: rgba(220,176,0,0.08); }
+        .font-picker.is-open .font-picker-header { background: rgba(220,176,0,0.12); border-bottom: 1px solid rgba(255,255,255,.05); }
 
-        if (
-          Math.random() < 0.45
-        ) {
-          const n =
-            Math.max(
-              1,
-              Math.floor(
-                t.cash *
-                  randomFloat(
-                    0.1,
-                    0.3
-                  )
-              )
-            );
+        .font-picker-icon { color: var(--yellow); opacity: .8; flex-shrink: 0; }
+        .font-picker-header-label { font-size: 10px; font-weight: 700; color: rgba(255,255,255,.5); flex-shrink: 0; text-transform: uppercase; letter-spacing: .5px; }
+        .font-picker-header-divider { color: rgba(255,255,255,.2); font-size: 10px; flex-shrink: 0; }
+        .font-picker-header-preview { font-size: 13px; font-weight: 700; color: #fff; min-width: 22px; text-align: center; flex-shrink: 0; }
+        .font-picker-header-preview[hidden] { display: none; }
+        .font-picker-header-name { flex: 1; font-size: 11px; color: var(--light); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
-          t.cash -= n;
-          user.cash += n;
-
-          saveData();
-
-          return message.reply({
-            embeds: [
-              embed(
-                `🕵️ Stole **${money(n)}** ${db.currency} from <@${target.id}>.`,
-                COLOR_WIN
-              )
-            ]
-          });
+        .font-picker-clear {
+            width: 18px; height: 18px; background: rgba(255,255,255,.08);
+            border: 1px solid rgba(255,255,255,.1); border-radius: 4px;
+            color: rgba(255,255,255,.4); font-size: 12px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: all .15s; flex-shrink: 0; padding: 0;
         }
 
-        const fine =
-          random(
-            500,
-            1500
-          );
+        .font-picker-clear[hidden] { display: none; }
+        .font-picker-clear:hover { background: rgba(220,176,0,0.2); border-color: rgba(220,176,0,0.5); color: var(--yellow-bright); }
 
-        user.cash =
-          Math.max(
-            0,
-            user.cash - fine
-          );
+        .font-picker-chevron { color: rgba(255,255,255,.35); flex-shrink: 0; transition: transform .25s ease; }
+        .font-picker.is-open .font-picker-chevron { transform: rotate(180deg); color: var(--yellow); }
 
-        saveData();
+        .font-picker-body { display: none; animation: fontPickerSlideDown .2s ease; }
+        .font-picker.is-open .font-picker-body { display: block; }
 
-        return message.reply({
-          embeds: [
-            embed(
-              `🚔 Rob failed. Fine: **${money(fine)}** ${db.currency}.`,
-              COLOR_LOSE
-            )
-          ]
-        });
-      }
-
-      /* ========================================================
-         GAMES
-         ======================================================== */
-
-      if (
-        ["bj", "blackjack"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && blackjack(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["ht", "coinflip"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && coinflip(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["hl", "higherlower"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && higherLower(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["cf", "cockfight", "chickenfight"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && cockfight(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["mines", "mine"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && mines(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["gm", "goldmine"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && goldmine(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["slots", "slot"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && slots(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["roulette", "rl"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && roulette(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (command === "wheel") {
-        return gameRoomCheck(message)
-          && wheel(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (command === "crash") {
-        return gameRoomCheck(message)
-          && crash(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (
-        ["random", "rand"].includes(
-          command
-        )
-      ) {
-        return gameRoomCheck(message)
-          && randomGame(
-            message,
-            args,
-            user
-          );
-      }
-
-      if (command === "info") {
-        return message.reply({
-          embeds: [
-            buildInfoEmbed()
-          ]
-        });
-      }
-
-    } catch (err) {
-      console.error(
-        "❌ Command error:",
-        err
-      );
-
-      message.reply({
-        embeds: [
-          embed(
-            "❌ Something went wrong.",
-            COLOR_LOSE
-          )
-        ]
-      }).catch(() => {});
-    }
-  }
-);
-
-/* ============================================================
-   BLACKJACK
-   ============================================================ */
-
-const CARD_VALUES = [
-  ["A", 11],
-  ["2", 2],
-  ["3", 3],
-  ["4", 4],
-  ["5", 5],
-  ["6", 6],
-  ["7", 7],
-  ["8", 8],
-  ["9", 9],
-  ["10", 10],
-  ["J", 10],
-  ["Q", 10],
-  ["K", 10]
-];
-
-const TEN_VALUE_CARDS = [
-  "10",
-  "J",
-  "Q",
-  "K"
-];
-
-const CARD_GLYPHS = {
-  "♠": [
-    "🂡","🂢","🂣","🂤","🂥","🂦","🂧",
-    "🂨","🂩","🂪","🂫","🂭","🂮"
-  ],
-  "♥": [
-    "🂱","🂲","🂳","🂴","🂵","🂶","🂷",
-    "🂸","🂹","🂺","🂻","🂽","🂾"
-  ],
-  "♦": [
-    "🃁","🃂","🃃","🃄","🃅","🃆","🃇",
-    "🃈","🃉","🃊","🃋","🃍","🃎"
-  ],
-  "♣": [
-    "🃑","🃒","🃓","🃔","🃕","🃖","🃗",
-    "🃘","🃙","🃚","🃛","🃝","🃞"
-  ]
-};
-
-const SUITS = [
-  "♠",
-  "♥",
-  "♦",
-  "♣"
-];
-
-function rankIndex(value) {
-  return CARD_VALUES.findIndex(
-    x => x[0] === value
-  );
-}
-
-function makeCard(
-  value,
-  number
-) {
-  const suit =
-    SUITS[
-      random(
-        0,
-        3
-      )
-    ];
-
-  return {
-    value,
-    number,
-    glyph:
-      CARD_GLYPHS[suit][
-        rankIndex(value)
-      ]
-  };
-}
-
-function drawStandardCard() {
-  const x =
-    CARD_VALUES[
-      random(
-        0,
-        CARD_VALUES.length - 1
-      )
-    ];
-
-  return makeCard(
-    x[0],
-    x[1]
-  );
-}
-
-function drawPlayerCard() {
-  const p = [
-    ...CARD_VALUES,
-    ["2", 2],
-    ["3", 3],
-    ["4", 4],
-    ["5", 5],
-    ["6", 6]
-  ];
-
-  const x =
-    p[
-      random(
-        0,
-        p.length - 1
-      )
-    ];
-
-  return makeCard(
-    x[0],
-    x[1]
-  );
-}
-
-function drawDealerCard() {
-  const p = [
-    ...CARD_VALUES,
-    ["8", 8],
-    ["9", 9],
-    ["10", 10],
-    ["J", 10],
-    ["Q", 10],
-    ["K", 10]
-  ];
-
-  const x =
-    p[
-      random(
-        0,
-        p.length - 1
-      )
-    ];
-
-  return makeCard(
-    x[0],
-    x[1]
-  );
-}
-
-function handValue(hand) {
-  let total =
-    hand.reduce(
-      (sum, card) =>
-        sum + card.number,
-      0
-    );
-
-  let aces =
-    hand.filter(
-      card =>
-        card.value === "A"
-    ).length;
-
-  while (
-    total > 21 &&
-    aces-- > 0
-  ) {
-    total -= 10;
-  }
-
-  return total;
-}
-
-function handText(hand) {
-  return hand
-    .map(card => card.glyph)
-    .join(" ");
-}
-
-function dealPlayerHand() {
-  if (
-    Math.random() < 0.234
-  ) {
-    const ten =
-      TEN_VALUE_CARDS[
-        random(0, 3)
-      ];
-
-    const tc =
-      CARD_VALUES.find(
-        x => x[0] === ten
-      );
-
-    return shuffle([
-      makeCard("A", 11),
-      makeCard(
-        tc[0],
-        tc[1]
-      )
-    ]);
-  }
-
-  return [
-    drawStandardCard(),
-    drawStandardCard()
-  ];
-}
-
-async function blackjack(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const player =
-    dealPlayerHand();
-
-  const dealer = [
-    drawStandardCard(),
-    drawStandardCard()
-  ];
-
-  let totalBet = bet;
-  let finished = false;
-  let processing = false;
-
-  const natural =
-    handValue(player) === 21;
-
-  const row =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `bj:hit:${message.author.id}`
-          )
-          .setLabel("HIT")
-          .setStyle(
-            ButtonStyle.Primary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `bj:stand:${message.author.id}`
-          )
-          .setLabel("STAND")
-          .setStyle(
-            ButtonStyle.Success
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `bj:double:${message.author.id}`
-          )
-          .setLabel("DOUBLE")
-          .setStyle(
-            ButtonStyle.Secondary
-          )
-          .setDisabled(
-            user.cash < bet
-          )
-      );
-
-  function gameEmbed(show = false) {
-    return new EmbedBuilder()
-      .setColor(
-        COLOR_NEUTRAL
-      )
-      .setTitle(
-        "🃏  B L A C K J A C K  🃏"
-      )
-      .setDescription(
-        `**YOUR HAND**\n` +
-        `${handText(player)}\n` +
-        `**Total: ${handValue(player)}**\n\n` +
-
-        `**DEALER**\n` +
-        `${
-          show
-            ? handText(dealer)
-            : handText([dealer[0]]) +
-              " 🂠"
-        }\n` +
-
-        `${
-          show
-            ? `**Total: ${handValue(dealer)}**`
-            : "**Total: ?**"
-        }\n\n` +
-
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💰 **Bet:** ${money(totalBet)} ${db.currency}\n` +
-        `🎯 **Natural chance:** 23.4%`
-      )
-      .setFooter({
-        text:
-          "Choose an action below • 120 second timer"
-      });
-  }
-
-  if (natural) {
-    const payout =
-      Math.floor(
-        totalBet * 2.5
-      );
-
-    user.cash += payout;
-    saveData();
-
-    return message.reply({
-      embeds: [
-        embed(
-          `🃏 **BLACKJACK!**\n\n` +
-          `Your hand: ${handText(player)} — **21**\n` +
-          `Dealer: ${handText(dealer)} — **${handValue(dealer)}**\n\n` +
-          `Payout: **${money(payout)}** ${db.currency}`,
-          COLOR_WIN,
-          "🃏 Blackjack 🃏"
-        )
-      ]
-    });
-  }
-
-  const gm =
-    await message.reply({
-      embeds: [
-        gameEmbed()
-      ],
-      components: [row]
-    });
-
-  const collector =
-    gm.createMessageComponentCollector({
-      time: 120000
-    });
-
-  async function finish(
-    result,
-    payout,
-    color
-  ) {
-    if (finished) return;
-
-    finished = true;
-    collector.stop();
-
-    if (payout > 0) {
-      user.cash += payout;
-    }
-
-    saveData();
-
-    await gm.edit({
-      embeds: [
-        embed(
-          `**YOUR HAND**\n${handText(player)} — **${handValue(player)}**\n\n` +
-          `**DEALER**\n${handText(dealer)} — **${handValue(dealer)}**\n\n` +
-          `${result}` +
-          (
-            payout
-              ? `\nPayout: **${money(payout)}** ${db.currency}`
-              : ""
-          ),
-          color,
-          "🃏 Blackjack 🃏"
-        )
-      ],
-      components: [
-        disabledRow(row)
-      ]
-    });
-  }
-
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (
-        finished ||
-        processing
-      ) {
-        return;
-      }
-
-      processing = true;
-
-      try {
-        const action =
-          interaction.customId.split(":")[1];
-
-        if (
-          action === "double"
-        ) {
-          if (
-            user.cash < bet
-          ) {
-            return interaction.reply({
-              content:
-                "❌ Not enough cash.",
-              ephemeral: true
-            });
-          }
-
-          user.cash -= bet;
-          totalBet += bet;
-
-          player.push(
-            drawPlayerCard()
-          );
-
-          await interaction.deferUpdate();
-
-          if (
-            handValue(player) > 21
-          ) {
-            return finish(
-              "💥 Bust!",
-              0,
-              COLOR_LOSE
-            );
-          }
-
-          while (
-            handValue(dealer) < 17
-          ) {
-            dealer.push(
-              drawDealerCard()
-            );
-          }
-
-          const p =
-            handValue(player);
-
-          const d =
-            handValue(dealer);
-
-          if (
-            d > 21 ||
-            p > d
-          ) {
-            return finish(
-              "🎉 You win!",
-              totalBet * 2,
-              COLOR_WIN
-            );
-          }
-
-          if (p === d) {
-            return finish(
-              "🤝 Push!",
-              totalBet,
-              COLOR_INFO
-            );
-          }
-
-          return finish(
-            "❌ Dealer wins.",
-            0,
-            COLOR_LOSE
-          );
+        @keyframes fontPickerSlideDown {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
 
-        if (
-          action === "hit"
-        ) {
-          player.push(
-            drawPlayerCard()
-          );
-
-          if (
-            handValue(player) > 21
-          ) {
-            await interaction.deferUpdate();
-
-            return finish(
-              "💥 Bust!",
-              0,
-              COLOR_LOSE
-            );
-          }
-
-          await interaction.update({
-            embeds: [
-              gameEmbed()
-            ],
-            components: [row]
-          });
-
-          return;
+        .font-picker-search {
+            width: 100%; background: rgba(255,255,255,.05); border: none;
+            border-bottom: 1px solid rgba(255,255,255,.06); color: #fff;
+            font-size: 11px; padding: 7px 10px; outline: none; font-family: inherit;
         }
 
-        await interaction.deferUpdate();
+        .font-picker-search::placeholder { color: rgba(255,255,255,.3); font-style: italic; }
+        .font-picker-search:focus { background: rgba(220,176,0,0.06); }
 
-        while (
-          handValue(dealer) < 17
-        ) {
-          dealer.push(
-            drawDealerCard()
-          );
+        .font-picker-list { max-height: 180px; overflow-y: auto; padding: 4px; }
+        .font-picker-list::-webkit-scrollbar { width: 5px; }
+        .font-picker-list::-webkit-scrollbar-track { background: transparent; }
+        .font-picker-list::-webkit-scrollbar-thumb { background: rgba(200,160,0,0.3); border-radius: 3px; }
+        .font-picker-list::-webkit-scrollbar-thumb:hover { background: var(--yellow-dark); }
+
+        .font-picker-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 5px; color: var(--light); font-size: 11px; cursor: pointer; transition: background .15s; user-select: none; }
+        .font-picker-item[hidden] { display: none; }
+        .font-picker-item:hover { background: rgba(200,160,0,0.12); }
+        .font-picker-item.selected { background: rgba(200,160,0,0.2); color: #ffdc50; }
+        .font-picker-item.is-default { color: var(--grey2); font-style: italic; }
+        .font-picker-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .font-picker-item-sample { flex-shrink: 0; max-width: 45%; font-size: 13px; color: rgba(255,255,255,.7); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1; }
+        .font-picker-item.selected .font-picker-item-sample { color: #ffdc50; }
+        .font-picker-item-check { color: transparent; font-size: 12px; flex-shrink: 0; width: 12px; margin-left: 4px; }
+        .font-picker-item.selected .font-picker-item-check { color: var(--yellow-bright); }
+
+        .lang-picker { margin-top: 0; }
+        .font-picker-item-code { flex-shrink: 0; font-size: 9px; color: rgba(255,255,255,.35); text-transform: uppercase; font-weight: 700; padding-left: 8px; margin-right: 4px; letter-spacing: .5px; }
+        .font-picker-item.selected .font-picker-item-code { color: #ffdc50; }
+
+        /* ===== POSITION TOGGLE ===== */
+        .position-toggle {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 9px; background: var(--black3);
+            border: 1px solid rgba(180,140,0,0.2); border-radius: 8px;
+            margin-bottom: 6px;
         }
 
-        const p =
-          handValue(player);
+        .position-toggle-label { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; color: rgba(255,255,255,.45); flex-shrink: 0; text-transform: uppercase; letter-spacing: .5px; }
+        .position-toggle-label svg { color: var(--yellow); opacity: .7; }
 
-        const d =
-          handValue(dealer);
+        .position-toggle-buttons { display: flex; flex: 1; gap: 4px; background: rgba(0,0,0,.3); border-radius: 5px; padding: 2px; }
 
-        if (
-          d > 21 ||
-          p > d
-        ) {
-          return finish(
-            "🎉 You win!",
-            totalBet * 2,
-            COLOR_WIN
-          );
+        .position-toggle-btn {
+            flex: 1; background: transparent; border: none; color: rgba(255,255,255,.5);
+            font-size: 10px; font-weight: 700; padding: 4px 8px; border-radius: 4px;
+            cursor: pointer; transition: all .15s; font-family: inherit; text-transform: uppercase; letter-spacing: .4px;
         }
 
-        if (p === d) {
-          return finish(
-            "🤝 Push!",
-            totalBet,
-            COLOR_INFO
-          );
+        .position-toggle-btn:hover { color: #fff; background: rgba(200,160,0,0.12); }
+        .position-toggle-btn.active { background: rgba(200,160,0,0.25); color: #ffdc50; }
+
+        /* ===== ACTION CARDS ===== */
+        .action-cards { display: flex; flex-direction: column; gap: 3px; margin-bottom: 5px; }
+
+        .action-card {
+            position: relative;
+            background: var(--black3);
+            border: 1px solid rgba(180,140,0,0.2);
+            border-radius: 8px;
+            padding: 6px 10px;
+            cursor: pointer;
+            transition: all .3s ease;
+            overflow: hidden;
+            min-height: 40px;
+            display: flex; align-items: center; gap: 8px;
         }
 
-        return finish(
-          "❌ Dealer wins.",
-          0,
-          COLOR_LOSE
-        );
+        .card-bg-gradient { position: absolute; top: 0; left: 0; right: 0; bottom: 0; opacity: 0; transition: opacity .4s; z-index: 0; }
 
-      } finally {
-        processing = false;
-      }
-    }
-  );
+        .words-gradient       { background: linear-gradient(135deg, rgba(180,140,0,0.3), rgba(100,0,0,0.2)); }
+        .wordpairs-gradient   { background: linear-gradient(135deg, rgba(160,120,0,0.3), rgba(80,0,0,0.2)); }
+        .sentences-gradient   { background: linear-gradient(135deg, rgba(200,160,0,0.3), rgba(120,0,0,0.2)); }
+        .smartextended-gradient { background: linear-gradient(135deg, rgba(170,0,0,0.3), rgba(90,0,0,0.2)); }
+        .smartwords-gradient  { background: linear-gradient(135deg, rgba(190,0,0,0.3), rgba(110,0,0,0.2)); }
+        .timeline-gradient    { background: linear-gradient(135deg, rgba(150,0,0,0.3), rgba(70,0,0,0.2)); }
 
-  collector.on(
-    "end",
-    async () => {
-      if (finished) return;
+        .action-card:hover { transform: translateY(-2px); border-color: rgba(220,176,0,0.5); box-shadow: 0 6px 20px rgba(180,140,0,0.25); }
+        .action-card:hover .card-bg-gradient { opacity: 1; }
+        .action-card:active { transform: translateY(-1px) scale(1.01); }
 
-      finished = true;
-
-      user.cash += totalBet;
-
-      saveData();
-
-      await gm.edit({
-        embeds: [
-          embed(
-            `⏰ Game timed out. Returned **${money(totalBet)}** ${db.currency}.`,
-            COLOR_NEUTRAL,
-            "🃏 Blackjack 🃏"
-          )
-        ],
-        components: [
-          disabledRow(row)
-        ]
-      }).catch(() => {});
-    }
-  );
-}
-
-/* ============================================================
-   COINFLIP
-   ============================================================ */
-
-async function coinflip(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const row =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `ht:h:${message.author.id}`
-          )
-          .setLabel("Heads")
-          .setStyle(
-            ButtonStyle.Primary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `ht:t:${message.author.id}`
-          )
-          .setLabel("Tails")
-          .setStyle(
-            ButtonStyle.Success
-          )
-      );
-
-  const msg =
-    await message.reply({
-      embeds: [
-        embed(
-          `**Bet:** ${money(bet)} ${db.currency}\n\nChoose Heads or Tails.`,
-          COLOR_NEUTRAL,
-          "🍀 CoinFlip 🍀"
-        )
-      ],
-      components: [row]
-    });
-
-  let finished = false;
-
-  const c =
-    msg.createMessageComponentCollector({
-      time: 60000,
-      max: 1
-    });
-
-  c.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (finished) return;
-
-      finished = true;
-
-      const result =
-        Math.random() < 0.5
-          ? "h"
-          : "t";
-
-      const choice =
-        interaction.customId.split(":")[1];
-
-      const win =
-        result === choice;
-
-      if (win) {
-        user.cash += bet * 2;
-      }
-
-      saveData();
-
-      await interaction.update({
-        embeds: [
-          embed(
-            `${result === "h" ? "🪙 Heads" : "🪙 Tails"}\n\n` +
-            (
-              win
-                ? `🎉 Won **${money(bet * 2)}** ${db.currency}!`
-                : `❌ Lost **${money(bet)}** ${db.currency}.`
-            ),
-            win
-              ? COLOR_WIN
-              : COLOR_LOSE,
-            "🍀 CoinFlip 🍀"
-          )
-        ],
-        components: [
-          disabledRow(row)
-        ]
-      });
-    }
-  );
-
-  c.on(
-    "end",
-    async collection => {
-      if (
-        collection.size ||
-        finished
-      ) {
-        return;
-      }
-
-      finished = true;
-
-      user.cash += bet;
-
-      saveData();
-
-      await msg.edit({
-        embeds: [
-          embed(
-            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
-            COLOR_NEUTRAL,
-            "🍀 CoinFlip 🍀"
-          )
-        ],
-        components: [
-          disabledRow(row)
-        ]
-      }).catch(() => {});
-    }
-  );
-}
-
-/* ============================================================
-   HIGHER / LOWER
-   ============================================================ */
-
-function hlMultipliers(current) {
-  const higher =
-    100 - current;
-
-  const lower =
-    current - 1;
-
-  return {
-    higher:
-      Math.round(
-        Math.min(
-          15,
-          Math.max(
-            1.01,
-            (100 / higher) *
-              1.02
-          )
-        ) * 100
-      ) / 100,
-
-    lower:
-      Math.round(
-        Math.min(
-          15,
-          Math.max(
-            1.01,
-            (100 / lower) *
-              1.02
-          )
-        ) * 100
-      ) / 100,
-
-    same: 8
-  };
-}
-
-async function higherLower(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const current =
-    random(2, 99);
-
-  const mult =
-    hlMultipliers(current);
-
-  const row =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `hl:hi:${message.author.id}`
-          )
-          .setLabel("Higher")
-          .setStyle(
-            ButtonStyle.Primary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `hl:eq:${message.author.id}`
-          )
-          .setLabel("Same")
-          .setStyle(
-            ButtonStyle.Primary
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            `hl:lo:${message.author.id}`
-          )
-          .setLabel("Lower")
-          .setStyle(
-            ButtonStyle.Primary
-          )
-      );
-
-  const msg =
-    await message.reply({
-      embeds: [
-        embed(
-          `**Betting Amount:** ${money(bet)}\n\n` +
-          `**1:** ${current}\n` +
-          `**2:** ❓\n\n` +
-          `Higher: **${mult.higher}x**\n` +
-          `Same: **${mult.same}x**\n` +
-          `Lower: **${mult.lower}x**`,
-          COLOR_NEUTRAL,
-          "🎲 Higher or Lower 🎲"
-        )
-      ],
-      components: [row]
-    });
-
-  let finished = false;
-  let processing = false;
-
-  const collector =
-    msg.createMessageComponentCollector({
-      time: 60000,
-      max: 1
-    });
-
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (
-        finished ||
-        processing
-      ) {
-        return;
-      }
-
-      processing = true;
-
-      try {
-        const next =
-          random(1, 100);
-
-        const choice =
-          interaction.customId.split(":")[1];
-
-        const win =
-          (
-            choice === "hi" &&
-            next > current
-          ) ||
-          (
-            choice === "lo" &&
-            next < current
-          ) ||
-          (
-            choice === "eq" &&
-            next === current
-          );
-
-        const multiplier =
-          choice === "hi"
-            ? mult.higher
-            : choice === "lo"
-              ? mult.lower
-              : mult.same;
-
-        const payout =
-          win
-            ? Math.floor(
-                bet * multiplier
-              )
-            : 0;
-
-        if (payout) {
-          user.cash += payout;
+        .card-icon-modern {
+            flex-shrink: 0; width: 26px; height: 26px;
+            background: rgba(200,160,0,0.2); border-radius: 6px;
+            display: flex; align-items: center; justify-content: center;
+            position: relative; z-index: 1; transition: all .3s;
         }
 
-        finished = true;
+        .card-icon-modern svg { width: 14px; height: 14px; }
+        .action-card:hover .card-icon-modern { background: rgba(220,176,0,0.35); transform: scale(1.1) rotate(5deg); }
 
-        saveData();
+        .card-content { flex: 1; position: relative; z-index: 1; }
+        .card-content h3 { font-size: 11px; font-weight: 800; color: #fff; margin-bottom: 0; letter-spacing: .3px; text-transform: uppercase; }
+        .card-content p { font-size: 9px; color: var(--grey2); line-height: 1.3; }
+        .card-badge { display: none; }
 
-        await interaction.update({
-          embeds: [
-            embed(
-              `**1:** ${current}\n` +
-              `**2:** ${next}\n\n` +
-              (
-                win
-                  ? `🎉 Won **${money(payout)}** ${db.currency}!`
-                  : `❌ Lost **${money(bet)}** ${db.currency}.`
-              ),
-              win
-                ? COLOR_WIN
-                : COLOR_LOSE,
-              "🎲 Higher or Lower 🎲"
-            )
-          ],
-          components: [
-            disabledRow(row)
-          ]
-        });
-
-      } finally {
-        processing = false;
-      }
-    }
-  );
-
-  collector.on(
-    "end",
-    async collection => {
-      if (
-        collection.size ||
-        finished
-      ) {
-        return;
-      }
-
-      finished = true;
-
-      user.cash += bet;
-
-      saveData();
-
-      await msg.edit({
-        embeds: [
-          embed(
-            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
-            COLOR_NEUTRAL,
-            "🎲 Higher or Lower 🎲"
-          )
-        ],
-        components: [
-          disabledRow(row)
-        ]
-      }).catch(() => {});
-    }
-  );
-}
-
-/* ============================================================
-   COCKFIGHT
-   ============================================================ */
-
-async function cockfight(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-
-  const chance =
-    user.cfStreak || 55;
-
-  const win =
-    Math.random() * 100 <
-    chance;
-
-  if (win) {
-    user.cash += bet * 2;
-
-    user.cfStreak =
-      Math.min(
-        82,
-        chance + 1
-      );
-  } else {
-    user.cfStreak = 55;
-  }
-
-  saveData();
-
-  return message.reply({
-    embeds: [
-      embed(
-        win
-          ? `🐔 Your chicken won!\n\nChance: **${chance}%**\nPayout: **${money(bet * 2)}** ${db.currency}`
-          : `🐔 Your chicken lost.\n\nChance: **${chance}%**\nLost: **${money(bet)}** ${db.currency}`,
-        win
-          ? COLOR_WIN
-          : COLOR_LOSE,
-        "🐔 Cockfight 🐔"
-      )
-    ]
-  });
-}
-
-/* ============================================================
-   MINES
-   ============================================================ */
-
-const MINES_MULTIPLIERS = [
-  1.1,
-  1.3,
-  1.7,
-  2,
-  2.5,
-  4,
-  5.7,
-  9.42
-];
-
-async function mines(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const bomb =
-    random(0, 8);
-
-  const revealed =
-    new Set();
-
-  let finished = false;
-  let processing = false;
-
-  function currentMultiplier() {
-    if (!revealed.size) {
-      return 1;
-    }
-
-    return (
-      MINES_MULTIPLIERS[
-        Math.min(
-          revealed.size - 1,
-          MINES_MULTIPLIERS.length - 1
-        )
-      ] || 9.42
-    );
-  }
-
-  function rows(end = false) {
-    const output = [];
-
-    for (let r = 0; r < 3; r++) {
-      const buttons = [];
-
-      for (let c = 0; c < 3; c++) {
-        const index =
-          r * 3 + c;
-
-        const isBomb =
-          index === bomb;
-
-        const isRevealed =
-          revealed.has(index);
-
-        let label = "ㅤ";
-
-        if (end) {
-          label =
-            isBomb
-              ? "💣"
-              : "💎";
-        } else if (isRevealed) {
-          label = "💎";
+        .card-progress {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(10,10,10,0.95); border-radius: 8px;
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            gap: 8px; font-size: 11px; font-weight: 700; color: var(--yellow); z-index: 10;
+            animation: fadeInProgress .3s ease-out;
         }
 
-        buttons.push(
-          new ButtonBuilder()
-            .setCustomId(
-              `mn:${message.author.id}:${index}`
-            )
-            .setLabel(label)
-            .setStyle(
-              end && isBomb
-                ? ButtonStyle.Danger
-                : isRevealed
-                  ? ButtonStyle.Success
-                  : ButtonStyle.Secondary
-            )
-            .setDisabled(
-              isRevealed ||
-              end
-            )
-        );
-      }
-
-      output.push(
-        new ActionRowBuilder()
-          .addComponents(
-            buttons
-          )
-      );
-    }
-
-    output.push(
-      new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId(
-              `mn:${message.author.id}:cash`
-            )
-            .setLabel(
-              "💰 Cashout"
-            )
-            .setStyle(
-              ButtonStyle.Success
-            )
-            .setDisabled(
-              !revealed.size ||
-              end
-            )
-        )
-    );
-
-    return output;
-  }
-
-  function gameEmbed() {
-    const multiplier =
-      currentMultiplier();
-
-    return embed(
-      `💎 Safe tiles: **${revealed.size}/8**\n` +
-      `Multiplier: **${multiplier}x**\n` +
-      `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
-      `Bet: **${money(bet)}** ${db.currency}`,
-      COLOR_NEUTRAL,
-      "💣 Mines 💣"
-    );
-  }
-
-  const msg =
-    await message.reply({
-      embeds: [
-        gameEmbed()
-      ],
-      components: rows()
-    });
-
-  const secretBoard = [
-    `| #1 ${bomb === 0 ? "💣" : "💎"} | #2 ${bomb === 1 ? "💣" : "💎"} | #3 ${bomb === 2 ? "💣" : "💎"} |`,
-    `| #4 ${bomb === 3 ? "💣" : "💎"} | #5 ${bomb === 4 ? "💣" : "💎"} | #6 ${bomb === 5 ? "💣" : "💎"} |`,
-    `| #7 ${bomb === 6 ? "💣" : "💎"} | #8 ${bomb === 7 ? "💣" : "💎"} | #9 ${bomb === 8 ? "💣" : "💎"} |`
-  ].join("\n");
-
-  await sendSecretGameBoard(
-    message,
-    "Mines",
-    `**3 × 3 FULL MAP — ALL 9 TILES**\n\n${secretBoard}\n\n💣 = Bomb\n💎 = Safe`,
-    `💰 Multipliers: ${MINES_MULTIPLIERS.map(
-      (x, i) =>
-        `${i + 1} safe = ${x}x`
-    ).join(" · ")}`
-  );
-
-  const collector =
-    msg.createMessageComponentCollector({
-      time: 120000
-    });
-
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (
-        finished ||
-        processing
-      ) {
-        return;
-      }
-
-      processing = true;
-
-      try {
-        const action =
-          interaction.customId.split(":")[2];
-
-        if (
-          action === "cash"
-        ) {
-          if (!revealed.size) {
-            return interaction.reply({
-              content:
-                "❌ Reveal a tile first.",
-              ephemeral: true
-            });
-          }
-
-          finished = true;
-          collector.stop();
-
-          const multiplier =
-            currentMultiplier();
-
-          const payout =
-            Math.floor(
-              bet * multiplier
-            );
-
-          user.cash += payout;
-
-          saveData();
-
-          await interaction.update({
-            embeds: [
-              embed(
-                `💰 Cashed out!\n\nPayout: **${money(payout)}** ${db.currency}.`,
-                COLOR_WIN,
-                "💣 Mines 💣"
-              )
-            ],
-            components: rows(true)
-          });
-
-          return;
+        .card-progress:before {
+            content: ""; width: 22px; height: 22px;
+            border: 2px solid rgba(200,160,0,0.2); border-top-color: var(--yellow);
+            border-radius: 50%; animation: spin .7s linear infinite;
         }
 
-        const index =
-          Number(action);
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeInProgress { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: scale(1); } }
 
-        if (
-          !Number.isInteger(index) ||
-          index < 0 ||
-          index > 8
-        ) {
-          return;
+        .action-card.processing .card-progress { display: flex; }
+        .action-card.processing { pointer-events: none; }
+        .action-card.processing .card-icon-modern,
+        .action-card.processing .card-content { opacity: .3; }
+        .action-card.disabled { opacity: .5; pointer-events: none; }
+
+        /* ===== TOOLS TOOLBAR ===== */
+        .tools-toolbar { display: flex; gap: 4px; margin-top: 4px; margin-bottom: 3px; }
+
+        .tool-btn {
+            flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+            padding: 5px 6px; border-radius: 6px; font-size: 10px; font-weight: 700;
+            cursor: pointer; transition: all .2s ease; border: 1px solid;
+            font-family: inherit; white-space: nowrap; letter-spacing: .3px; text-transform: uppercase;
         }
 
-        if (
-          revealed.has(index)
-        ) {
-          return;
+        .tool-btn svg { flex-shrink: 0; opacity: .85; }
+        .tool-btn:hover { transform: translateY(-1px); }
+        .tool-btn:active { transform: translateY(0); }
+        .tool-btn:disabled { opacity: .4; cursor: not-allowed; transform: none !important; }
+
+        .tool-select { background: rgba(180,140,0,0.1); border-color: rgba(180,140,0,0.3); color: #ffdc50; }
+        .tool-select:hover:not(:disabled) { background: rgba(200,160,0,0.2); border-color: var(--yellow); box-shadow: 0 2px 8px rgba(180,140,0,0.25); }
+
+        .tool-punctuation { background: rgba(180,80,0,0.1); border-color: rgba(180,80,0,0.3); color: #ff9966; }
+        .tool-punctuation:hover:not(:disabled) { background: rgba(200,80,0,0.2); border-color: rgba(220,100,0,0.7); }
+
+        .tool-delete { background: rgba(100,0,0,0.1); border-color: rgba(150,0,0,0.3); color: #ff4444; }
+        .tool-delete:hover:not(:disabled) { background: rgba(180,140,0,0.25); border-color: var(--yellow-bright); box-shadow: 0 2px 8px rgba(200,160,0,0.3); }
+
+        /* ===== SRT TOOLBAR ===== */
+        .srt-toolbar { display: flex; gap: 4px; margin-top: 0; margin-bottom: 5px; }
+
+        .srt-btn {
+            flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+            padding: 4px 6px; border-radius: 7px; font-size: 10px; font-weight: 700;
+            cursor: pointer; transition: all .2s ease; border: 1px solid;
+            font-family: inherit; white-space: nowrap; letter-spacing: .3px; text-transform: uppercase;
         }
 
-        if (
-          index === bomb
-        ) {
-          finished = true;
-          collector.stop();
+        .srt-import { background: rgba(150,0,0,0.08); border-color: rgba(180,140,0,0.25); color: #ff7070; }
+        .srt-import:hover:not(:disabled) { background: rgba(180,140,0,0.18); border-color: rgba(220,176,0,0.6); }
 
-          saveData();
+        .srt-export { background: rgba(100,0,0,0.08); border-color: rgba(150,0,0,0.25); color: #ff5555; }
+        .srt-export:hover:not(:disabled) { background: rgba(160,120,0,0.18); border-color: rgba(200,160,0,0.6); }
 
-          await interaction.update({
-            embeds: [
-              embed(
-                `💥 BOOM!\n\nLost **${money(bet)}** ${db.currency}.`,
-                COLOR_LOSE,
-                "💣 Mines 💣"
-              )
-            ],
-            components: rows(true)
-          });
+        /* ===== PROGRESS & STATUS ===== */
+        .progress-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+        .progress-row[hidden] { display: none; }
 
-          return;
+        .progress-wrapper {
+            flex: 1; background: rgba(180,140,0,0.1); border: 1px solid rgba(180,140,0,0.2);
+            border-radius: 8px; height: 6px; overflow: hidden;
         }
 
-        await interaction.deferUpdate();
-
-        /*
-         * Requested 1.5 second delay after every tile click.
-         */
-        await new Promise(resolve =>
-          setTimeout(resolve, 1500)
-        );
-
-        if (finished) return;
-
-        revealed.add(index);
-
-        const multiplier =
-          currentMultiplier();
-
-        if (
-          revealed.size === 8
-        ) {
-          await msg.edit({
-            embeds: [
-              embed(
-                `💎 All 8 safe tiles revealed!\n\n` +
-                `Multiplier: **${multiplier}x**\n` +
-                `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
-                `💰 Press **Cashout** to collect.`,
-                COLOR_NEUTRAL,
-                "💣 Mines 💣"
-              )
-            ],
-            components: rows()
-          });
-
-          return;
+        .progress-bar-modern {
+            height: 100%; width: 0%; background: linear-gradient(90deg, #8b0000, var(--yellow-bright));
+            transition: width .3s ease; position: relative; overflow: hidden;
         }
 
-        await msg.edit({
-          embeds: [
-            gameEmbed()
-          ],
-          components: rows()
-        });
-
-      } finally {
-        processing = false;
-      }
-    }
-  );
-
-  collector.on(
-    "end",
-    async () => {
-      if (finished) return;
-
-      finished = true;
-
-      user.cash += bet;
-
-      saveData();
-
-      await msg.edit({
-        embeds: [
-          embed(
-            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
-            COLOR_NEUTRAL,
-            "💣 Mines 💣"
-          )
-        ],
-        components: rows(true)
-      }).catch(() => {});
-    }
-  );
-}
-
-/* ============================================================
-   GOLDMINE
-   ============================================================ */
-
-const GOLDMINE_SIZE = 24;
-const GOLDMINE_BOMBS = 14;
-
-const GOLDMINE_TREASURE_COUNTS = [
-  {
-    key: "rock",
-    emoji: "🪨",
-    mult: 1.1,
-    count: 3
-  },
-  {
-    key: "coin",
-    emoji: "🪙",
-    mult: 2.5,
-    count: 2
-  },
-  {
-    key: "diamond",
-    emoji: "💎",
-    mult: 3.5,
-    count: 2
-  },
-  {
-    key: "moneybag",
-    emoji: "💰",
-    mult: 6.5,
-    count: 1
-  },
-  {
-    key: "lantern",
-    emoji: "🏮",
-    mult: 20,
-    count: 1
-  }
-];
-
-function buildGoldmineBoard() {
-  const ids =
-    shuffle(
-      [...Array(GOLDMINE_SIZE).keys()]
-    );
-
-  const board =
-    new Array(GOLDMINE_SIZE);
-
-  let cursor = 0;
-
-  for (
-    const index of ids.slice(
-      cursor,
-      cursor + GOLDMINE_BOMBS
-    )
-  ) {
-    board[index] = {
-      type: "bomb"
-    };
-
-    cursor++;
-  }
-
-  for (
-    const treasure
-    of GOLDMINE_TREASURE_COUNTS
-  ) {
-    for (
-      const index
-      of ids.slice(
-        cursor,
-        cursor + treasure.count
-      )
-    ) {
-      board[index] = {
-        type: "treasure",
-        ...treasure
-      };
-
-      cursor++;
-    }
-  }
-
-  /*
-   * One map.
-   */
-  board[ids[cursor]] = {
-    type: "map"
-  };
-
-  cursor++;
-
-  /*
-   * Safety check:
-   * all 24 cells must be assigned.
-   */
-  while (
-    cursor < ids.length
-  ) {
-    board[ids[cursor]] = {
-      type: "rock",
-      emoji: "🪨",
-      mult: 1.1
-    };
-
-    cursor++;
-  }
-
-  return board;
-}
-
-async function goldmine(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const board =
-    buildGoldmineBoard();
-
-  const revealed =
-    new Set();
-
-  /*
-   * IMPORTANT:
-   * The game uses the actual current payout value.
-   * It does not display a separate cumulative multiplier.
-   */
-  let currentValue = bet;
-
-  let finished = false;
-  let processing = false;
-
-  function applyTreasure(treasure) {
-    currentValue =
-      Math.floor(
-        currentValue *
-          treasure.mult
-      );
-  }
-
-  function label(
-    index,
-    end
-  ) {
-    const tile =
-      board[index];
-
-    if (end) {
-      if (
-        tile.type === "bomb"
-      ) {
-        return "💣";
-      }
-
-      if (
-        tile.type === "map"
-      ) {
-        return "🗺️";
-      }
-
-      return tile.emoji;
-    }
-
-    if (
-      !revealed.has(index)
-    ) {
-      return "ㅤ";
-    }
-
-    if (
-      tile.type === "map"
-    ) {
-      return "🗺️";
-    }
-
-    return tile.emoji;
-  }
-
-  function rows(end = false) {
-    const output = [];
-
-    for (let r = 0; r < 5; r++) {
-      const buttons = [];
-
-      const columns =
-        r === 4 ? 4 : 5;
-
-      for (
-        let c = 0;
-        c < columns;
-        c++
-      ) {
-        const index =
-          r * 5 + c;
-
-        if (index >= 24) {
-          continue;
+        .progress-bar-modern:after {
+            content: ""; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent);
+            animation: shimmer 2s infinite;
         }
 
-        const tile =
-          board[index];
+        @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 
-        const isRevealed =
-          revealed.has(index);
-
-        buttons.push(
-          new ButtonBuilder()
-            .setCustomId(
-              `gm:${message.author.id}:${index}`
-            )
-            .setLabel(
-              label(
-                index,
-                end
-              )
-            )
-            .setStyle(
-              end &&
-              tile.type === "bomb"
-                ? ButtonStyle.Danger
-                : isRevealed
-                  ? ButtonStyle.Success
-                  : ButtonStyle.Secondary
-            )
-            .setDisabled(
-              isRevealed ||
-              end
-            )
-        );
-      }
-
-      if (r === 4) {
-        buttons.push(
-          new ButtonBuilder()
-            .setCustomId(
-              `gm:${message.author.id}:cash`
-            )
-            .setLabel(
-              "💰 Cashout"
-            )
-            .setStyle(
-              ButtonStyle.Success
-            )
-            .setDisabled(
-              !revealed.size ||
-              end
-            )
-        );
-      }
-
-      output.push(
-        new ActionRowBuilder()
-          .addComponents(
-            buttons
-          )
-      );
-    }
-
-    return output;
-  }
-
-  function gameEmbed() {
-    return embed(
-      `⛏️ Dig for treasure — avoid bombs.\n\n` +
-      `🪨 1.1x · 🪙 2.5x · 💎 3.5x · 💰 6.5x · 🏮 20x · 🗺️ reveals 3 safe tiles\n\n` +
-      `Found: **${revealed.size}**\n` +
-      `Current value: **${money(currentValue)}** ${db.currency}\n\n` +
-      `Bet: **${money(bet)}** ${db.currency}`,
-      COLOR_NEUTRAL,
-      "⛏️ Goldmine ⛏️"
-    );
-  }
-
-  const msg =
-    await message.reply({
-      embeds: [
-        gameEmbed()
-      ],
-      components: rows()
-    });
-
-  const icons =
-    board.map(tile => {
-      if (
-        tile.type === "bomb"
-      ) {
-        return "💣";
-      }
-
-      if (
-        tile.type === "map"
-      ) {
-        return "🗺️";
-      }
-
-      return tile.emoji;
-    });
-
-  const cell =
-    index =>
-      `#${index + 1} ${icons[index]}`;
-
-  const secretBoard = [
-    `| ${[0,1,2,3,4].map(cell).join(" | ")} |`,
-    `| ${[5,6,7,8,9].map(cell).join(" | ")} |`,
-    `| ${[10,11,12,13,14].map(cell).join(" | ")} |`,
-    `| ${[15,16,17,18,19].map(cell).join(" | ")} |`,
-    `| ${[20,21,22,23].map(cell).join(" | ")} |`
-  ].join("\n");
-
-  await sendSecretGameBoard(
-    message,
-    "Goldmine",
-    `**FULL 24-TILE MAP — ALL TILES**\n\n${secretBoard}\n\n` +
-    `💣 = Bomb\n` +
-    `🪨 = 1.1x\n` +
-    `🪙 = 2.5x\n` +
-    `💎 = 3.5x\n` +
-    `💰 = 6.5x\n` +
-    `🏮 = 20x\n` +
-    `🗺️ = Reveals 3 safe tiles`,
-    "⚠️ Map reveals 3 safe tiles."
-  );
-
-  const collector =
-    msg.createMessageComponentCollector({
-      time: 150000
-    });
-
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
-
-      if (
-        finished ||
-        processing
-      ) {
-        return;
-      }
-
-      processing = true;
-
-      try {
-        const action =
-          interaction.customId.split(":")[2];
-
-        if (
-          action === "cash"
-        ) {
-          if (!revealed.size) {
-            return interaction.reply({
-              content:
-                "❌ Reveal a tile first.",
-              ephemeral: true
-            });
-          }
-
-          finished = true;
-          collector.stop();
-
-          const payout =
-            currentValue;
-
-          user.cash += payout;
-
-          saveData();
-
-          await interaction.update({
-            embeds: [
-              embed(
-                `💰 Cashed out!\n\nPayout: **${money(payout)}** ${db.currency}.`,
-                COLOR_WIN,
-                "⛏️ Goldmine ⛏️"
-              )
-            ],
-            components: rows(true)
-          });
-
-          return;
+        .cancel-btn {
+            width: 22px; height: 22px; background: rgba(200,160,0,0.15);
+            border: 1px solid rgba(200,160,0,0.3); border-radius: 6px;
+            color: var(--yellow-bright); cursor: pointer; display: flex; align-items: center; justify-content: center;
+            padding: 0; flex-shrink: 0; transition: all .15s;
         }
 
-        const index =
-          Number(action);
+        .cancel-btn:hover { background: rgba(220,176,0,0.3); border-color: var(--yellow-bright); }
 
-        if (
-          !Number.isInteger(index) ||
-          index < 0 ||
-          index >= 24
-        ) {
-          return;
+        .status-console {
+            background: rgba(0,0,0,0.5); border: 1px solid rgba(180,140,0,0.2); border-radius: 6px;
+            padding: 5px 10px; font-family: Monaco, monospace; font-size: 9px;
+            color: #ffdc50; text-align: center;
         }
 
-        if (
-          revealed.has(index)
-        ) {
-          return;
+        /* ===== CUSTOM EXPANDER ===== */
+        .custom-expander {
+            display: flex; align-items: center; gap: 6px; padding: 5px 12px; margin-top: 3px;
+            background: rgba(180,140,0,0.07); border: 1px dashed rgba(180,140,0,0.25);
+            border-radius: 6px; color: rgba(255,220,0,0.7); font-size: 11px; font-weight: 700;
+            cursor: pointer; transition: all .2s; user-select: none; text-transform: uppercase; letter-spacing: .4px;
         }
 
-        const tile =
-          board[index];
+        .custom-expander:hover { background: rgba(200,160,0,0.12); border-color: rgba(220,176,0,0.5); color: #ffdc50; }
+        .custom-expander.open { background: rgba(180,140,0,0.12); border-color: rgba(200,160,0,0.45); border-style: solid; border-radius: 8px 8px 0 0; margin-bottom: 0; }
+        .custom-expander-hint { font-size: 9px; font-weight: 400; color: rgba(255,255,255,.25); margin-left: auto; text-transform: none; }
+        .custom-chevron { transition: transform .2s; flex-shrink: 0; }
+        .custom-expander.open .custom-chevron { transform: rotate(180deg); }
 
-        if (
-          tile.type === "bomb"
-        ) {
-          finished = true;
-          collector.stop();
+        .custom-settings { margin-bottom: 8px; background: rgba(180,140,0,0.05); border: 1px solid rgba(180,140,0,0.2); border-top: none; border-radius: 0 0 8px 8px; overflow: hidden; animation: customSlideDown .2s ease-out; }
 
-          saveData();
+        @keyframes customSlideDown { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 400px; } }
 
-          await interaction.update({
-            embeds: [
-              embed(
-                `💥 Bomb!\n\nLost **${money(bet)}** ${db.currency}.`,
-                COLOR_LOSE,
-                "⛏️ Goldmine ⛏️"
-              )
-            ],
-            components: rows(true)
-          });
+        .custom-settings-body { padding: 8px 12px 10px; }
 
-          return;
+        .custom-presets { display: flex; gap: 3px; margin-bottom: 8px; }
+        .custom-preset-btn {
+            flex: 1; padding: 4px 0; font-size: 8px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+            border: 1px solid rgba(255,255,255,.08); border-radius: 4px; background: rgba(255,255,255,.05);
+            color: rgba(255,255,255,.4); cursor: pointer; transition: all .15s; text-align: center;
         }
 
-        await interaction.deferUpdate();
+        .custom-preset-btn:hover { background: rgba(180,140,0,0.12); color: rgba(255,255,255,.7); }
+        .custom-preset-btn.active { background: rgba(180,140,0,0.25); border-color: rgba(220,176,0,0.5); color: #ffdc50; }
 
-        /*
-         * Requested 1.5 second delay.
-         */
-        await new Promise(resolve =>
-          setTimeout(resolve, 1500)
-        );
+        .custom-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+        .custom-row label { font-size: 10px; color: rgba(255,255,255,.5); min-width: 56px; flex-shrink: 0; }
 
-        if (finished) return;
+        .custom-slider { flex: 1; -webkit-appearance: none; height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; outline: none; }
+        .custom-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--yellow); cursor: pointer; border: 2px solid rgba(0,0,0,.3); box-shadow: 0 0 6px rgba(180,140,0,0.5); }
 
-        revealed.add(index);
+        .custom-val { font-size: 9px; color: rgba(255,255,255,.4); min-width: 28px; text-align: right; font-family: monospace; }
 
-        if (
-          tile.type === "treasure"
-        ) {
-          applyTreasure(tile);
+        .custom-break-btns { display: flex; gap: 3px; flex: 1; }
+        .custom-break-btn {
+            flex: 1; padding: 3px 0; font-size: 8px; font-weight: 700; text-transform: uppercase;
+            border: 1px solid rgba(255,255,255,.08); border-radius: 4px; background: rgba(255,255,255,.05);
+            color: rgba(255,255,255,.4); cursor: pointer; transition: all .15s; text-align: center;
         }
 
-        /*
-         * MAP:
-         * reveal exactly 3 unrevealed safe tiles.
-         * Their treasure rewards also apply to currentValue.
-         */
-        if (
-          tile.type === "map"
-        ) {
-          const pool =
-            shuffle(
-              [...Array(24).keys()]
-                .filter(
-                  x =>
-                    !revealed.has(x) &&
-                    board[x].type !== "bomb"
-                )
-            ).slice(0, 3);
+        .custom-break-btn:hover { background: rgba(180,140,0,0.12); color: rgba(255,255,255,.7); }
+        .custom-break-btn.active { background: rgba(180,140,0,0.2); border-color: rgba(220,176,0,0.5); color: #ffdc50; }
 
-          for (
-            const x of pool
-          ) {
-            revealed.add(x);
+        .custom-check { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+        .custom-check input[type=checkbox] { accent-color: var(--yellow); }
+        .custom-check span { font-size: 9px; color: rgba(255,255,255,.4); }
 
-            if (
-              board[x].type ===
-              "treasure"
-            ) {
-              applyTreasure(
-                board[x]
-              );
-            }
-          }
+        .custom-create-btn {
+            width: 100%; margin-top: 8px; padding: 7px 12px; display: flex; align-items: center; justify-content: center; gap: 5px;
+            background: linear-gradient(135deg, #8b0000, var(--yellow));
+            color: #fff; border: none; border-radius: 6px; font-size: 10px; font-weight: 800;
+            cursor: pointer; transition: all .2s; text-transform: uppercase; letter-spacing: .5px;
         }
 
-        /*
-         * 24 tiles:
-         * 14 bombs + 10 safe tiles.
-         */
-        if (
-          revealed.size >= 10
-        ) {
-          finished = true;
-          collector.stop();
+        .custom-create-btn:hover { filter: brightness(1.2); transform: translateY(-1px); }
+        .custom-create-btn:active { transform: translateY(0); }
+        .custom-create-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; filter: none; }
 
-          const payout =
-            currentValue;
-
-          user.cash += payout;
-
-          saveData();
-
-          await msg.edit({
-            embeds: [
-              embed(
-                `🏆 Whole mine cleared!\n\n` +
-                `Payout: **${money(payout)}** ${db.currency}.`,
-                COLOR_WIN,
-                "⛏️ Goldmine ⛏️"
-              )
-            ],
-            components: rows(true)
-          });
-
-          return;
+        /* ===== STYLES TAB ===== */
+        .styles-info {
+            display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+            background: rgba(180,140,0,0.08); border: 1px solid rgba(200,160,0,0.2);
+            border-radius: 8px; margin-bottom: 12px; font-size: 10px; color: var(--grey2);
         }
 
-        await msg.edit({
-          embeds: [
-            gameEmbed()
-          ],
-          components: rows()
-        });
-
-      } finally {
-        processing = false;
-      }
-    }
-  );
-
-  collector.on(
-    "end",
-    async () => {
-      if (finished) return;
-
-      finished = true;
-
-      user.cash += bet;
-
-      saveData();
-
-      await msg.edit({
-        embeds: [
-          embed(
-            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
-            COLOR_NEUTRAL,
-            "⛏️ Goldmine ⛏️"
-          )
-        ],
-        components: rows(true)
-      }).catch(() => {});
-    }
-  );
-}
-
-/* ============================================================
-   SLOTS
-   ============================================================ */
-
-const SLOT_SYMBOLS = [
-  {
-    emoji: "🍒",
-    weight: 30,
-    triple: 3
-  },
-  {
-    emoji: "🍋",
-    weight: 25,
-    triple: 4
-  },
-  {
-    emoji: "🍊",
-    weight: 20,
-    triple: 5
-  },
-  {
-    emoji: "🍇",
-    weight: 15,
-    triple: 6
-  },
-  {
-    emoji: "⭐",
-    weight: 8,
-    triple: 10
-  },
-  {
-    emoji: "7️⃣",
-    weight: 2,
-    triple: 20
-  }
-];
-
-async function slots(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const reels = [
-    weightedPick(SLOT_SYMBOLS),
-    weightedPick(SLOT_SYMBOLS),
-    weightedPick(SLOT_SYMBOLS)
-  ];
-
-  const secret =
-    reels
-      .map(x => x.emoji)
-      .join(" | ");
-
-  let multiplier = 0;
-  let line =
-    "❌ No match.";
-
-  if (
-    reels[0].emoji ===
-      reels[1].emoji &&
-    reels[1].emoji ===
-      reels[2].emoji
-  ) {
-    multiplier =
-      reels[0].triple;
-
-    line =
-      `🎉 Triple ${reels[0].emoji}!`;
-  } else if (
-    reels[0].emoji ===
-      reels[1].emoji ||
-    reels[1].emoji ===
-      reels[2].emoji ||
-    reels[0].emoji ===
-      reels[2].emoji
-  ) {
-    multiplier = 1.2;
-    line =
-      "🙂 Two matching symbols.";
-  }
-
-  await logAndPredict(
-    message,
-    `Slots started — bet ${money(bet)}.`,
-    `🎰 Hidden reels: **${secret}**`,
-    COLOR_INFO
-  );
-
-  const msg =
-    await message.reply({
-      embeds: [
-        embed(
-          `🎰 **SPINNING...**\n\n[ ❔ | ❔ | ❔ ]\n\n⏳ Result in **3 seconds**...`,
-          COLOR_NEUTRAL,
-          "🎰 Slots 🎰"
-        )
-      ]
-    });
-
-  for (
-    let n = 2;
-    n >= 1;
-    n--
-  ) {
-    await new Promise(resolve =>
-      setTimeout(resolve, 1000)
-    );
-
-    await msg.edit({
-      embeds: [
-        embed(
-          `🎰 **SPINNING...**\n\n` +
-          `[ ${
-            n === 2
-              ? "🍒"
-              : "⭐"
-          } | ${
-            n === 2
-              ? "❔"
-              : "🍋"
-          } | ❔ ]\n\n` +
-          `⏳ **${n} second${n === 1 ? "" : "s"}**...`,
-          COLOR_NEUTRAL,
-          "🎰 Slots 🎰"
-        )
-      ]
-    }).catch(() => {});
-  }
-
-  const payout =
-    Math.floor(
-      bet * multiplier
-    );
-
-  if (payout) {
-    user.cash += payout;
-  }
-
-  saveData();
-
-  return msg.edit({
-    embeds: [
-      embed(
-        `[ ${secret} ]\n\n` +
-        `${line}\n\n` +
-        (
-          payout
-            ? `🎉 Won **${money(payout)}** ${db.currency}!`
-            : `❌ Lost **${money(bet)}** ${db.currency}.`
-        ),
-        payout
-          ? COLOR_WIN
-          : COLOR_LOSE,
-        "🎰 Slots 🎰"
-      )
-    ]
-  });
-}
-
-/* ============================================================
-   ROULETTE
-   ============================================================ */
-
-const ROULETTE_RED =
-  new Set([
-    1,3,5,7,9,12,14,16,18,
-    19,21,23,25,27,30,32,34,36
-  ]);
-
-function rouletteColor(n) {
-  if (n === 0) {
-    return "green";
-  }
-
-  return ROULETTE_RED.has(n)
-    ? "red"
-    : "black";
-}
-
-async function roulette(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  const choice =
-    (args[1] || "")
-      .toLowerCase();
-
-  const isNum =
-    /^\d+$/.test(choice);
-
-  if (
-    (
-      !isNum &&
-      ![
-        "red",
-        "black",
-        "green"
-      ].includes(choice)
-    ) ||
-    (
-      isNum &&
-      (
-        Number(choice) < 0 ||
-        Number(choice) > 36
-      )
-    )
-  ) {
-    return message.reply({
-      embeds: [
-        embed(
-          "❌ Usage: `$roulette <amount|half|all> <red/black/green/0-36>`",
-          COLOR_LOSE
-        )
-      ]
-    });
-  }
-
-  user.cash -= bet;
-  saveData();
-
-  const result =
-    random(0, 36);
-
-  const color =
-    rouletteColor(result);
-
-  const win =
-    isNum
-      ? Number(choice) === result
-      : choice === color;
-
-  const multiplier =
-    isNum
-      ? 30
-      : color === "green"
-        ? 14
-        : 2;
-
-  const payout =
-    win
-      ? Math.floor(
-          bet * multiplier
-        )
-      : 0;
-
-  await logAndPredict(
-    message,
-    `Roulette started — bet ${money(bet)}, choice ${choice}.`,
-    `🎡 Hidden result: **${result} (${color})**`,
-    COLOR_INFO
-  );
-
-  const msg =
-    await message.reply({
-      embeds: [
-        embed(
-          `🎡 **ROULETTE**\n\n` +
-          `Ball is spinning...\n\n` +
-          `🎯 Bet: **${money(bet)}** ${db.currency}\n` +
-          `🎲 Choice: **${choice}**\n\n` +
-          `⏳ Result in **3 seconds**...`,
-          COLOR_NEUTRAL,
-          "🎡 Roulette 🎡"
-        )
-      ]
-    });
-
-  for (
-    let n = 2;
-    n >= 1;
-    n--
-  ) {
-    await new Promise(resolve =>
-      setTimeout(resolve, 1000)
-    );
-
-    await msg.edit({
-      embeds: [
-        embed(
-          `🎡 **ROULETTE**\n\n` +
-          `🔄 Wheel spinning...\n\n` +
-          `⏳ **${n} second${n === 1 ? "" : "s"}**...`,
-          COLOR_NEUTRAL,
-          "🎡 Roulette 🎡"
-        )
-      ]
-    }).catch(() => {});
-  }
-
-  if (payout) {
-    user.cash += payout;
-  }
-
-  saveData();
-
-  return msg.edit({
-    embeds: [
-      embed(
-        `🎯 Landed on **${result}** (${color})\n\n` +
-        (
-          win
-            ? `🎉 Won **${money(payout)}** ${db.currency}!`
-            : `❌ Lost **${money(bet)}** ${db.currency}.`
-        ),
-        win
-          ? COLOR_WIN
-          : COLOR_LOSE,
-        "🎡 Roulette 🎡"
-      )
-    ]
-  });
-}
-
-/* ============================================================
-   WHEEL
-   ============================================================ */
-
-const WHEEL_SEGMENTS = [
-  {
-    mult: 0,
-    weight: 38,
-    label: "💀 Bust"
-  },
-  {
-    mult: 1.2,
-    weight: 25,
-    label: "🙂 1.2x"
-  },
-  {
-    mult: 1.5,
-    weight: 17,
-    label: "😀 1.5x"
-  },
-  {
-    mult: 2,
-    weight: 12,
-    label: "😃 2x"
-  },
-  {
-    mult: 5,
-    weight: 6,
-    label: "🤑 5x"
-  },
-  {
-    mult: 10,
-    weight: 2,
-    label: "🏆 10x"
-  }
-];
-
-async function wheel(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-
-  const result =
-    weightedPick(
-      WHEEL_SEGMENTS
-    );
-
-  const payout =
-    Math.floor(
-      bet * result.mult
-    );
-
-  if (payout) {
-    user.cash += payout;
-  }
-
-  saveData();
-
-  return message.reply({
-    embeds: [
-      embed(
-        `🎡 The wheel lands on **${result.label}**\n\n` +
-        (
-          payout
-            ? `🎉 Won **${money(payout)}** ${db.currency}!`
-            : `❌ Lost **${money(bet)}** ${db.currency}.`
-        ),
-        payout
-          ? COLOR_WIN
-          : COLOR_LOSE,
-        "🎡 Wheel of Fortune 🎡"
-      )
-    ]
-  });
-}
-
-/* ============================================================
-   CRASH
-   ============================================================ */
-
-function rollCrashPoint() {
-  const r =
-    Math.random();
-
-  const point =
-    1 /
-    Math.max(
-      0.0001,
-      1 -
-        r *
-        0.9866666667
-    );
-
-  return Math.max(
-    1,
-    Math.min(
-      75,
-      Math.round(
-        point * 100
-      ) / 100
-    )
-  );
-}
-
-async function crash(
-  message,
-  args,
-  user
-) {
-  const bet =
-    validBet(message, args);
-
-  if (bet === null) return;
-
-  user.cash -= bet;
-  saveData();
-
-  const crashPoint =
-    rollCrashPoint();
-
-  let multiplier = 1;
-  let finished = false;
-  let processing = false;
-
-  const row =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `cr:cash:${message.author.id}`
-          )
-          .setLabel(
-            "💰 Cashout"
-          )
-          .setStyle(
-            ButtonStyle.Success
-          )
-      );
-
-  const gameEmbed = () =>
-    embed(
-      `📈 Multiplier: **${multiplier.toFixed(2)}x**\n` +
-      `Current value: **${money(bet * multiplier)}** ${db.currency}\n\n` +
-      `Bet: **${money(bet)}** ${db.currency}\n\n` +
-      `Cash out before it crashes!`,
-      COLOR_NEUTRAL,
-      "🚀 Crash 🚀"
-    );
-
-  const msg =
-    await message.reply({
-      embeds: [
-        gameEmbed()
-      ],
-      components: [row]
-    });
-
-  const collector =
-    msg.createMessageComponentCollector({
-      time: 120000
-    });
-
-  const interval =
-    setInterval(
-      async () => {
-        if (finished) {
-          return;
+        .styles-info > span { flex: 1; }
+        .styles-info svg { flex-shrink: 0; color: var(--yellow); width: 14px; height: 14px; }
+        .styles-info strong { color: #ffdc50; font-weight: 700; }
+
+        .refresh-styles-btn {
+            flex-shrink: 0; width: 22px; height: 22px;
+            background: rgba(180,140,0,0.12); border: 1px solid rgba(180,140,0,0.3);
+            border-radius: 4px; color: var(--yellow); cursor: pointer;
+            display: flex; align-items: center; justify-content: center; padding: 0; transition: all .15s;
         }
 
-        multiplier =
-          Math.round(
-            multiplier *
-              1.15 *
-              100
-          ) / 100;
+        .refresh-styles-btn:hover { background: rgba(200,160,0,0.25); transform: rotate(180deg); }
+        .refresh-styles-btn.spinning svg { animation: refreshSpin 1s linear infinite; }
+        @keyframes refreshSpin { to { transform: rotate(360deg); } }
 
-        if (
-          multiplier >=
-          crashPoint
-        ) {
-          finished = true;
+        .styles-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 16px; }
 
-          clearInterval(
-            interval
-          );
-
-          collector.stop();
-
-          saveData();
-
-          await msg.edit({
-            embeds: [
-              embed(
-                `💥 Crashed at **${crashPoint.toFixed(2)}x**!\n\n` +
-                `Lost **${money(bet)}** ${db.currency}.`,
-                COLOR_LOSE,
-                "🚀 Crash 🚀"
-              )
-            ],
-            components: [
-              disabledRow(row)
-            ]
-          }).catch(() => {});
-
-          return;
+        .style-card {
+            background: var(--black3); border: 1.5px solid rgba(180,140,0,0.2);
+            border-radius: 6px; padding: 6px; cursor: pointer;
+            transition: all .3s ease; overflow: hidden; aspect-ratio: 1;
+            display: flex; flex-direction: column; position: relative;
         }
 
-        await msg.edit({
-          embeds: [
-            gameEmbed()
-          ],
-          components: [row]
-        }).catch(() => {});
-      },
-      1500
-    );
+        .style-card:hover { transform: translateY(-1px); border-color: rgba(220,176,0,0.5); box-shadow: 0 4px 14px rgba(180,140,0,0.3); }
+        .style-card.active { border-color: var(--yellow); background: rgba(180,140,0,0.12); }
 
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your game.",
-          ephemeral: true
-        });
-      }
+        .style-preview {
+            background: rgba(0,0,0,.6); border-radius: 4px; flex: 1;
+            display: flex; align-items: center; justify-content: center; margin-bottom: 6px; overflow: hidden;
+        }
 
-      if (
-        finished ||
-        processing
-      ) {
-        return;
-      }
+        .style-preview svg { width: 32px; height: 32px; }
 
-      processing = true;
+        .style-info h4 { font-size: 11px; font-weight: 800; color: #fff; margin-bottom: 2px; text-align: center; line-height: 1.2; text-transform: uppercase; letter-spacing: .3px; }
+        .style-info p { font-size: 8.5px; color: var(--grey2); text-align: center; line-height: 1.3; }
 
-      try {
-        finished = true;
+        .loading-styles { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; grid-column: 1 / -1; }
+        .loading-styles p { font-size: 12px; color: var(--grey2); margin-top: 12px; }
+        .loading-spinner circle:last-child { stroke: var(--yellow); }
 
-        clearInterval(
-          interval
-        );
+        .reset-style-section { margin-top: 16px; padding: 0; }
 
-        collector.stop();
+        .reset-style-btn {
+            width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+            padding: 10px 16px; border-radius: 8px; font-size: 12px; font-weight: 800;
+            cursor: pointer; transition: all .2s; letter-spacing: .4px; text-transform: uppercase;
+            border: 1px solid rgba(200,100,0,0.35); background: rgba(180,60,0,0.12); color: #ff8833;
+        }
 
-        const payout =
-          Math.floor(
-            bet * multiplier
-          );
+        .reset-style-btn:hover { background: rgba(200,60,0,0.25); border-color: rgba(220,80,0,0.6); transform: translateY(-1px); }
+        .reset-style-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 
-        user.cash += payout;
+        /* ===== PREVIEW MODAL ===== */
+        body.modal-open .tab-content { overflow: hidden; pointer-events: none; }
 
-        saveData();
+        .preview-modal-overlay {
+            position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+            background: rgba(0,0,0,.85); backdrop-filter: blur(8px);
+            z-index: 1000; display: flex; align-items: center; justify-content: center;
+            padding: 16px; opacity: 0; transition: opacity .2s ease; pointer-events: auto;
+        }
 
-        await interaction.update({
-          embeds: [
-            embed(
-              `💰 Cashed out at **${multiplier.toFixed(2)}x**!\n\n` +
-              `Payout: **${money(payout)}** ${db.currency}.`,
-              COLOR_WIN,
-              "🚀 Crash 🚀"
-            )
-          ],
-          components: [
-            disabledRow(row)
-          ]
-        });
+        .preview-modal-overlay[hidden] { display: none; }
+        .preview-modal-overlay:not([hidden]) { opacity: 1; }
 
-      } finally {
-        processing = false;
-      }
-    }
-  );
+        .preview-modal {
+            background: #0f0f0f; border: 1px solid rgba(200,160,0,0.3);
+            border-radius: 12px; width: 100%;
+            max-width: calc(100vw - 32px); max-height: calc(100vh - 32px);
+            display: flex; flex-direction: column;
+            box-shadow: 0 20px 60px rgba(180,140,0,0.25);
+        }
 
-  collector.on(
-    "end",
-    async () => {
-      if (finished) {
-        return;
-      }
+        .preview-modal-header {
+            flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.05);
+        }
 
-      finished = true;
+        .preview-modal-title { font-size: 13px; font-weight: 800; color: #fff; letter-spacing: .3px; text-transform: uppercase; }
 
-      clearInterval(
-        interval
-      );
+        .preview-modal-close {
+            width: 22px; height: 22px; background: rgba(255,255,255,.07);
+            border: 1px solid rgba(255,255,255,.1); border-radius: 4px;
+            color: rgba(255,255,255,.6); font-size: 16px; line-height: 1; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; padding: 0; transition: all .15s;
+        }
 
-      user.cash += bet;
+        .preview-modal-close:hover { background: rgba(200,160,0,0.2); border-color: rgba(220,176,0,0.5); color: var(--yellow-bright); }
 
-      saveData();
+        .preview-modal-info { flex-shrink: 0; padding: 8px 16px; font-size: 10px; color: var(--grey2); background: rgba(180,140,0,0.05); border-bottom: 1px solid rgba(255,255,255,.03); }
+        .preview-modal-info #previewModalCount { color: var(--yellow-bright); font-weight: 700; }
 
-      await msg.edit({
-        embeds: [
-          embed(
-            `⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,
-            COLOR_NEUTRAL,
-            "🚀 Crash 🚀"
-          )
-        ],
-        components: [
-          disabledRow(row)
-        ]
-      }).catch(() => {});
-    }
-  );
-}
+        .preview-modal-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; }
+        .preview-modal-list::-webkit-scrollbar { width: 5px; }
+        .preview-modal-list::-webkit-scrollbar-track { background: transparent; }
+        .preview-modal-list::-webkit-scrollbar-thumb { background: rgba(180,140,0,0.3); border-radius: 3px; }
 
-/* ============================================================
-   SUMMER
-   ============================================================ */
+        .preview-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.03); }
+        .preview-row:last-child { border-bottom: none; }
+        .preview-time { flex-shrink: 0; font-family: monospace; font-size: 9px; color: var(--grey2); padding-top: 7px; width: 50px; text-align: right; user-select: none; }
 
-const SUMMER_PRIZES = [
-  {
-    amount: 1750000,
-    weight: 45,
-    label: "1,750,000"
-  },
-  {
-    amount: 25000000,
-    weight: 30,
-    label: "25,000,000"
-  },
-  {
-    amount: 65000000,
-    weight: 15,
-    label: "65,000,000"
-  },
-  {
-    amount: 100000000,
-    weight: 5,
-    label: "100,000,000 JACKPOT"
-  }
-];
+        .preview-text {
+            flex: 1; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+            border-radius: 4px; color: #fff; font-size: 11px; padding: 5px 8px;
+            resize: none; overflow-y: auto; min-height: 28px; max-height: 200px;
+            font-family: inherit; line-height: 1.4; transition: all .15s; box-sizing: border-box;
+        }
 
-async function summer(
-  message,
-  user
-) {
-  const last =
-    db.summer[
-      message.author.id
-    ] || 0;
+        .preview-text:focus { outline: none; border-color: var(--yellow); background: rgba(180,140,0,0.08); }
 
-  const left =
-    24 * 60 * 60 * 1000 -
-    (
-      Date.now() - last
-    );
+        .preview-modal-actions { flex-shrink: 0; display: flex; gap: 8px; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,.05); }
 
-  if (left > 0) {
-    return message.reply({
-      embeds: [
-        embed(
-          `⏳ Your Summer wheel is ready again in **${formatDuration(left)}**.`,
-          COLOR_LOSE,
-          "☀️ Summer ☀️"
-        )
-      ]
-    });
-  }
+        .preview-modal-btn { padding: 8px 18px; border-radius: 8px; font-size: 12px; font-weight: 800; cursor: pointer; transition: all .15s; border: none; font-family: inherit; letter-spacing: .3px; text-transform: uppercase; }
+        .preview-modal-btn:hover { opacity: .92; transform: translateY(-1px); }
+        .preview-modal-btn:active { transform: translateY(0); }
+        .preview-modal-cancel { background: rgba(255,255,255,.07); color: var(--grey2); border: 1px solid rgba(255,255,255,.1); }
+        .preview-modal-cancel:hover { background: rgba(255,255,255,.12); color: #ddd; }
+        .preview-modal-approve { background: linear-gradient(135deg, #8b0000, var(--yellow)); color: #fff; box-shadow: 0 2px 8px rgba(180,140,0,0.4); }
+        .preview-modal-approve:hover { box-shadow: 0 4px 14px rgba(200,160,0,0.5); }
 
-  const result =
-    weightedPick(
-      SUMMER_PRIZES
-    );
+        /* ===== WHISPER INFO ===== */
+        .whisper-info {
+            display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+            background: rgba(180,140,0,0.07); border: 1px solid rgba(180,140,0,0.18);
+            border-radius: 8px; margin-bottom: 8px; font-size: 10px; color: var(--grey2);
+        }
 
-  db.summer[
-    message.author.id
-  ] = Date.now();
+        .whisper-info-bottom { margin-top: 8px; margin-bottom: 0; justify-content: center; opacity: .45; border: none; background: transparent; padding: 4px 0; font-size: 9px; }
+        .whisper-info-bottom:hover { opacity: .75; }
 
-  saveData();
+        /* ===== ANIMATE TAB ===== */
+        #animateTab { max-height: calc(100vh - 80px); overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+        #animateTab::-webkit-scrollbar { width: 4px; }
+        #animateTab::-webkit-scrollbar-thumb { background: rgba(180,140,0,0.2); border-radius: 2px; }
+        #animateTab::-webkit-scrollbar-thumb:hover { background: rgba(200,160,0,0.4); }
 
-  const row =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `summer:spin:${message.author.id}`
-          )
-          .setLabel(
-            "☀️ SPIN"
-          )
-          .setStyle(
-            ButtonStyle.Primary
-          )
-      );
+        #animateTab .anim-preview-box { position: relative; height: 44px; margin-bottom: 8px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.05); border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+        #animateTab .anim-preview-text { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: .04em; white-space: nowrap; display: inline-flex; }
+        #animateTab .anim-preview-label { position: absolute; bottom: 2px; right: 5px; font-size: 7px; color: rgba(255,255,255,.2); text-transform: uppercase; letter-spacing: .08em; }
+        #animateTab .anim-preview-char { display: inline-block; animation-fill-mode: both; animation-duration: .5s; animation-timing-function: ease-out; }
 
-  const msg =
-    await message.reply({
-      embeds: [
-        embed(
-          `☀️ **SUMMER DAILY WHEEL** ☀️\n\n` +
-          `🎁 1,750,000 — 45%\n` +
-          `🎁 25,000,000 — 30%\n` +
-          `🎁 65,000,000 — 15%\n` +
-          `🏆 100,000,000 JACKPOT — 5%\n\n` +
-          `Press **SPIN**. You get one spin every 24 hours.`,
-          COLOR_PURPLE,
-          "☀️ Summer ☀️"
-        )
-      ],
-      components: [row]
-    });
+        #animateTab .animate-section { margin-bottom: 8px; padding: 8px 10px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.05); border-radius: 6px; transition: border-color .2s, background .2s; }
+        #animateTab .animate-section:hover { border-color: rgba(180,140,0,0.2); }
+        #animateTab .animate-section.section-active { border-color: rgba(200,160,0,0.35); background: rgba(180,140,0,0.06); }
 
-  const collector =
-    msg.createMessageComponentCollector({
-      time: 30000,
-      max: 1
-    });
+        #animateTab .animate-section-title { display: flex; align-items: center; gap: 8px; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; color: rgba(255,255,255,.4); margin-bottom: 8px; justify-content: center; }
+        #animateTab .animate-section-title:before,
+        #animateTab .animate-section-title:after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.06); }
+        #animateTab .animate-section.section-active .animate-section-title { color: rgba(255,220,0,0.8); }
+        #animateTab .animate-section.section-active .animate-section-title:before,
+        #animateTab .animate-section.section-active .animate-section-title:after { background: rgba(180,140,0,0.25); }
 
-  collector.on(
-    "collect",
-    async interaction => {
-      if (
-        interaction.user.id !==
-        message.author.id
-      ) {
-        return interaction.reply({
-          content:
-            "❌ This isn't your wheel.",
-          ephemeral: true
-        });
-      }
+        #animateTab .animate-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 6px; }
+        #animateTab .animate-row:last-child { margin-bottom: 0; }
+        #animateTab .animate-row label { font-size: 10px; color: rgba(255,255,255,.5); min-width: 58px; flex-shrink: 0; }
 
-      await interaction.deferUpdate();
+        #animateTab .animate-select {
+            flex: 1; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
+            border-radius: 5px; color: #fff; font-size: 10px; padding: 4px 20px 4px 7px;
+            outline: none; cursor: pointer; -webkit-appearance: none; appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23666' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: right 6px center;
+        }
 
-      for (
-        let n = 0;
-        n < 8;
-        n++
-      ) {
-        await new Promise(resolve =>
-          setTimeout(
-            resolve,
-            120
-          )
-        );
+        #animateTab .animate-select:focus { border-color: var(--yellow); }
+        #animateTab .animate-select option { background: #1a1a1a; color: #fff; }
 
-        await msg.edit({
-          embeds: [
-            embed(
-              `☀️ **SUMMER WHEEL**\n\n` +
-              `🔄 ${
-                [
-                  "1,750,000",
-                  "25,000,000",
-                  "65,000,000",
-                  "100,000,000 JACKPOT"
-                ][n % 4]
-              }\n\n🎡 Spinning...`,
-              COLOR_PURPLE,
-              "☀️ Summer ☀️"
-            )
-          ],
-          components: []
-        }).catch(() => {});
-      }
+        #animateTab .animate-slider-wrap { flex: 1; display: flex; align-items: center; gap: 6px; }
+        #animateTab .animate-slider { flex: 1; -webkit-appearance: none; height: 3px; background: rgba(255,255,255,.1); border-radius: 2px; outline: none; }
+        #animateTab .animate-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--yellow); cursor: pointer; border: 2px solid rgba(0,0,0,.3); }
 
-      user.cash +=
-        result.amount;
+        #animateTab .animate-val { font-size: 9px; color: rgba(255,255,255,.4); min-width: 32px; text-align: right; font-family: monospace; }
 
-      saveData();
+        #animateTab .animate-speed-btns { display: flex; gap: 3px; flex: 1; }
+        #animateTab .speed-btn { flex: 1; padding: 3px 0; font-size: 9px; font-weight: 700; text-transform: uppercase; border: 1px solid rgba(255,255,255,.08); border-radius: 4px; background: rgba(255,255,255,.05); color: rgba(255,255,255,.5); cursor: pointer; transition: all .2s; text-align: center; }
+        #animateTab .speed-btn:hover { background: rgba(180,140,0,0.12); color: rgba(255,255,255,.8); }
+        #animateTab .speed-btn.active { background: rgba(180,140,0,0.22); border-color: rgba(220,176,0,0.5); color: #ffdc50; }
 
-      await logEvent(
-        message.guild,
-        `☀️ Summer result for <@${message.author.id}>: **${result.label}** ${db.currency}.`,
-        COLOR_WIN
-      );
+        #animateTab .animate-actions { display: flex; gap: 6px; margin-top: 8px; }
 
-      await secretDM(
-        `☀️ Summer result: **${message.author.tag}** won **${result.label}**.`
-      );
+        #animateTab .animate-apply-btn {
+            flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
+            padding: 8px 12px; background: linear-gradient(135deg, #8b0000, var(--yellow));
+            color: #fff; border: none; border-radius: 6px; font-size: 11px; font-weight: 800;
+            cursor: pointer; transition: all .2s; text-transform: uppercase; letter-spacing: .4px;
+        }
 
-      await msg.edit({
-        embeds: [
-          embed(
-            `🎉 **THE WHEEL STOPPED!**\n\n` +
-            `🏆 Prize: **${result.label}** ${db.currency}\n\n` +
-            `Your new cash: **${money(user.cash)}** ${db.currency}.`,
-            COLOR_WIN,
-            "☀️ Summer ☀️"
-          )
-        ],
-        components: []
-      }).catch(() => {});
-    }
-  );
-}
+        #animateTab .animate-apply-btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+        #animateTab .animate-apply-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; filter: none; }
 
-/* ============================================================
-   INFO
-   ============================================================ */
+        #animateTab .animate-clear-btn {
+            display: flex; align-items: center; justify-content: center; gap: 4px;
+            padding: 8px 10px; background: rgba(255,255,255,.06); color: rgba(255,255,255,.6);
+            border: 1px solid rgba(255,255,255,.1); border-radius: 6px; font-size: 10px;
+            font-weight: 600; cursor: pointer; transition: all .2s;
+        }
 
-function buildInfoEmbed() {
-  return embed(
-    [
-      "**🃏 Blackjack — `$bj <amount|half|all>`**",
-      "Natural blackjack chance: **23.4%**. Hit / Stand / Double. Natural pays 2.5x.",
-      "",
+        #animateTab .animate-clear-btn:hover { background: rgba(180,140,0,0.12); border-color: rgba(200,160,0,0.4); color: #ffdc50; }
 
-      "**🐔 Cockfight — `$cf <amount|half|all>`**",
-      "Starts at 55% and increases by 1% after wins, up to 82%.",
-      "",
+        #animateTab .animate-info { display: flex; align-items: center; gap: 5px; margin: 6px 0; font-size: 9px; color: rgba(255,255,255,.3); }
 
-      "**🎲 Higher or Lower — `$hl <amount|half|all>`**",
-      "Choose Higher, Same or Lower. Same pays 8x.",
-      "",
+        #animateTab .ae-color-row { display: flex; align-items: center; gap: 5px; flex: 1; }
+        #animateTab .ae-color-swatch { width: 16px; height: 16px; min-width: 16px; border: 1px solid rgba(255,255,255,.25); border-radius: 2px; cursor: pointer; padding: 0; -webkit-appearance: none; appearance: none; background: transparent; }
+        #animateTab .ae-color-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+        #animateTab .ae-color-swatch::-webkit-color-swatch { border: none; border-radius: 2px; }
+        #animateTab .ae-hex-input { width: 56px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1); border-radius: 3px; color: #aaa; font-size: 9px; font-family: monospace; padding: 2px 4px; outline: none; text-transform: uppercase; }
+        #animateTab .ae-hex-input:focus { border-color: var(--yellow); color: #fff; }
+        #animateTab .ae-color-presets { display: flex; gap: 3px; margin-left: 2px; }
+        #animateTab .ae-color-dot { width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(255,255,255,.12); cursor: pointer; padding: 0; -webkit-appearance: none; transition: border-color .15s, transform .15s; }
+        #animateTab .ae-color-dot:hover { border-color: rgba(255,255,255,.5); transform: scale(1.15); }
 
-      "**🍀 CoinFlip — `$ht <amount|half|all>`**",
-      "Heads/Tails, pays 2x.",
-      "",
+        #animateTab .ws-color-section { margin-bottom: 6px; }
+        #animateTab .ws-color-label { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; font-size: 10px; color: rgba(255,255,255,.5); }
+        #animateTab .ae-color-swatch-mini { width: 12px; height: 12px; min-width: 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 2px; cursor: pointer; padding: 0; -webkit-appearance: none; background: transparent; }
+        #animateTab .ae-color-swatch-mini::-webkit-color-swatch-wrapper { padding: 0; }
+        #animateTab .ae-color-swatch-mini::-webkit-color-swatch { border: none; border-radius: 2px; }
+        #animateTab .ae-hex-mini { width: 50px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.07); border-radius: 3px; color: rgba(255,255,255,.4); font-size: 8px; font-family: monospace; padding: 2px 4px; outline: none; text-transform: uppercase; margin-left: auto; }
+        #animateTab .ae-hex-mini:focus { border-color: var(--yellow); color: #fff; }
+        #animateTab .ws-color-grid { display: flex; flex-wrap: wrap; gap: 3px; }
+        #animateTab .ws-dot { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,.1); cursor: pointer; padding: 0; -webkit-appearance: none; transition: border-color .12s, transform .12s; }
+        #animateTab .ws-dot:hover { border-color: rgba(255,255,255,.6); transform: scale(1.15); }
+        #animateTab .ws-shape-picker { display: flex; gap: 4px; margin-bottom: 8px; }
+        #animateTab .ws-shape-btn { flex: 1; height: 28px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); border-radius: 4px; cursor: pointer; padding: 2px; transition: all .15s; }
+        #animateTab .ws-shape-btn svg { width: 100%; height: 100%; }
+        #animateTab .ws-shape-btn:hover { background: rgba(180,140,0,0.12); border-color: rgba(200,160,0,0.35); }
+        #animateTab .ws-shape-btn.active { background: rgba(180,140,0,0.2); border-color: rgba(220,176,0,0.5); }
 
-      "**💣 Mines — `$mines <amount|half|all>`**",
-      "3x3, one bomb. Multipliers: 1.1x → 9.42x. 1.5 second tile delay. Cash out anytime.",
-      "",
+        #animateTab .animate-preset-bar { display: flex; gap: 4px; margin-bottom: 4px; align-items: center; }
+        #animateTab .preset-btn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1); border-radius: 5px; color: rgba(255,255,255,.5); font-size: 11px; cursor: pointer; transition: all .2s; }
+        #animateTab .preset-btn:hover { background: rgba(180,140,0,0.15); color: #fff; }
 
-      "**⛏️ Goldmine — `$gm <amount|half|all>`**",
-      "24 tiles, 14 bombs. 3🪨 ×1.1, 2🪙 ×2.5, 2💎 ×3.5, 1💰 ×6.5, 1🏮 ×20, 1🗺️. 1.5 second tile delay.",
-      "",
+        #animateTab .preset-save-dialog { display: flex; gap: 4px; margin-bottom: 8px; align-items: center; padding: 5px 7px; background: rgba(180,140,0,0.08); border: 1px solid rgba(180,140,0,0.25); border-radius: 6px; }
+        #animateTab .preset-name-input { flex: 1; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.12); border-radius: 4px; color: #fff; font-size: 10px; padding: 4px 7px; outline: none; }
+        #animateTab .preset-name-input:focus { border-color: var(--yellow); }
+        #animateTab .preset-name-input::placeholder { color: rgba(255,255,255,.25); }
+        #animateTab .preset-confirm-btn { padding: 4px 10px; background: rgba(180,140,0,0.22); border: 1px solid rgba(200,160,0,0.35); border-radius: 4px; color: #ffdc50; font-size: 10px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+        #animateTab .preset-confirm-btn:hover { background: rgba(200,160,0,0.35); }
+        #animateTab .preset-cancel-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); border-radius: 4px; color: rgba(255,255,255,.4); font-size: 11px; cursor: pointer; }
+        #animateTab .preset-cancel-btn:hover { background: rgba(180,140,0,0.15); border-color: rgba(200,160,0,0.4); color: #ff4444; }
 
-      "**🎰 Slots — `$slots <amount|half|all>`**",
-      "3 reels. Triple 7️⃣ = 20x, ⭐ = 10x, 🍇 = 6x, 🍊 = 5x, 🍋 = 4x, 🍒 = 3x.",
-      "",
+        #animateTab .char-amounts-group { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.04); }
+        #animateTab .char-amt-row label { color: rgba(255,220,0,0.5); font-size: 9px; }
 
-      "**🎡 Roulette — `$roulette <amount|half|all> <red/black/green/0-36>`**",
-      "Red/Black = 2x, Green = 14x, exact number = 30x.",
-      "",
+        html, body { -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 
-      "**🚀 Crash — `$crash <amount|half|all>`**",
-      "Crash point is limited to 1.00x–75.00x.",
-      "",
+        @media (max-width: 450px) { .styles-grid { grid-template-columns: repeat(2, 1fr); } }
 
-      "**🎲 Random — `$random <amount|half|all>`**",
-      "Possible results: 0x, 0.5x, 1.2x, 2x, 3x, 5x or 10x.",
-      "",
+        /* ===== ANIM KEYFRAMES ===== */
+        @keyframes pc-fi  { 0% { opacity: var(--pc-op, 0); } to { opacity: 1; } }
+        @keyframes pc-su  { 0% { opacity: var(--pc-op, 0); transform: translateY(var(--pc-pos, 12px)); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pc-sd  { 0% { opacity: var(--pc-op, 0); transform: translateY(calc(var(--pc-pos, 12px) * -1)); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pc-sl  { 0% { opacity: var(--pc-op, 0); transform: translate(var(--pc-pos, 15px)); } to { opacity: 1; transform: translate(0); } }
+        @keyframes pc-sc  { 0% { opacity: var(--pc-op, 0); transform: scale(var(--pc-scale, 0)); } to { opacity: 1; transform: scale(1); } }
+        @keyframes pc-ro  { 0% { opacity: var(--pc-op, 0); transform: rotate(var(--pc-rot, 45deg)); } to { opacity: 1; transform: rotate(0); } }
+        @keyframes pc-bl  { 0% { opacity: var(--pc-op, 0); filter: blur(var(--pc-blur, 8px)); } to { opacity: 1; filter: blur(0); } }
+        @keyframes pc-tr  { 0% { letter-spacing: var(--pc-track, .3em); opacity: .3; } to { letter-spacing: .04em; opacity: 1; } }
+        @keyframes pc-dr  { 0% { opacity: var(--pc-op, 0); transform: translateY(calc(var(--pc-pos, 20px) * -1)) scale(var(--pc-scale, 0)); } 60% { opacity: 1; transform: translateY(3px) scale(1.05); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
-      "**🔒 Command Control**",
-      "`$disable <command>` · `$undisable <command>`",
-      "",
+        #animateTab .anim-preview-char.pc-typewriter { opacity: var(--pc-op, 0); transition: opacity .01s step-end; animation: none; }
+        #animateTab .anim-preview-char.pc-typewriter.pc-visible { opacity: 1; }
+        #animateTab .anim-preview-char.pc-fade { opacity: var(--pc-op, 0); animation-name: pc-fi; }
+        #animateTab .anim-preview-char.pc-slideUp { opacity: var(--pc-op, 0); animation-name: pc-su; }
+        #animateTab .anim-preview-char.pc-slideDown { opacity: var(--pc-op, 0); animation-name: pc-sd; }
+        #animateTab .anim-preview-char.pc-slideLeft { opacity: var(--pc-op, 0); animation-name: pc-sl; }
+        #animateTab .anim-preview-char.pc-scale { opacity: var(--pc-op, 0); animation-name: pc-sc; }
+        #animateTab .anim-preview-char.pc-rotate { opacity: var(--pc-op, 0); animation-name: pc-ro; transform-origin: center bottom; }
+        #animateTab .anim-preview-char.pc-blur { opacity: var(--pc-op, 0); animation-name: pc-bl; }
+        #animateTab .anim-preview-char.pc-tracking { animation-name: pc-tr; }
+        #animateTab .anim-preview-char.pc-drop { opacity: var(--pc-op, 0); animation-name: pc-dr; animation-duration: .6s; }
+    </style>
+</head>
+<body>
+    <!-- HEADER -->
+    <div class="deco-header">
+        <img class="header-avatar" src="data:image/jpeg;base64,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" alt="Zeno Yali">
+        <div class="header-text">
+            <div class="header-title">דה <span>קוקי</span></div>
+            <div class="header-by">by <strong>THE COHEN</strong></div>
+        </div>
+        <div class="header-badge">v4.1.7</div>
+    </div>
 
-      "**☀️ Summer — `$summer`**",
-      "One free spin every 24 hours.",
-      "",
+    <div id="mainScreen" class="main-screen" style="display: none;">
+        <div class="content-wrapper">
+            
+            <!-- Tab Navigation -->
+            <div class="tab-navigation">
+                <button class="tab-btn active" data-tab="create">ליצור כתוביות</button>
+                <button class="tab-btn" data-tab="styles">סטיילים</button>
+                <button class="tab-btn" data-tab="animate">אנימציות</button>
+            </div>
+            
+            <!-- Create Subtitles Tab -->
+            <div class="tab-content active" id="createTab">
+                <div class="layer-mode-toggle">
+                    <span class="toggle-label">רב שכבות</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="layerModeToggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-label">שכבה אחת</span>
+                    <div class="toggle-divider"></div>
+                    <label class="precomp-toggle" title="Auto pre-compose after creation for better performance">
+                        <input type="checkbox" id="precompToggle">
+                        <span class="precomp-checkbox"></span>
+                        <span class="precomp-label">Pre-comp</span>
+                    </label>
+                    <label class="precomp-toggle" title="Review and edit subtitle text before creating layers">
+                        <input type="checkbox" id="previewToggle">
+                        <span class="precomp-checkbox"></span>
+                        <span class="precomp-label">תצוגה מקדימה</span>
+                    </label>
+                </div>
 
-      `_Minimum bet: ${money(MIN_BET)} ${db.currency}. ${amountHelp()}`
-    ].join("\n"),
-    COLOR_INFO,
-    "📖 Casino Bot — Rules"
-  );
-}
+                <div class="font-picker" id="fontPicker">
+                    <div class="font-picker-header" id="fontPickerHeader" role="button" tabindex="0" aria-expanded="false">
+                        <svg class="font-picker-icon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2v12h2V9h6v5h2V2h-2v5H5V2H3z"/></svg>
+                        <span class="font-picker-header-label">פונט</span>
+                        <span class="font-picker-header-divider">·</span>
+                        <span class="font-picker-header-preview" id="fontPickerHeaderPreview" hidden>Aa</span>
+                        <span class="font-picker-header-name" id="fontPickerHeaderName">בְּרִירַת מֶחדָל (Arial / auto-detect)</span>
+                        <button type="button" id="fontPickerClear" class="font-picker-clear" title="Reset to default" hidden>&times;</button>
+                        <svg class="font-picker-chevron" width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M2 4l3 3 3-3" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+                    </div>
+                    <div class="font-picker-body">
+                        <input type="text" class="font-picker-search" id="fontPickerSearch" placeholder="Search fonts (optional)..." autocomplete="off">
+                        <div class="font-picker-list" id="fontPickerList" role="listbox"></div>
+                    </div>
+                </div>
 
-/* ============================================================
-   ERROR HANDLERS
-   ============================================================ */
+                <div class="font-picker lang-picker" id="langPicker">
+                    <div class="font-picker-header" id="langPickerHeader" role="button" tabindex="0" aria-expanded="false">
+                        <svg class="font-picker-icon" width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.2"/><ellipse cx="8" cy="8" rx="3" ry="6.5" stroke="currentColor" stroke-width="1.2"/><line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" stroke-width="1.2"/></svg>
+                        <span class="font-picker-header-label">שָׂפָה</span>
+                        <span class="font-picker-header-divider">·</span>
+                        <span class="font-picker-header-name" id="langPickerHeaderName">זיהוי אוטומטי</span>
+                        <button type="button" id="langPickerClear" class="font-picker-clear" title="Reset to auto-detect" hidden>&times;</button>
+                        <svg class="font-picker-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 4l3 3 3-3" stroke="currentColor" stroke-width="1.5"/></svg>
+                    </div>
+                    <div class="font-picker-body">
+                        <input type="text" class="font-picker-search" id="langPickerSearch" placeholder="Search languages..." autocomplete="off">
+                        <div class="font-picker-list" id="langPickerList" role="listbox"></div>
+                    </div>
+                </div>
 
-process.on(
-  "uncaughtException",
-  err => {
-    console.error(
-      "❌ UNCAUGHT EXCEPTION:",
-      err
-    );
-  }
-);
+                <div class="position-toggle" id="positionToggle">
+                    <span class="position-toggle-label">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="3.5" y="9.5" width="9" height="2" fill="currentColor"/></svg>
+                        מַצָב
+                    </span>
+                    <div class="position-toggle-buttons">
+                        <button type="button" class="position-toggle-btn" data-position="center">מֶרְכָּז</button>
+                        <button type="button" class="position-toggle-btn active" data-position="below">לְהַלָן</button>
+                    </div>
+                </div>
 
-process.on(
-  "unhandledRejection",
-  err => {
-    console.error(
-      "❌ UNHANDLED REJECTION:",
-      err
-    );
-  }
-);
+                <div class="action-cards">
+                    <div class="action-card" id="generateBtn" data-mode="words">
+                        <div class="card-bg-gradient words-gradient"></div>
+                        <div class="card-icon-modern">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="4" y="12" width="6" height="8" rx="1" fill="white" opacity="0.9"/><rect x="13" y="8" width="6" height="12" rx="1" fill="white" opacity="0.9"/><rect x="22" y="10" width="6" height="10" rx="1" fill="white" opacity="0.9"/></svg>
+                        </div>
+                        <div class="card-content">
+                            <h3>מילה אחת</h3>
+                            <p>Eכל מילה מופיעה בנפרד עם תזמון</p>
+                            <div class="card-badge">מהיר ודינמי</div>
+                        </div>
+                        <div class="card-progress"></div>
+                    </div>
+                    
+                    <div class="action-card" id="wordPairsBtn" data-mode="wordpairs">
+                        <div class="card-bg-gradient wordpairs-gradient"></div>
+                        <div class="card-icon-modern">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="6" y="11" width="8" height="10" rx="1" fill="white" opacity="0.9"/><rect x="18" y="11" width="8" height="10" rx="1" fill="white" opacity="0.9"/></svg>
+                        </div>
+                        <div class="card-content">
+                            <h3>שתי מילים</h3>
+                            <p>שתי מילים לכל שכבת טקסט עם תזמון מושלם</p>
+                            <div class="card-badge">Balanced Flow</div>
+                        </div>
+                        <div class="card-progress"></div>
+                    </div>
+                    
+                    <div class="action-card" id="smartWordsBtn" data-mode="smartwords">
+                        <div class="card-bg-gradient smartwords-gradient"></div>
+                        <div class="card-icon-modern">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="4" y="11" width="4" height="10" rx="1" fill="white" opacity="0.9"/><rect x="10" y="11" width="6" height="10" rx="1" fill="white" opacity="0.9"/><rect x="18" y="11" width="4" height="10" rx="1" fill="white" opacity="0.9"/><circle cx="25" cy="16" r="2.5" fill="white" opacity="0.9"/></svg>
+                        </div>
+                        <div class="card-content">
+                            <h3>שלוש מילים</h3>
+                            <p>בינה מלאכותית מקבצת לפי משמעות, ביטויים קצרים</p>
+                            <div class="card-badge">Smart</div>
+                        </div>
+                        <div class="card-progress"></div>
+                    </div>
+                    
+                    <div class="action-card" id="smartExtendedBtn" data-mode="smartextended">
+                        <div class="card-bg-gradient smartextended-gradient"></div>
+                        <div class="card-icon-modern">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="3" y="11" width="5" height="10" rx="1" fill="white" opacity="0.9"/><rect x="10" y="11" width="5" height="10" rx="1" fill="white" opacity="0.9"/><rect x="17" y="11" width="5" height="10" rx="1" fill="white" opacity="0.9"/><rect x="24" y="11" width="5" height="10" rx="1" fill="white" opacity="0.9"/></svg>
+                        </div>
+                        <div class="card-content">
+                            <h3>Smart Long</h3>
+                            <p>בינה מלאכותית מקבצת לפי משמעות, ביטויים ארוכים יותר</p>
+                            <div class="card-badge">מוּרחָב</div>
+                        </div>
+                        <div class="card-progress"></div>
+                    </div>
+                    
+                    <div class="action-card" id="sentenceBtn" data-mode="sentences">
+                        <div class="card-bg-gradient sentences-gradient"></div>
+                        <div class="card-icon-modern">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="6" y="10" width="20" height="3" rx="1.5" fill="white" opacity="0.9"/><rect x="6" y="15" width="16" height="3" rx="1.5" fill="white" opacity="0.9"/><rect x="6" y="20" width="18" height="3" rx="1.5" fill="white" opacity="0.9"/></svg>
+                        </div>
+                        <div class="card-content">
+                            <h3>Sentences</h3>
+                            <p>ביטויים שלמים בבלוקים מרובי שורות</p>
+                            <div class="card-badge">קריאה טבעית</div>
+                        </div>
+                        <div class="card-progress"></div>
+                    </div>
+                </div>
+                
+                <!-- Custom Mode Expander -->
+                <div class="custom-expander" id="customBtn">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="4" width="6" height="3" rx="1" fill="currentColor" opacity="0.5"/><rect x="9" y="4" width="6" height="3" rx="1" fill="currentColor" opacity="0.5"/><rect x="3" y="9" width="10" height="3" rx="1" fill="currentColor" opacity="0.3"/><circle cx="13" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+                    <span>Custom</span>
+                    <span class="custom-expander-hint">Configure words, lines & safe zone</span>
+                    <svg class="custom-chevron" width="10" height="10" viewBox="0 0 10 10"><path d="M2.5 3.5L5 6.5L7.5 3.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+                </div>
+                
+                <!-- Custom Mode Settings -->
+                <div id="customSettings" class="custom-settings" style="display:none;">
+                    <div id="customSettingsBody" class="custom-settings-body">
+                        <div class="custom-presets">
+                            <button class="custom-preset-btn" data-preset="single" title="1 word per layer">Single</button>
+                            <button class="custom-preset-btn active" data-preset="short" title="2–4 words">Short</button>
+                            <button class="custom-preset-btn" data-preset="medium" title="3–8 words">Medium</button>
+                            <button class="custom-preset-btn" data-preset="long" title="5–15 words, multi-line">Long</button>
+                            <button class="custom-preset-btn" data-preset="full" title="All text">Full</button>
+                        </div>
+                        <div class="custom-row">
+                            <label>מילים קטנות</label>
+                            <input type="range" id="customMinWords" class="custom-slider" min="1" max="20" value="1" step="1">
+                            <span id="customMinWordsVal" class="custom-val">1</span>
+                        </div>
+                        <div class="custom-row">
+                            <label>מקסימום מילים</label>
+                            <input type="range" id="customMaxWords" class="custom-slider" min="1" max="50" value="4" step="1">
+                            <span id="customMaxWordsVal" class="custom-val">4</span>
+                        </div>
+                        <div class="custom-row">
+                            <label>מקסימום קווים</label>
+                            <input type="range" id="customMaxLines" class="custom-slider" min="1" max="5" value="1" step="1">
+                            <span id="customMaxLinesVal" class="custom-val">1</span>
+                        </div>
+                        <div class="custom-row">
+                            <label>מקום בטוח</label>
+                            <input type="range" id="customSafeZone" class="custom-slider" min="50" max="100" value="80" step="5">
+                            <span id="customSafeZoneVal" class="custom-val">80%</span>
+                        </div>
+                        <div class="custom-row">
+                            <label>Break On</label>
+                            <div class="custom-break-btns">
+                                <button class="custom-break-btn active" data-sensitivity="high" title="Break on any pause">צָמוּד</button>
+                                <button class="custom-break-btn" data-sensitivity="medium" title="Natural pauses">טִבעִי</button>
+                                <button class="custom-break-btn" data-sensitivity="low" title="Only long pauses">מְשׁוּחרָר</button>
+                                <button class="custom-break-btn" data-sensitivity="off" title="No pause detection">כבוי</button>
+                            </div>
+                        </div>
+                        <div class="custom-row">
+                            <label></label>
+                            <label class="custom-check">
+                                <input type="checkbox" id="customSmartBreaks" checked>
+                                <span>הימנעו ממילות יחס נגררות</span>
+                            </label>
+                        </div>
+                        <button id="customCreateBtn" class="custom-create-btn">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10.97 4.97a.75.75 0 011.07 1.05l-3.99 4.99a.75.75 0 01-1.08.02L4.324 8.384a.75.75 0 111.06-1.06l2.094 2.093 3.473-4.425z"/></svg>
+                            צור כתוביות מותאמות אישית
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="tools-toolbar">
+                    <button id="selectAllBtn" class="tool-btn tool-select" title="Select All [AC] Layers">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 0a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2V2a2 2 0 00-2-2H2zm10.03 4.97a.75.75 0 010 1.06l-5 5a.75.75 0 01-1.06 0l-2.5-2.5a.75.75 0 111.06-1.06L6.5 9.44l4.47-4.47a.75.75 0 011.06 0z"/></svg>
+                        <span>לבחור הכל</span>
+                    </button>
+                    <button id="removePunctuationBtn" class="tool-btn tool-punctuation" title="Remove Punctuation">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.146 2.854a.5.5 0 11.708-.708L8 7.293l5.146-5.147a.5.5 0 01.708.708L8.707 8l5.147 5.146a.5.5 0 01-.708.708L8 8.707l-5.146 5.147a.5.5 0 01-.708-.708L7.293 8 2.146 2.854z"/></svg>
+                        <span>סימני פיסוק</span>
+                    </button>
+                    <button id="deleteAllBtn" class="tool-btn tool-delete" title="Delete All [AC] Layers">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 016 6v6a.5.5 0 01-1 0V6a.5.5 0 01.5-.5zm2.5 0a.5.5 0 01.5.5v6a.5.5 0 01-1 0V6a.5.5 0 01.5-.5zm3 .5a.5.5 0 00-1 0v6a.5.5 0 001 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 01-1 1H13v9a2 2 0 01-2 2H5a2 2 0 01-2-2V4h-.5a1 1 0 01-1-1V2a1 1 0 011-1H6a1 1 0 011-1h2a1 1 0 011 1h3.5a1 1 0 011 1v1zM4.118 4L4 4.059V13a1 1 0 001 1h6a1 1 0 001-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>
+                        <span>למחוק הכל</span>
+                    </button>
+                </div>
+                
+                <div class="srt-toolbar">
+                    <button id="importSrtBtn" class="srt-btn srt-import" title="Import SRT file">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 01.5.5v2.5a1 1 0 001 1h12a1 1 0 001-1v-2.5a.5.5 0 011 0v2.5a2 2 0 01-2 2H2a2 2 0 01-2-2v-2.5a.5.5 0 01.5-.5z"/><path d="M7.646 1.146a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 2.707V11.5a.5.5 0 01-1 0V2.707L5.354 4.854a.5.5 0 11-.708-.708l3-3z" transform="rotate(180 8 8)"/></svg>
+                        <span>Import SRT</span>
+                    </button>
+                    <button id="exportSrtBtn" class="srt-btn srt-export" title="Export SRT from timeline">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 01.5.5v2.5a1 1 0 001 1h12a1 1 0 001-1v-2.5a.5.5 0 011 0v2.5a2 2 0 01-2 2H2a2 2 0 01-2-2v-2.5a.5.5 0 01.5-.5z"/><path d="M7.646 1.146a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 2.707V11.5a.5.5 0 01-1 0V2.707L5.354 4.854a.5.5 0 11-.708-.708l3-3z"/></svg>
+                        <span>Export SRT</span>
+                    </button>
+                </div>
+                
+                <div class="progress-row" id="progressContainer" hidden>
+                    <div class="progress-wrapper">
+                        <div class="progress-bar-modern" id="progressBar"></div>
+                    </div>
+                    <button type="button" id="cancelBtn" class="cancel-btn" title="Cancel transcription">
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2 L8 8 M8 2 L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    </button>
+                </div>
+                
+                <div id="status" class="status-console">
+                    מוכן • בחר שכבה ומצב
+                </div>
+                
+                <div class="whisper-info whisper-info-bottom">
+                    <span>MP3, WAV, M4A, MP4, MOV, AVI, MKV, WEBM</span>
+                </div>
 
-/* ============================================================
-   LOGIN
-   ============================================================ */
+                <!-- Subtitle Text Editor Modal -->
+                <div class="preview-modal-overlay" id="previewModalOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="previewModalTitle">
+                    <div class="preview-modal">
+                        <div class="preview-modal-header">
+                            <span class="preview-modal-title" id="previewModalTitle">סקירת כתוביות</span>
+                            <button class="preview-modal-close" id="previewModalClose" aria-label="Close" type="button">&times;</button>
+                        </div>
+                        <div class="preview-modal-info">
+                            <span id="previewModalCount">0</span> ייווצרו שכבות · ערוך את הטקסט למטה
+                        </div>
+                        <div class="preview-modal-list" id="previewModalList"></div>
+                        <div class="preview-modal-actions">
+                            <button class="preview-modal-btn preview-modal-cancel" id="previewModalCancel" type="button">לְבַטֵל</button>
+                            <button class="preview-modal-btn preview-modal-approve" id="previewModalApprove" type="button">✓ לִיצוֹר</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-if (
-  !process.env.DISCORD_TOKEN
-) {
-  console.error(
-    "❌ DISCORD_TOKEN is missing."
-  );
-} else {
-  client.login(
-    process.env.DISCORD_TOKEN
-  ).catch(err => {
-    console.error(
-      "❌ Discord login failed:",
-      err
-    );
-  });
-}
+            <!-- Styles Tab -->
+            <div class="tab-content" id="stylesTab">
+                <div class="styles-info">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zM7 5h2v2H7V5zm0 3h2v5H7V8z"/></svg>
+                    <span>סגנונות קיימים רק על <strong>כמה שכבות</strong> מצב</span>
+                    <button id="refreshStylesBtn" class="refresh-styles-btn" title="Refresh styles from server">
+                        <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3a5 5 0 014.546 2.914.5.5 0 00.908-.418A6 6 0 108 14v-1a5 5 0 110-10z"/><path d="M8 4.466V.534a.25.25 0 01.41-.192L10.77 2.308a.25.25 0 010 .384L8.41 4.658A.25.25 0 018 4.466z"/></svg>
+                    </button>
+                </div>
+                <div class="styles-grid" id="stylesGrid">
+                    <div class="loading-styles">
+                        <svg class="loading-spinner" width="40" height="40" viewBox="0 0 40 40">
+                            <circle cx="20" cy="20" r="18" fill="none" stroke="rgba(180,140,0,0.2)" stroke-width="3"/>
+                            <circle cx="20" cy="20" r="18" fill="none" stroke="#c8960b" stroke-width="3" stroke-dasharray="90 90" stroke-linecap="round">
+                                <animateTransform attributeName="transform" type="rotate" from="0 20 20" to="360 20 20" dur="1s" repeatCount="indefinite"/>
+                            </circle>
+                        </svg>
+                        <p>טוען סגנונות מהשרת...</p>
+                    </div>
+                </div>
+                <div class="reset-style-section">
+                    <button id="resetStyleBtn" class="reset-style-btn">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3a5 5 0 11-4.546 2.914.5.5 0 00-.908-.418A6 6 0 108 2v1z"/><path d="M8 4.466V.534a.25.25 0 00-.41-.192L5.23 2.308a.25.25 0 000 .384l2.36 1.966A.25.25 0 008 4.466z"/></svg>
+                        Reset Style
+                    </button>
+                </div>
+                <div id="styleStatus" class="status-console">בחר סגנון להחלת</div>
+            </div>
+            
+            <!-- Animate Tab -->
+            <div class="tab-content" id="animateTab">
+
+  <!-- Preview Box -->
+  <div class="anim-preview-box">
+    <span class="anim-preview-text" id="animPreviewText">Hello World</span>
+    <span class="anim-preview-label" id="animPreviewLabel">PREVIEW</span>
+  </div>
+
+  <!-- Entrance Section -->
+  <div class="animate-section section-active" id="animEntranceSection">
+    <div class="animate-section-title">
+      <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 6h8M6 2l4 4-4 4"/></svg>
+      Entrance
+    </div>
+
+    <div class="animate-row">
+      <label>Type</label>
+      <select class="animate-select" id="animEntranceType">
+        <option value="none">אַף לֹא אֶחָד</option>
+        <option value="fade">Fade In</option>
+        <option value="slideUp" selected>Slide Up</option>
+        <option value="slideDown">Slide Down</option>
+        <option value="slideLeft">Slide from Right</option>
+        <option value="scale">Scale In</option>
+        <option value="rotate">Rotate In</option>
+        <option value="blur">Blur In</option>
+        <option value="drop">Drop In</option>
+        <option value="typewriter">Typewriter</option>
+      </select>
+    </div>
+
+    <div class="animate-row">
+      <label>Per</label>
+      <select class="animate-select" id="animEntrancePer">
+        <option value="char">אוֹפִי</option>
+        <option value="word">מִלָה</option>
+      </select>
+    </div>
+
+    <div class="animate-row">
+      <label>Duration</label>
+      <div class="animate-slider-wrap">
+        <input type="range" class="animate-slider" id="animEntranceDuration"
+               min="0.1" max="2.0" step="0.05" value="0.5">
+        <span class="animate-val" id="animEntranceDurationVal">0.5s</span>
+      </div>
+    </div>
+
+    <div class="animate-row">
+      <label>Delay</label>
+      <div class="animate-slider-wrap">
+        <input type="range" class="animate-slider" id="animEntranceDelay"
+               min="0" max="0.3" step="0.01" value="0.04">
+        <span class="animate-val" id="animEntranceDelayVal">0.04s</span>
+      </div>
+    </div>
+
+    <div class="animate-row">
+      <label>Speed</label>
+      <div class="animate-speed-btns">
+        <button class="speed-btn" data-anim-speed="slow"   data-dur="0.8"  data-delay="0.06">Slow</button>
+        <button class="speed-btn active" data-anim-speed="medium" data-dur="0.5"  data-delay="0.04">Med</button>
+        <button class="speed-btn" data-anim-speed="fast"   data-dur="0.22" data-delay="0.02">Fast</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Continuous Section -->
+  <div class="animate-section" id="animContinuousSection">
+    <div class="animate-section-title">
+      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="4"/><path d="M6 2 A4 4 0 0 1 10 6"/></svg>
+      Continuous
+    </div>
+
+    <div class="animate-row">
+      <label>Type</label>
+      <select class="animate-select" id="animContinuousType">
+        <option value="none" selected>אַף לֹא אֶחָד</option>
+        <option value="pulse">דוֹפֶק</option>
+        <option value="float">לָצוּף</option>
+        <option value="wigglePos">לְכַשְׁכֵּשׁ</option>
+      </select>
+    </div>
+
+    <div class="animate-row">
+      <label>מְהִירוּת</label>
+      <div class="animate-slider-wrap">
+        <input type="range" class="animate-slider" id="animContinuousSpeed"
+               min="0.3" max="4.0" step="0.1" value="1.2">
+        <span class="animate-val" id="animContinuousSpeedVal">1.2s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Colors Section -->
+  <div class="animate-section" id="animColorsSection">
+    <div class="animate-section-title">
+      <svg viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="4" r="2"/><circle cx="8" cy="4" r="2"/><circle cx="6" cy="8" r="2"/></svg>
+      Colors
+    </div>
+
+    <div class="ws-color-section">
+      <div class="ws-color-label">מילוי טקסט</div>
+      <div class="ae-color-row">
+        <input type="color" class="ae-color-swatch" id="animTextColor" value="#ffffff">
+        <input type="text"  class="ae-hex-input"    id="animTextColorHex" value="FFFFFF" maxlength="6">
+        <div class="ae-color-presets">
+          <button class="ae-color-dot" style="background:#ffffff" data-color="#ffffff" title="White"></button>
+          <button class="ae-color-dot" style="background:#ffd700" data-color="#ffd700" title="Gold"></button>
+          <button class="ae-color-dot" style="background:#f5c200" data-color="#f5c200" title="Yellow"></button>
+          <button class="ae-color-dot" style="background:#ffaa00" data-color="#ffaa00" title="Amber"></button>
+          <button class="ae-color-dot" style="background:#4bffa5" data-color="#4bffa5" title="Mint"></button>
+          <button class="ae-color-dot" style="background:#4bc8ff" data-color="#4bc8ff" title="Sky"></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ws-color-section">
+      <div class="ws-color-label">צל</div>
+      <div class="ae-color-row">
+        <input type="color" class="ae-color-swatch" id="animStrokeColor" value="#000000">
+        <input type="text"  class="ae-hex-input"    id="animStrokeColorHex" value="000000" maxlength="6">
+        <div class="ae-color-presets">
+          <button class="ae-color-dot" style="background:#000000" data-color="#000000" title="Black"></button>
+          <button class="ae-color-dot" style="background:#1a1200" data-color="#1a1200" title="Dark"></button>
+          <button class="ae-color-dot" style="background:#3b2700" data-color="#3b2700" title="Brown"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="animate-actions">
+    <button class="animate-apply-btn" id="animApplyBtn">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 6l3 3 5-5"/></svg>
+      Apply to Selected
+    </button>
+    <button class="animate-clear-btn" id="animClearBtn">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 2l8 8M10 2L2 10"/></svg>
+      Clear
+    </button>
+  </div>
+  <div class="animate-info">&#9432; Works on selected text layers in the active composition</div>
+
+</div>
+        </div>
+    </div>
+</body>
+</html>
