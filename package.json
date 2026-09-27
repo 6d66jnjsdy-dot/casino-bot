@@ -1,0 +1,12 @@
+{
+  "name": "mines-predict",
+  "version": "1.0.0",
+  "description": "Standalone Mines debug tool",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
