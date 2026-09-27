@@ -1,75 +1,111 @@
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const fs = require('fs');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-const GAMES_FILE = path.join(__dirname, "games.json");
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+    ]
+});
 
-app.use(express.json());
-app.use(express.static(__dirname));
+const DB_FILE = './database.json';
 
-function readGames() {
-  try {
-    if (!fs.existsSync(GAMES_FILE)) {
-      fs.writeFileSync(GAMES_FILE, "{}");
+// Load or initialize database
+let db = {};
+if (fs.existsSync(DB_FILE)) {
+    try {
+        db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    } catch (e) {
+        db = {};
+    }
+}
+
+function saveDB() {
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
+
+function getUserBalance(userId) {
+    if (!db[userId]) {
+        db[userId] = { balance: 1000 }; // Starting balance
+        saveDB();
+    }
+    return db[userId].balance;
+}
+
+function updateUserBalance(userId, amount) {
+    getUserBalance(userId);
+    db[userId].balance += amount;
+    saveDB();
+}
+
+client.once('ready', () => {
+    console.log(`Logged in as ${client.user.tag}!`);
+});
+
+client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+
+    const prefix = '!';
+    if (!message.content.startsWith(prefix)) return;
+
+    const args = message.content.slice(prefix.length).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+
+    if (command === 'balance' || command === 'bal') {
+        const balance = getUserBalance(message.author.id);
+        return message.reply(`יש לך ${balance} מטבעות בחשבון! 🪙`);
     }
 
-    return JSON.parse(fs.readFileSync(GAMES_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
+    if (command === 'daily') {
+        const userId = message.author.id;
+        getUserBalance(userId);
+        
+        const now = Date.now();
+        const cooldown = 24 * 60 * 60 * 1000; // 24 hours
+        
+        if (db[userId].lastDaily && now - db[userId].lastDaily < cooldown) {
+            const timeLeft = Math.ceil((cooldown - (now - db[userId].lastDaily)) / (1000 * 60 * 60));
+            return message.reply(`כבר אספת את המתנה היומית שלך! תוכל לאסוף שוב בעוד כ-${timeLeft} שעות.`);
+        }
 
-function saveGames(games) {
-  fs.writeFileSync(
-    GAMES_FILE,
-    JSON.stringify(games, null, 2),
-    "utf8"
-  );
-}
+        db[userId].lastDaily = now;
+        updateUserBalance(userId, 500);
+        return message.reply(`אספת בהצלחה את הבונוס היומי שלך: 500 מטבעות! 🎁`);
+    }
 
-app.get("/api/games", (req, res) => {
-  res.json(readGames());
+    if (command === 'help') {
+        const embed = new EmbedBuilder()
+            .setTitle('🎰 פקודות בוט הקזינו')
+            .setDescription('הנה רשימת הפקודות הזמינות בבוט:')
+            .addFields(
+                { name: '!bal / !balance', value: 'בדיקת יתרת המטבעות שלך', inline: false },
+                { name: '!daily', value: 'קבלת בונוס מטבעות יומי', inline: false },
+                { name: '!mines <הימור>', value: 'משחק המוקשים הקלאסי', inline: false },
+                { name: '!goldmine <הימור>', value: 'משחק מכרה הזהב', inline: false }
+            )
+            .setColor('Gold');
+        return message.reply({ embeds: [embed] });
+    }
+
+    // Mines game implementation placeholder
+    if (command === 'mines') {
+        const bet = parseInt(args[0]);
+        const userId = message.author.id;
+        const balance = getUserBalance(userId);
+
+        if (isNaN(bet) || bet <= 0) {
+            return message.reply('אנא הכנס סכום הימור תקין. דוגמה: `!mines 100`');
+        }
+        if (bet > balance) {
+            return message.reply('אין לך מספיק מטבעות בשביל ההימור הזה!');
+        }
+
+        updateUserBalance(userId, -bet);
+        return message.reply(`התחלת משחק Mines על סך ${bet} מטבעות! (המערכת מוכנה לפעולה)`);
+    }
 });
 
-app.post("/api/games", (req, res) => {
-  const {
-    messageId,
-    guildId,
-    channelId,
-    bombs
-  } = req.body;
-
-  if (!messageId || !Array.isArray(bombs)) {
-    return res.status(400).json({
-      error: "messageId and bombs are required"
-    });
-  }
-
-  const games = readGames();
-
-  games[String(messageId)] = {
-    messageId: String(messageId),
-    guildId: guildId ? String(guildId) : null,
-    channelId: channelId ? String(channelId) : null,
-    bombs: bombs.map(Number),
-    debug: true,
-    createdAt: new Date().toISOString()
-  };
-
-  saveGames(games);
-
-  res.json({
-    success: true,
-    game: games[String(messageId)]
-  });
-});
-
-app.get("*splat", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Mines Predict running on port ${PORT}`);
-});
+// Replace with your bot token
+client.login('YOUR_BOT_TOKEN');
