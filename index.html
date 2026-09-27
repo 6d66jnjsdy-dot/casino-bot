@@ -13,13 +13,13 @@
     body {
       margin: 0;
       min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
       background: #111827;
       color: white;
       font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
     }
 
     .box {
@@ -33,23 +33,19 @@
 
     h1 {
       text-align: center;
-      margin: 0 0 25px;
+      margin-top: 0;
     }
 
     input {
       width: 100%;
       padding: 14px;
+      margin-bottom: 10px;
       border: 0;
-      outline: none;
+      outline: 0;
       border-radius: 10px;
-      margin-bottom: 12px;
-      font-size: 15px;
       background: #374151;
       color: white;
-    }
-
-    input::placeholder {
-      color: #9ca3af;
+      font-size: 15px;
     }
 
     button {
@@ -62,100 +58,170 @@
       font-size: 16px;
       font-weight: bold;
       cursor: pointer;
+      margin-bottom: 10px;
+    }
+
+    button:hover {
+      opacity: .9;
+    }
+
+    .secondary {
+      background: #374151;
     }
 
     #output {
-      margin-top: 18px;
+      margin-top: 15px;
       padding: 15px;
-      min-height: 55px;
-      border-radius: 10px;
       background: #111827;
+      border-radius: 10px;
       line-height: 1.8;
       word-break: break-word;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 7px;
+      margin-top: 15px;
+    }
+
+    .cell {
+      aspect-ratio: 1;
+      background: #374151;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+    }
+
+    .bomb {
+      background: #991b1b;
     }
   </style>
 </head>
 
 <body>
 
-  <div class="box">
-    <h1>💣 Mines Predict</h1>
+<div class="box">
 
-    <input
-      id="predictInput"
-      type="text"
-      inputmode="numeric"
-      autocomplete="off"
-      placeholder="הכנס Message ID"
-    >
+  <h1>💣 Mines Predict</h1>
 
-    <button onclick="runPredict()">Predict</button>
+  <input
+    id="messageId"
+    type="text"
+    inputmode="numeric"
+    placeholder="Message ID"
+  >
 
-    <div id="output">
-      הכנס Message ID של המשחק.
-    </div>
+  <button onclick="predict()">
+    🔮 Predict
+  </button>
+
+  <div id="output">
+    הכנס Message ID של משחק שנשמר במערכת.
   </div>
 
-  <script>
-    async function runPredict() {
-      const input = document.getElementById("predictInput");
-      const output = document.getElementById("output");
+  <div id="grid" class="grid"></div>
 
-      const messageId = input.value.trim();
+  <hr style="border-color:#374151;margin:25px 0">
 
-      if (!/^\d+$/.test(messageId)) {
-        output.innerHTML = "❌ הכנס Message ID תקין.";
-        return;
-      }
+  <h3>🛠️ יצירת משחק Debug</h3>
 
-      try {
-        const response = await fetch("/api/games", {
-          cache: "no-store"
-        });
+  <input
+    id="newMessageId"
+    type="text"
+    inputmode="numeric"
+    placeholder="Message ID חדש"
+  >
 
-        const games = await response.json();
-        const game = games[messageId];
+  <input
+    id="bombs"
+    type="text"
+    placeholder="מיקומי פצצות, לדוגמה: 3,8,12"
+  >
 
-        if (!game) {
-          output.innerHTML =
-            "❌ לא נמצא משחק עם ה־Message ID הזה.";
-          return;
-        }
+  <button class="secondary" onclick="createGame()">
+    💾 שמור משחק
+  </button>
 
-        if (game.debug !== true) {
-          output.innerHTML = "🔒 המשחק אינו במצב Debug.";
-          return;
-        }
+</div>
 
-        const bomb = Number(game.bomb);
+<script>
 
-        if (!Number.isInteger(bomb) || bomb < 0 || bomb > 24) {
-          output.innerHTML = "❌ מיקום הפצצה אינו תקין.";
-          return;
-        }
+async function getGames() {
+  const response = await fetch("/api/games", {
+    cache: "no-store"
+  });
 
-        const row = Math.floor(bomb / 5) + 1;
-        const column = (bomb % 5) + 1;
+  return await response.json();
+}
 
-        output.innerHTML = `
-          🔮 <b>PREDICT — DEBUG</b><br><br>
-          💣 משבצת: <b>${bomb + 1}</b><br>
-          📍 שורה: <b>${row}</b><br>
-          📍 עמודה: <b>${column}</b><br><br>
-          📨 Message ID: ${messageId}
-        `;
+async function predict() {
+  const messageId =
+    document.getElementById("messageId").value.trim();
 
-      } catch (error) {
-        output.innerHTML = "❌ שגיאה בטעינת נתוני המשחק.";
-      }
+  const output =
+    document.getElementById("output");
+
+  const grid =
+    document.getElementById("grid");
+
+  grid.innerHTML = "";
+
+  if (!/^\d+$/.test(messageId)) {
+    output.innerHTML = "❌ הכנס Message ID תקין.";
+    return;
+  }
+
+  try {
+    const games = await getGames();
+    const game = games[messageId];
+
+    if (!game) {
+      output.innerHTML =
+        "❌ לא נמצא משחק עם ה־Message ID הזה.";
+      return;
     }
 
-    document.getElementById("predictInput").addEventListener("keydown", event => {
-      if (event.key === "Enter") {
-        runPredict();
-      }
-    });
-  </script>
+    if (!game.debug) {
+      output.innerHTML =
+        "🔒 המשחק אינו במצב Debug.";
+      return;
+    }
 
-</body>
-</html>
+    const bombs = Array.isArray(game.bombs)
+      ? game.bombs.map(Number)
+      : [];
+
+    output.innerHTML = `
+      🔮 <b>PREDICT</b><br><br>
+      📨 Message ID: <b>${messageId}</b><br>
+      💣 מספר פצצות: <b>${bombs.length}</b><br>
+      📍 מיקומים: <b>${bombs.map(x => x + 1).join(", ")}</b>
+    `;
+
+    for (let i = 0; i < 25; i++) {
+      const cell = document.createElement("div");
+
+      cell.className = "cell";
+
+      if (bombs.includes(i)) {
+        cell.classList.add("bomb");
+        cell.textContent = "💣";
+      } else {
+        cell.textContent = i + 1;
+      }
+
+      grid.appendChild(cell);
+    }
+
+  } catch {
+    output.innerHTML =
+      "❌ שגיאה בטעינת נתוני המשחק.";
+  }
+}
+
+async function createGame() {
+  const messageId =
+    document.getElementBy
