@@ -5,8 +5,8 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.static(__dirname));
 app.use(express.json());
+app.use(express.static(__dirname));
 
 app.get("/api/games", (req, res) => {
   const file = path.join(__dirname, "games.json");
@@ -14,15 +14,15 @@ app.get("/api/games", (req, res) => {
   try {
     const data = fs.readFileSync(file, "utf8");
     res.type("json").send(data);
-  } catch {
+  } catch (error) {
     res.json({});
   }
 });
 
-app.get("*", (req, res) => {
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Mines Predict running on port ${PORT}`);
 });
