@@ -272,9 +272,12 @@ process.on("unhandledRejection", err => {
 
 function getUser(id) {
   if (!db.users[id]) db.users[id] = { cash: 0, bank: 0, cooldowns: {}, cfStreak: 45 };
-  db.users[id].cooldowns ||= {};
-  if (db.users[id].cfStreak == null) db.users[id].cfStreak = 45;
-  return db.users[id];
+  const u = db.users[id];
+  u.cash = Number.isFinite(Number(u.cash)) ? Math.max(0, Math.floor(Number(u.cash))) : 0;
+  u.bank = Number.isFinite(Number(u.bank)) ? Math.max(0, Math.floor(Number(u.bank))) : 0;
+  u.cooldowns ||= {};
+  if (u.cfStreak == null) u.cfStreak = 45;
+  return u;
 }
 
 function money(n) {
@@ -323,8 +326,12 @@ function spendFromBalance(user, amount) {
 
 // Every win, payout, or refund goes straight to the bank so you
 // never have to $deposit manually to keep playing.
+function creditCash(user, amount) {
+  user.cash = Math.max(0, Math.floor(Number(user.cash) || 0) + Math.max(0, Math.floor(Number(amount) || 0)));
+}
+
 function creditBank(user, amount) {
-  user.bank += Math.max(0, Math.floor(amount));
+  user.bank = Math.max(0, Math.floor(Number(user.bank) || 0) + Math.max(0, Math.floor(Number(amount) || 0)));
 }
 
 /* Fancy embed — used for admin/help/logs/prediction DMs only. */
@@ -947,7 +954,7 @@ client.on("messageCreate", async message => {
       if (left) return message.reply({ embeds: [gembed(`⏳ Work again in **${formatDuration(left)}**.`, COLOR_LOSE)] });
 
       const n = random(4000, 12000);
-      creditBank(user, n);
+      creditCash(user, n);
       user.cooldowns.work = Date.now();
       saveData();
 
@@ -963,7 +970,7 @@ client.on("messageCreate", async message => {
 
       if (win) {
         const n = random(6000, 15000);
-        creditBank(user, n);
+        creditCash(user, n);
         saveData();
         return message.reply({ embeds: [gembed(`You successfully committed a crime and got **${money(n)}** ${db.currency}!`, COLOR_WIN)] });
       }
@@ -1032,31 +1039,16 @@ client.on("messageCreate", async message => {
    BLACKJACK
    ============================================================ */
 
-const CARD_VALUES = [
-  ["A", 11], ["2", 2], ["3", 3], ["4", 4], ["5", 5], ["6", 6], ["7", 7],
-  ["8", 8], ["9", 9], ["10", 10], ["J", 10], ["Q", 10], ["K", 10]
-];
+const CARD_SUITS = ["♠️", "♥️", "♦️", "♣️"];
+const CARD_RANKS = [["A",11],["2",2],["3",3],["4",4],["5",5],["6",6],["7",7],["8",8],["9",9],["10",10],["J",10],["Q",10],["K",10]];
 
-function makeCard(value, number) {
-  return { value, number };
+function makeDeck() {
+  const deck = [];
+  for (const suit of CARD_SUITS) for (const [value, number] of CARD_RANKS) deck.push({ value, number, suit });
+  return shuffle(deck);
 }
 
-function drawStandardCard() {
-  const x = CARD_VALUES[random(0, CARD_VALUES.length - 1)];
-  return makeCard(x[0], x[1]);
-}
-
-function drawPlayerCard() {
-  const p = [...CARD_VALUES, ["2", 2], ["3", 3], ["4", 4], ["5", 5], ["6", 6]];
-  const x = p[random(0, p.length - 1)];
-  return makeCard(x[0], x[1]);
-}
-
-function drawDealerCard() {
-  const p = [...CARD_VALUES, ["8", 8], ["9", 9], ["10", 10], ["J", 10], ["Q", 10], ["K", 10]];
-  const x = p[random(0, p.length - 1)];
-  return makeCard(x[0], x[1]);
-}
+function drawCard(deck) { return deck.pop(); }
 
 function handValue(hand) {
   let total = hand.reduce((sum, card) => sum + card.number, 0);
@@ -1065,13 +1057,7 @@ function handValue(hand) {
   return total;
 }
 
-function cardText(hand) {
-  return hand.map(c => `\`${c.value}\``).join(", ");
-}
-
-function dealPlayerHand() {
-  return [drawStandardCard(), drawStandardCard()];
-}
+function cardText(hand) { return hand.map(c => `\`${c.value}${c.suit}\``).join(", "); }
 
 async function blackjack(message, args, user) {
   const bet = validBet(message, args);
@@ -1080,8 +1066,9 @@ async function blackjack(message, args, user) {
   spendFromBalance(user, bet);
   saveData();
 
-  const player = dealPlayerHand();
-  const dealer = [drawStandardCard(), drawStandardCard()];
+  const deck = makeDeck();
+  const player = [drawCard(deck), drawCard(deck)];
+  const dealer = [drawCard(deck), drawCard(deck)];
   let totalBet = bet;
   let finished = false;
   let processing = false;
@@ -1153,12 +1140,12 @@ async function blackjack(message, args, user) {
 
         spendFromBalance(user, bet);
         totalBet += bet;
-        player.push(drawPlayerCard());
+        player.push(drawCard(deck));
         await interaction.deferUpdate();
 
         if (handValue(player) > 21) return finish("💥 Bust!", 0, COLOR_LOSE);
 
-        while (handValue(dealer) < 17) dealer.push(drawDealerCard());
+        while (handValue(dealer) < 17) dealer.push(drawCard(deck));
 
         const p = handValue(player), d = handValue(dealer);
         if (d > 21 || p > d) return finish("🎉 You win!", totalBet * 2, COLOR_WIN);
@@ -1167,7 +1154,7 @@ async function blackjack(message, args, user) {
       }
 
       if (action === "hit") {
-        player.push(drawPlayerCard());
+        player.push(drawCard(deck));
 
         if (handValue(player) > 21) {
           await interaction.deferUpdate();
@@ -1180,7 +1167,7 @@ async function blackjack(message, args, user) {
 
       await interaction.deferUpdate();
 
-      while (handValue(dealer) < 17) dealer.push(drawDealerCard());
+      while (handValue(dealer) < 17) dealer.push(drawCard(deck));
 
       const p = handValue(player), d = handValue(dealer);
       if (d > 21 || p > d) return finish("🎉 You win!", totalBet * 2, COLOR_WIN);
@@ -1398,134 +1385,42 @@ const MINES_MULTIPLIERS = [1.05, 1.22, 1.48, 1.82, 2.25, 2.85, 3.7, 5.8];
 async function mines(message, args, user) {
   const bet = validBet(message, args);
   if (bet === null) return;
-
-  spendFromBalance(user, bet);
-  saveData();
-
-  const bomb = random(0, 8);
-  const revealed = new Set();
-  let finished = false;
-  let processing = false;
-
-  function mult() {
-    return MINES_MULTIPLIERS[Math.max(0, revealed.size - 1)] || 5.8;
-  }
-
-  function grid(end = false) {
-    const out = [];
-    for (let r = 0; r < 3; r++) {
-      const bs = [];
-      for (let c = 0; c < 3; c++) {
-        const i = r * 3 + c;
-        const isBomb = i === bomb;
-        const isRev = revealed.has(i);
-        bs.push(new ButtonBuilder()
-          .setCustomId(`mn:${message.author.id}:${i}`)
-          .setLabel(end ? (isBomb ? "💣" : "💎") : (isRev ? "💎" : "\u2003"))
-          .setStyle(end && isBomb ? ButtonStyle.Danger : isRev ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(isRev || end));
-      }
-      out.push(new ActionRowBuilder().addComponents(bs));
+  spendFromBalance(user, bet); saveData();
+  const bomb = random(0, 8), revealed = new Set();
+  let finished = false, busy = false;
+  const mult = () => MINES_MULTIPLIERS[Math.max(0, revealed.size - 1)] || 5.8;
+  const grid = (end=false) => {
+    const rows=[];
+    for(let r=0;r<3;r++){
+      const bs=[];
+      for(let c=0;c<3;c++){const n=r*3+c, rev=revealed.has(n); bs.push(new ButtonBuilder().setCustomId(`mn:${message.author.id}:${n}`).setLabel(end?(n===bomb?"💣":"💎"):(rev?"💎":"▫️")).setStyle(end&&n===bomb?ButtonStyle.Danger:rev?ButtonStyle.Success:ButtonStyle.Secondary).setDisabled(end||rev));}
+      rows.push(new ActionRowBuilder().addComponents(bs));
     }
-    if (!end) {
-      out.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`mn:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size)
-      ));
-    } else {
-      out.push(new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`mn:done:cash`).setLabel("Cashout").setStyle(ButtonStyle.Success).setDisabled(true),
-        new ButtonBuilder().setCustomId(`mn:done:profit`).setLabel(`Profit: ${money(Math.max(0, Math.floor(bet * mult()) - bet))} ${db.currency}`).setStyle(ButtonStyle.Primary).setDisabled(true)
-      ));
-    }
-    return out;
-  }
-
-  function ge() {
-    return gembed(
-      `💎 Safe tiles: **${revealed.size}/8**\nMultiplier: **${mult()}x**\nCurrent value: **${money(bet * mult())}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}`,
-      COLOR_PLAYING, "💣 Mines 💣"
-    );
-  }
-
-  const msg = await message.reply({ embeds: [ge()], components: grid() });
-  await sendSecretGameBoard(
-    message, "Mines",
-    `**3 × 3 FULL MAP — ALL 9 TILES**\n\n${[
-      `| #1 ${bomb === 0 ? "💣" : "💎"} | #2 ${bomb === 1 ? "💣" : "💎"} | #3 ${bomb === 2 ? "💣" : "💎"} |`,
-      `| #4 ${bomb === 3 ? "💣" : "💎"} | #5 ${bomb === 4 ? "💣" : "💎"} | #6 ${bomb === 5 ? "💣" : "💎"} |`,
-      `| #7 ${bomb === 6 ? "💣" : "💎"} | #8 ${bomb === 7 ? "💣" : "💎"} | #9 ${bomb === 8 ? "💣" : "💎"} |`
-    ].join("\n")}\n\n💣 = Bomb\n💎 = Safe`,
-    `💰 Multipliers: ${MINES_MULTIPLIERS.map((x, i) => `${i + 1} safe = ${x}x`).join(" · ")}`
-  );
-  await logAndPredict(message, `Mines started — bet ${money(bet)}.`, `💣 Mines layout: bomb is tile **${bomb + 1}**.`, COLOR_INFO);
-
-  const c = msg.createMessageComponentCollector({ time: 120000 });
-
-  c.on("collect", async i => {
-    if (i.user.id !== message.author.id) return i.reply({ content: "❌ This isn't your game.", ephemeral: true }).catch(() => {});
-    if (finished || processing) return i.reply({ content: "⏳ Processing...", ephemeral: true }).catch(() => {});
-
-    const a = i.customId.split(":")[2];
-    if (a !== "cash") {
-      const idx = Number(a);
-      if (!Number.isInteger(idx) || idx < 0 || idx > 8 || revealed.has(idx)) {
-        return i.reply({ content: "❌ Invalid or already revealed tile.", ephemeral: true }).catch(() => {});
-      }
-    } else if (!revealed.size) {
-      return i.reply({ content: "❌ Reveal a tile first.", ephemeral: true }).catch(() => {});
-    }
-
-    processing = true;
-    try {
+    if(!end) rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`mn:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size)));
+    return rows;
+  };
+  const ge=()=>gembed(`💎 Safe tiles: **${revealed.size}/8**\nMultiplier: **${mult()}x**\nCurrent value: **${money(bet*mult())}** ${db.currency}\n\nBet: **${money(bet)}** ${db.currency}`,COLOR_PLAYING,"💣 Mines 💣");
+  let msg;
+  try { msg=await message.reply({embeds:[ge()],components:grid()}); } catch(e){ creditBank(user,bet); saveData(); throw e; }
+  const c=msg.createMessageComponentCollector({time:120000});
+  c.on("collect",async i=>{
+    if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true}).catch(()=>{});
+    if(finished||busy)return;
+    const a=i.customId.split(":")[2];
+    if(a!=="cash"){const idx=Number(a); if(!Number.isInteger(idx)||idx<0||idx>8||revealed.has(idx))return i.reply({content:"❌ Invalid or already revealed tile.",ephemeral:true}).catch(()=>{});}
+    if(a==="cash"&&!revealed.size)return i.reply({content:"❌ Reveal a tile first.",ephemeral:true}).catch(()=>{});
+    busy=true;
+    try{
       await i.deferUpdate();
-
-      if (a === "cash") {
-        finished = true;
-        c.stop("finished");
-        const payout = Math.floor(bet * mult());
-        creditBank(user, payout);
-        saveData();
-        await logEvent(message.guild, `Mines cashout: <@${message.author.id}> won **${money(payout)}** ${db.currency}.`, COLOR_WIN);
-        return await msg.edit({
-          embeds: [gembed(`💰 **You cashed out!**\n\n\`\`\`\n+You won and got ${money(payout)} ${db.currency}\n\`\`\`\nYou climbed ${revealed.size} rows.`, COLOR_WIN)],
-          components: grid(true)
-        }).catch(() => {});
-      }
-
-      const idx = Number(a);
-      if (idx === bomb) {
-        finished = true;
-        c.stop("finished");
-        saveData();
-        await logEvent(message.guild, `Mines BOOM: <@${message.author.id}> lost **${money(bet)}**. Bomb was tile ${bomb + 1}.`, COLOR_LOSE);
-        return await msg.edit({
-          embeds: [gembed(`💣 **You hit a bomb!**\n\n\`\`\`\n-You lost ${money(bet)} ${db.currency}\n\`\`\`\nYou climbed ${revealed.size} rows.`, COLOR_LOSE)],
-          components: grid(true)
-        }).catch(() => {});
-      }
-
+      if(a==="cash"){finished=true;c.stop();const payout=Math.floor(bet*mult());creditBank(user,payout);saveData();return i.editReply({embeds:[gembed(`💰 **You cashed out!**\n\nYou received **${money(payout)}** ${db.currency}.\nYou climbed **${revealed.size}** rows.`,COLOR_WIN,"💣 Mines 💣")],components:grid(true)});}
+      const idx=Number(a);
+      if(idx===bomb){finished=true;c.stop();saveData();return i.editReply({embeds:[gembed(`💣 **You hit a bomb!**\n\nYou lost **${money(bet)}** ${db.currency}.\nYou climbed **${revealed.size}** rows.`,COLOR_LOSE,"💣 Mines 💣")],components:grid(true)});}
       revealed.add(idx);
-      return await msg.edit({
-        embeds: [revealed.size === 8
-          ? gembed(`💎 All 8 safe tiles revealed!\n\nMultiplier: **${MINES_MULTIPLIERS[7]}x**\nCurrent value: **${money(bet * MINES_MULTIPLIERS[7])}** ${db.currency}\n\n💰 Press **Cashout** to collect.`, COLOR_PLAYING, "💣 Mines 💣")
-          : ge()],
-        components: grid()
-      }).catch(() => {});
-    } finally {
-      processing = false;
-    }
+      if(revealed.size>=8){finished=true;c.stop();const payout=Math.floor(bet*MINES_MULTIPLIERS[7]);creditBank(user,payout);saveData();return i.editReply({embeds:[gembed(`💎 **All 8 safe tiles revealed!**\n\nYou received **${money(payout)}** ${db.currency}.`,COLOR_WIN,"💣 Mines 💣")],components:grid(true)});}
+      return i.editReply({embeds:[ge()],components:grid()});
+    }catch(e){console.error("Mines interaction error:",e); if(!finished) await i.editReply({embeds:[gembed("❌ Something went wrong. Your bet was returned.",COLOR_LOSE,"💣 Mines 💣")],components:grid(true)}).catch(()=>{}); if(!finished){finished=true;c.stop();creditBank(user,bet);saveData();}}finally{busy=false;}
   });
-
-  c.on("end", async () => {
-    if (finished) return;
-    finished = true;
-    creditBank(user, bet);
-    saveData();
-    await msg.edit({
-      embeds: [gembed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_INFO, "💣 Mines 💣")],
-      components: grid(true)
-    }).catch(() => {});
-  });
+  c.on("end",async()=>{if(finished)return;finished=true;creditBank(user,bet);saveData();await msg.edit({embeds:[gembed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_INFO,"💣 Mines 💣")],components:grid(true)}).catch(()=>{});});
 }
 
 /* ============================================================
@@ -1553,149 +1448,34 @@ function buildGoldmineBoard() {
 }
 
 async function goldmine(message, args, user) {
-  const bet = validBet(message, args);
-  if (bet === null) return;
-  spendFromBalance(user, bet);
-  saveData();
-
-  const board = buildGoldmineBoard();
-  const revealed = new Set();
-  let mult = 1;
-  let finished = false;
-  let processing = false;
-
-  function label(i, end) {
-    const t = board[i];
-    if (end) return t.type === "bomb" ? "💣" : t.type === "map" ? "🗺️" : t.emoji;
-    if (!revealed.has(i)) return "\u2003";
-    return t.type === "map" ? "🗺️" : t.emoji;
-  }
-
-  function grid(end = false) {
-    const rs = [];
-    for (let r = 0; r < 5; r++) {
-      const bs = [];
-      for (let c = 0; c < (r === 4 ? 4 : 5); c++) {
-        const i = r * 5 + c;
-        if (i >= 24) continue;
-        bs.push(new ButtonBuilder()
-          .setCustomId(`gm:${message.author.id}:${i}`)
-          .setLabel(label(i, end))
-          .setStyle(end && board[i].type === "bomb" ? ButtonStyle.Danger : revealed.has(i) ? ButtonStyle.Success : ButtonStyle.Secondary)
-          .setDisabled(revealed.has(i) || end));
-      }
-      if (r === 4 && !end) bs.push(new ButtonBuilder().setCustomId(`gm:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size));
-      rs.push(new ActionRowBuilder().addComponents(bs));
-    }
-    return rs;
-  }
-
-  function ge() {
-    return gembed(
-      `⛏️ Dig for treasure — avoid bombs.\n\n🪨 x1.08 · 🪙 x1.45 · 💎 x2.1 · 💰 x3.5 · 🏮 x8 · 🗺️ reveals 3 safe tiles\n\nFound: **${revealed.size}**\nMultiplier: **${mult.toFixed(2)}x**\nCurrent value: **${money(bet * mult)}** ${db.currency}`,
-      COLOR_PLAYING, "⛏️ Goldmine ⛏️"
-    );
-  }
-
-  const msg = await message.reply({ embeds: [ge()], components: grid() });
-  const gmIcons = board.map(t => t.type === "bomb" ? "💣" : t.type === "map" ? "🗺️" : t.emoji);
-  const gmCell = i => `#${i + 1} ${gmIcons[i]}`;
-  const goldmineSecretBoard = [
-    `| ${[0,1,2,3,4].map(gmCell).join(" | ")} |`,
-    `| ${[5,6,7,8,9].map(gmCell).join(" | ")} |`,
-    `| ${[10,11,12,13,14].map(gmCell).join(" | ")} |`,
-    `| ${[15,16,17,18,19].map(gmCell).join(" | ")} |`,
-    `| ${[20,21,22,23].map(gmCell).join(" | ")} |`
-  ].join("\n");
-  await sendSecretGameBoard(message, "Goldmine", `**FULL 24-TILE MAP — ALL TILES**\n\n${goldmineSecretBoard}\n\n💣 = Bomb\n🪨 = 1.08x\n🪙 = 1.45x\n💎 = 2.1x\n💰 = 3.5x\n🏮 = 8x\n🗺️ = Reveals 3 safe tiles`, "⚠️ The 3 tiles revealed by 🗺️ are selected randomly when the map is clicked.");
-  const secret = board.map((t, i) => `${i + 1}:${t.type}${t.type === "treasure" ? `(${t.emoji})` : ""}`).join(" | ");
-  await logAndPredict(message, `Goldmine started — bet ${money(bet)}.`, `⛏️ Goldmine full map: ${secret}`, COLOR_INFO);
-
-  const c = msg.createMessageComponentCollector({ time: 150000 });
-  c.on("collect", async i => {
-    if (i.user.id !== message.author.id) return i.reply({ content: "❌ This isn't your game.", ephemeral: true }).catch(() => {});
-    if (finished || processing) return i.reply({ content: "⏳ Processing...", ephemeral: true }).catch(() => {});
-
-    const a = i.customId.split(":")[2];
-    if (a === "cash") {
-      if (!revealed.size) return i.reply({ content: "❌ Reveal a tile first.", ephemeral: true }).catch(() => {});
-    } else {
-      const idx = Number(a);
-      if (!Number.isInteger(idx) || idx < 0 || idx >= 24 || revealed.has(idx)) {
-        return i.reply({ content: "❌ Invalid or already revealed tile.", ephemeral: true }).catch(() => {});
-      }
-    }
-
-    processing = true;
-    try {
+  const bet=validBet(message,args); if(bet===null)return;
+  spendFromBalance(user,bet); saveData();
+  const board=buildGoldmineBoard(), revealed=new Set();
+  let mult=1,finished=false,busy=false;
+  const label=(i,end)=>{const t=board[i];if(end)return t.type==="bomb"?"💣":t.type==="map"?"🗺️":t.emoji;if(!revealed.has(i))return"▫️";return t.type==="map"?"🗺️":t.emoji;};
+  const grid=(end=false)=>{const rows=[];for(let r=0;r<5;r++){const bs=[];for(let c=0;c<(r===4?4:5);c++){const i=r*5+c;if(i>=24)continue;bs.push(new ButtonBuilder().setCustomId(`gm:${message.author.id}:${i}`).setLabel(label(i,end)).setStyle(end&&board[i].type==="bomb"?ButtonStyle.Danger:revealed.has(i)?ButtonStyle.Success:ButtonStyle.Secondary).setDisabled(end||revealed.has(i)));}if(r===4&&!end)bs.push(new ButtonBuilder().setCustomId(`gm:${message.author.id}:cash`).setLabel("💰 Cashout").setStyle(ButtonStyle.Success).setDisabled(!revealed.size));rows.push(new ActionRowBuilder().addComponents(bs));}return rows;};
+  const ge=()=>gembed(`⛏️ Dig for treasure — avoid bombs.\n\n🪨 x1.08 · 🪙 x1.45 · 💎 x2.1 · 💰 x3.5 · 🏮 x8 · 🗺️ reveals 3 safe tiles\n\nFound: **${revealed.size}**\nMultiplier: **${mult.toFixed(2)}x**\nCurrent value: **${money(bet*mult)}** ${db.currency}`,COLOR_PLAYING,"⛏️ Goldmine ⛏️");
+  let msg; try{msg=await message.reply({embeds:[ge()],components:grid()});}catch(e){creditBank(user,bet);saveData();throw e;}
+  const c=msg.createMessageComponentCollector({time:150000});
+  c.on("collect",async i=>{
+    if(i.user.id!==message.author.id)return i.reply({content:"❌ This isn't your game.",ephemeral:true}).catch(()=>{});
+    if(finished||busy)return;
+    const a=i.customId.split(":")[2];
+    if(a==="cash"&&!revealed.size)return i.reply({content:"❌ Reveal a tile first.",ephemeral:true}).catch(()=>{});
+    if(a!=="cash"){const idx=Number(a);if(!Number.isInteger(idx)||idx<0||idx>=24||revealed.has(idx))return i.reply({content:"❌ Invalid or already revealed tile.",ephemeral:true}).catch(()=>{});}
+    busy=true;
+    try{
       await i.deferUpdate();
-
-      if (a === "cash") {
-        finished = true;
-        c.stop("finished");
-        const payout = Math.floor(bet * mult);
-        creditBank(user, payout);
-        saveData();
-        return await msg.edit({
-          embeds: [gembed(`💰 **You cashed out!**\n\n\`\`\`\n+You won and got ${money(payout)} ${db.currency}\n\`\`\`\nYou climbed ${revealed.size} rows.`, COLOR_WIN)],
-          components: grid(true)
-        }).catch(() => {});
-      }
-
-      const idx = Number(a);
-      const t = board[idx];
-      if (!t) return;
-
-      if (t.type === "bomb") {
-        finished = true;
-        c.stop("finished");
-        saveData();
-        return await msg.edit({
-          embeds: [gembed(`💣 **You hit a bomb!**\n\n\`\`\`\n-You lost ${money(bet)} ${db.currency}\n\`\`\`\nYou climbed ${revealed.size} rows.`, COLOR_LOSE)],
-          components: grid(true)
-        }).catch(() => {});
-      }
-
-      if (t.type === "map") {
-        revealed.add(idx);
-        const pool = shuffle([...Array(24).keys()].filter(x => !revealed.has(x) && board[x].type !== "bomb")).slice(0, 3);
-        for (const x of pool) {
-          revealed.add(x);
-          if (board[x].type === "treasure") mult *= board[x].mult;
-        }
-      } else {
-        revealed.add(idx);
-        mult *= t.mult;
-      }
-
-      if (revealed.size >= 12) {
-        finished = true;
-        c.stop("finished");
-        const payout = Math.floor(bet * mult);
-        creditBank(user, payout);
-        saveData();
-        return await msg.edit({
-          embeds: [gembed(`🏆 **Whole mine cleared!**\n\n\`\`\`\n+You won and got ${money(payout)} ${db.currency}\n\`\`\`\nYou climbed ${revealed.size} rows.`, COLOR_WIN)],
-          components: grid(true)
-        }).catch(() => {});
-      }
-
-      return await msg.edit({ embeds: [ge()], components: grid() }).catch(() => {});
-    } finally {
-      processing = false;
-    }
+      if(a==="cash"){finished=true;c.stop();const payout=Math.floor(bet*mult);creditBank(user,payout);saveData();return i.editReply({embeds:[gembed(`💰 **You cashed out!**\n\nYou received **${money(payout)}** ${db.currency}.\nYou found **${revealed.size}** tiles.`,COLOR_WIN,"⛏️ Goldmine ⛏️")],components:grid(true)});}
+      const idx=Number(a),t=board[idx];
+      if(t.type==="bomb"){finished=true;c.stop();saveData();return i.editReply({embeds:[gembed(`💣 **You hit a bomb!**\n\nYou lost **${money(bet)}** ${db.currency}.`,COLOR_LOSE,"⛏️ Goldmine ⛏️")],components:grid(true)});}
+      revealed.add(idx);
+      if(t.type==="map"){const pool=shuffle([...Array(24).keys()].filter(x=>!revealed.has(x)&&board[x].type!=="bomb")).slice(0,3);for(const x of pool){revealed.add(x);if(board[x].type==="treasure")mult*=board[x].mult;}}else mult*=t.mult;
+      if(revealed.size>=12){finished=true;c.stop();const payout=Math.floor(bet*mult);creditBank(user,payout);saveData();return i.editReply({embeds:[gembed(`🏆 **Whole mine cleared!**\n\nYou received **${money(payout)}** ${db.currency}.`,COLOR_WIN,"⛏️ Goldmine ⛏️")],components:grid(true)});}
+      return i.editReply({embeds:[ge()],components:grid()});
+    }catch(e){console.error("Goldmine interaction error:",e);if(!finished){await i.editReply({embeds:[gembed("❌ Something went wrong. Your bet was returned.",COLOR_LOSE,"⛏️ Goldmine ⛏️")],components:grid(true)}).catch(()=>{});finished=true;c.stop();creditBank(user,bet);saveData();}}finally{busy=false;}
   });
-
-  c.on("end", async () => {
-    if (finished) return;
-    finished = true;
-    creditBank(user, bet);
-    saveData();
-    await msg.edit({
-      embeds: [gembed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`, COLOR_INFO, "⛏️ Goldmine ⛏️")],
-      components: grid(true)
-    }).catch(() => {});
-  });
+  c.on("end",async()=>{if(finished)return;finished=true;creditBank(user,bet);saveData();await msg.edit({embeds:[gembed(`⏰ Timed out. Returned **${money(bet)}** ${db.currency}.`,COLOR_INFO,"⛏️ Goldmine ⛏️")],components:grid(true)}).catch(()=>{});});
 }
 
 /* ============================================================
