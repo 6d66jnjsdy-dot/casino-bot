@@ -2,7 +2,11 @@ require("dotenv").config();
 
 const {
   Client,
-  GatewayIntentBits
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder
 } = require("discord.js");
 
 const fs = require("fs");
@@ -17,6 +21,10 @@ const client = new Client({
 
 const FILE = "./games.json";
 
+if (!fs.existsSync(FILE)) {
+  fs.writeFileSync(FILE, "{}");
+}
+
 function loadGames() {
   try {
     return JSON.parse(fs.readFileSync(FILE, "utf8"));
@@ -25,66 +33,244 @@ function loadGames() {
   }
 }
 
+function saveGames(games) {
+  fs.writeFileSync(FILE, JSON.stringify(games, null, 2));
+}
+
+const games = loadGames();
+
+function createBoard(game) {
+  const rows = [];
+
+  for (let r = 0; r < 5; r++) {
+    const row = new ActionRowBuilder();
+
+    for (let c = 0; c < 5; c++) {
+      const index = r * 5 + c;
+
+      let label = "⬜";
+
+      if (game.revealed.includes(index)) {
+        label = index === game.bomb ? "💣" : "💎";
+      }
+
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`mine:${game.messageId}:${index}`)
+          .setLabel(label)
+          .setStyle(ButtonStyle.Secondary)
+      );
+    }
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
 client.once("ready", () => {
-  console.log(`Bot B מחובר בתור ${client.user.tag}`);
+  console.log(`Bot מחובר בתור ${client.user.tag}`);
 });
 
 client.on("messageCreate", async message => {
   if (message.author.bot) return;
 
-  if (!message.content.startsWith("$predict ")) return;
+  // =========================
+  // MINES DEBUG
+  // =========================
 
-  const link = message.content.slice("$predict ".length).trim();
+  if (message.content === "$mines-debug") {
+    const game = {
+      userId: message.author.id,
+      guildId: message.guildId,
+      channelId: message.channelId,
+      bomb: Math.floor(Math.random() * 25),
+      revealed: [],
+      debug: true
+    };
 
-  const match = link.match(
-    /^https?:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)$/
-  );
+    const msg = await message.channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("💣 Mines — DEBUG")
+          .setDescription("בחר משבצת כדי להתחיל.")
+      ],
+      components: createBoard({
+        ...game,
+        messageId: "pending"
+      })
+    });
 
-  if (!match) {
-    return message.reply(
-      "❌ קישור Discord לא תקין.\n\n" +
-      "דוגמה:\n" +
-      "`$predict https://discord.com/channels/SERVER/CHANNEL/MESSAGE`"
-    );
+    game.messageId = msg.id;
+
+    games[msg.id] = game;
+    saveGames(games);
+
+    await msg.edit({
+      components: createBoard(game)
+    });
+
+    return;
   }
 
-  const [, guildId, channelId, messageId] = match;
+  // =========================
+  // MINES רגיל
+  // =========================
 
-  const games = loadGames();
+  if (message.content === "$mines") {
+    const game = {
+      userId: message.author.id,
+      guildId: message.guildId,
+      channelId: message.channelId,
+      bomb: Math.floor(Math.random() * 25),
+      revealed: [],
+      debug: false
+    };
+
+    const msg = await message.channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("💣 Mines")
+          .setDescription("בחר משבצת כדי להתחיל.")
+      ],
+      components: createBoard({
+        ...game,
+        messageId: "pending"
+      })
+    });
+
+    game.messageId = msg.id;
+
+    games[msg.id] = game;
+    saveGames(games);
+
+    await msg.edit({
+      components: createBoard(game)
+    });
+
+    return;
+  }
+
+  // =========================
+  // PREDICT
+  // =========================
+
+  if (message.content.startsWith("$predict ")) {
+    const link = message.content
+      .slice("$predict ".length)
+      .trim();
+
+    const match = link.match(
+      /^https?:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)$/
+    );
+
+    if (!match) {
+      return message.reply(
+        "❌ קישור Discord לא תקין.\n\n" +
+        "`$predict https://discord.com/channels/SERVER/CHANNEL/MESSAGE`"
+      );
+    }
+
+    const [, guildId, channelId, messageId] = match;
+
+    const game = games[messageId];
+
+    if (!game) {
+      return message.reply(
+        "❌ לא מצאתי משחק Mines לפי הקישור."
+      );
+    }
+
+    if (
+      game.guildId !== guildId ||
+      game.channelId !== channelId
+    ) {
+      return message.reply(
+        "❌ המשחק לא תואם לקישור."
+      );
+    }
+
+    if (!game.debug) {
+      return message.reply(
+        "🔒 `$predict` זמין רק למשחקי Debug."
+      );
+    }
+
+    const bomb = Number(game.bomb);
+
+    const row = Math.floor(bomb / 5) + 1;
+    const column = (bomb % 5) + 1;
+
+    return message.reply(
+      `🔮 **PREDICT — DEBUG**\n\n` +
+      `💣 פצצה: **${bomb + 1}**\n` +
+      `📍 שורה: **${row}**\n` +
+      `📍 עמודה: **${column}**`
+    );
+  }
+});
+
+// =========================
+// BUTTONS
+// =========================
+
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith("mine:")) return;
+
+  const [, messageId, indexText] =
+    interaction.customId.split(":");
+
+  const index = Number(indexText);
   const game = games[messageId];
 
   if (!game) {
-    return message.reply(
-      "❌ לא מצאתי משחק Mines לפי הקישור הזה."
-    );
+    return interaction.reply({
+      content: "❌ המשחק לא נמצא.",
+      ephemeral: true
+    });
   }
 
-  if (
-    game.guildId !== guildId ||
-    game.channelId !== channelId
-  ) {
-    return message.reply(
-      "❌ המשחק לא תואם לקישור שסיפקת."
-    );
+  if (interaction.user.id !== game.userId) {
+    return interaction.reply({
+      content: "❌ זה לא המשחק שלך.",
+      ephemeral: true
+    });
   }
 
-  if (!game.debug) {
-    return message.reply(
-      "🔒 המשחק הזה אינו משחק Debug."
-    );
+  if (game.revealed.includes(index)) {
+    return interaction.reply({
+      content: "⬜ כבר פתחת את המשבצת הזאת.",
+      ephemeral: true
+    });
   }
 
-  const bomb = Number(game.bomb);
+  game.revealed.push(index);
 
-  const row = Math.floor(bomb / 5) + 1;
-  const column = (bomb % 5) + 1;
+  if (index === game.bomb) {
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("💥 BOOM!")
+          .setDescription("מצאת את הפצצה!")
+      ],
+      components: createBoard(game)
+    });
 
-  return message.reply(
-    `🔮 **PREDICT — DEBUG**\n\n` +
-    `💣 פצצה: **${bomb + 1}**\n` +
-    `📍 שורה: **${row}**\n` +
-    `📍 עמודה: **${column}**`
-  );
+    saveGames(games);
+    return;
+  }
+
+  await interaction.update({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("💣 Mines")
+        .setDescription("💎 בטוח! המשך לשחק.")
+    ],
+    components: createBoard(game)
+  });
+
+  saveGames(games);
 });
 
-client.login(process.env.BOT_B_TOKEN);
+client.login(process.env.BOT_TOKEN);
