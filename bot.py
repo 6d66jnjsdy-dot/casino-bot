@@ -1,5 +1,6 @@
 import discord, random, json, os, asyncio, io, signal, math, time
 from functools import lru_cache
+from collections import Counter
 from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands, tasks
 from aiohttp import web
@@ -32,6 +33,26 @@ SMINES = {   # key: (columns, rows, mines, multiplier per click)   (one entry pe
     "4x4": (4, 4, 3, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 7, 12.3]),
     "5x4": (5, 4, 5, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 5.4, 19]),
 }
+MT_MULT = [1.4, 1.8, 2.4, 4.2, 5.2]   # $mt: TOTAL multiplier after 1..5 climbed rows (not compounded). Row 5 = automatic cashout
+MT_SAFE = "💲"                         # the safe tile of the money tower
+
+
+def _card(name, prize, dud, top, luck=1.0):
+    """Scratch card: 5 prize symbols (the last one is the top prize) + 1 dud symbol that pays nothing."""
+    return {"name": name, "prize": prize, "dud": dud, "mults": [1.5, 2, 3, 5, top], "luck": luck}
+
+
+SCRATCH_CARDS = {
+    "falafel": _card("🧆 פלאפל בפיתה", ["🌶️", "🍅", "🥒", "🥙", "🧆"], "🧂", 50),
+    "summer": _card("🍉 קיץ בתל אביב", ["🍦", "🕶️", "🏖️", "☀️", "🍉"], "🌊", 25),
+    "hanukkah": _card("🕎 חנוכה שמח", ["🍩", "🎁", "🪙", "✨", "🕎"], "🕯️", 40),
+    "league": _card("⚽ ליגת העל", ["📣", "🧤", "🥅", "🏆", "⚽"], "🟨", 30),
+    "deadsea": _card("🏜️ ים המלח", ["🧂", "⛰️", "🐪", "🏜️", "💎"], "🌵", 100),
+    "hamsa": _card("🪬 חמסה של מזל", ["🍀", "🧿", "🪙", "⭐", "🪬"], "🌙", 15, luck=1.1),
+    "shuk": _card("🛒 שוק הכרמל", ["🧀", "🥖", "🍊", "🍇", "🐟"], "🧺", 20),
+    "independence": _card("🇮🇱 יום העצמאות", ["🥁", "🔥", "🍖", "🎆", "🇮🇱"], "🎈", 60),
+}
+SCRATCH_REFUND = 10   # % chance of a "2 top symbols" card = the bet is returned
 CF_MIN, CF_MAX = 50, 84   # chicken fight win chance: starts at 50%, +1% per win, capped at 84%
 ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360   # ROB_FAIL = 45% chance to get caught
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
@@ -373,6 +394,7 @@ class BoardView(discord.ui.View):
     reveal_on_cashout = True   # False = a cash out does NOT show where the bombs / diamonds were
     mines_style = False        # True = result message like the mines screenshot
     game_name = "game"
+    cash_row = None            # None = the row under the tiles
 
     def __init__(self, user, bet, token=None):
         super().__init__(timeout=120)
@@ -384,7 +406,7 @@ class BoardView(discord.ui.View):
         self.edit_lock = asyncio.Lock()   # edits go out one at a time, in order
         self.message = None
         self.tiles = [Tile(i, self.cols) for i in range(len(self.board))]
-        row = len(self.tiles) // self.cols
+        row = self.cash_row if self.cash_row is not None else len(self.tiles) // self.cols
         self.cash_btn = discord.ui.Button(style=discord.ButtonStyle.success, label="Cashout", row=row)
         self.cash_btn.callback = lambda i: self.finish(i, False)
         self.profit_btn = discord.ui.Button(style=discord.ButtonStyle.primary, disabled=True,
@@ -537,6 +559,89 @@ class SMines(BoardView):
         n = min(len(self.revealed), len(self.table))
         self.profit = self.bet * ((math.prod(self.table[:n]) if SMINES_COMPOUND else self.table[n - 1]) - 1)
 
+class MoneyTower(BoardView):
+    """5 rows x 3 tiles (1 bomb per row). You climb from the bottom row up. Every safe tile = the next
+    multiplier of MT_MULT (applies to the bet only, not compounded). Climbing all 5 rows = automatic cashout."""
+    cols = 3
+    cash_row = 4                  # Cashout + Profit sit on the bottom tile row
+    reveal_on_cashout = False
+    game_name = "money tower"
+
+    @property
+    def header(self):
+        return f"**{self.user.name}'s Game**"
+
+    def __init__(self, user, bet, token=None):
+        self.climbed = 0
+        super().__init__(user, bet, token)
+        for i, t in enumerate(self.tiles):
+            t.disabled = i // 3 != 4      # only the bottom row is open at the start
+
+    def make_board(self):
+        board = []
+        for _ in range(5):
+            board += shuffled(bomb=1, diamond=2)
+        return board
+
+    def earn(self, kind):
+        self.profit = self.bet * (MT_MULT[self.climbed - 1] - 1)
+
+    def reveal(self, i):
+        kind, t = self.board[i], self.tiles[i]
+        self.revealed.add(i)
+        t.disabled = True
+        if kind == "bomb":
+            t.emoji, t.style = EMOJI["bomb"], discord.ButtonStyle.danger
+        else:
+            t.emoji, t.style = MT_SAFE, discord.ButtonStyle.success
+            self.climbed += 1
+            self.earn(kind)
+            self.profit_btn.label = f"Profit: {fmt(self.profit)}"
+
+    async def click(self, interaction, idx):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        row = idx // 3
+        if self.done or idx in self.revealed or row != 4 - self.climbed:   # only the current row can be clicked
+            return
+        kind = self.board[idx]
+        self.reveal(idx)
+        if kind == "bomb":
+            return await self.finish(interaction, True)
+        for j in range(row * 3, row * 3 + 3):   # row cleared: lock it and show where its bomb was
+            self.tiles[j].disabled = True
+            if self.board[j] == "bomb":
+                self.tiles[j].emoji, self.tiles[j].style = EMOJI["bomb"], discord.ButtonStyle.danger
+        if self.climbed >= 5:
+            return await self.finish(interaction, False)   # top reached: automatic cashout
+        for j in range((row - 1) * 3, (row - 1) * 3 + 3):   # open the next row
+            self.tiles[j].disabled = False
+        self.version += 1
+        v = self.version
+        async with self.edit_lock:
+            if v != self.version or self.done:
+                return
+            await interaction.edit_original_response(content=self.header, view=self)
+
+    def reveal_all(self, show):
+        for i, kind in enumerate(self.board):
+            t = self.tiles[i]
+            t.disabled = True
+            if show and kind == "bomb":
+                t.emoji, t.style = EMOJI["bomb"], discord.ButtonStyle.danger
+        self.cash_btn.disabled = True
+
+    def embed(self, lost):
+        rows = f"You climbed {self.climbed} row{'s' if self.climbed != 1 else ''}."
+        if lost:
+            e = discord.Embed(title="💥 You hit a bomb!", color=RED,
+                              description=f"```\n-You lost {fmt(self.bet)} {cur()}\n```\n{rows}")
+        else:
+            e = discord.Embed(title="💰 You cashed out!", color=GREEN,
+                              description=f"```\n+You won and got {fmt(self.bet + int(self.profit))} {cur()}\n```\n{rows}")
+        e.timestamp = discord.utils.utcnow()
+        return e
+
 class SizeView(discord.ui.View):
     def __init__(self, user, bet, token=None):
         super().__init__(timeout=60)
@@ -610,6 +715,10 @@ async def mines(ctx, amount: str = None):
         except Exception:
             cancel_game(ctx.author, view.token, bet)
             raise
+
+@bot.command(name="mt", aliases=["moneytower"], usage="mt <amount | half | all>")
+async def mt(ctx, amount: str = None):
+    await start_board(ctx, MoneyTower, amount, "mt <amount | half | all>")
 
 # ================= BLACKJACK =================
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -1013,6 +1122,169 @@ async def cf(ctx, amount: str = None):
     log_game(ctx.author, "chicken fight", bet, bet if won else -bet)
     await reply(ctx, desc, color)
 
+# ================= SCRATCH CARDS =================
+def scratch_outcome(card):
+    """'lose', 'refund' or the index of the winning prize symbol. Top prize chance = 15 / top prize %."""
+    mults, luck = card["mults"], card["luck"]
+    table = [(i, w * luck) for i, w in enumerate([16, 9, 4, 1.5, 15 / mults[-1]])] + [("refund", SCRATCH_REFUND * luck)]
+    r = random.uniform(0, 100)
+    for out, w in table:
+        if r < w:
+            return out
+        r -= w
+    return "lose"
+
+def scratch_board(card, out):
+    """9 symbols that match the outcome: win = exactly 3 of the winning symbol, nothing else reaches 3."""
+    prize, dud = card["prize"], card["dud"]
+    top, pool = prize[-1], prize + [dud]
+    for _ in range(3000):
+        b = random.choices(pool, k=9)
+        c = Counter(b)
+        if out == "lose":
+            good = all(c[s] <= 2 for s in prize) and c[top] <= 1
+        elif out == "refund":
+            good = c[top] == 2 and all(c[s] <= 2 for s in prize)
+        else:
+            good = c[prize[out]] == 3 and all(c[s] <= 2 for i, s in enumerate(prize) if i != out)
+        if good:
+            return b
+    if out == "lose":
+        return [dud] * 9
+    return ([top] * 2 if out == "refund" else [prize[out]] * 3) + [dud] * (7 if out == "refund" else 6)
+
+def find_card(text):
+    t = text.lower()
+    for key, c in SCRATCH_CARDS.items():
+        if t == key:
+            return key
+    for key, c in SCRATCH_CARDS.items():
+        if len(t) >= 2 and t in c["name"].lower():
+            return key
+    return None
+
+class ScratchView(discord.ui.View):
+    def __init__(self, user, bet, card, token=None):
+        super().__init__(timeout=120)
+        self.user, self.bet, self.card, self.token = user, bet, card, token
+        self.out = scratch_outcome(card)          # decided up front, the scratching only reveals it
+        self.board = scratch_board(card, self.out)
+        self.revealed, self.done, self.message = set(), False, None
+        self.version, self.edit_lock = 0, asyncio.Lock()
+        self.tiles = [Tile(i, 3) for i in range(9)]
+        for t in self.tiles:
+            t.emoji = "🎟️"
+        self.all_btn = discord.ui.Button(style=discord.ButtonStyle.success, label="Scratch all", row=3)
+        self.all_btn.callback = self.settle
+        for b in (*self.tiles, self.all_btn):
+            self.add_item(b)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    def info(self):
+        c = self.card
+        prizes = "\n".join(f"{s} ×3 → **x{m:g}**" for s, m in zip(c["prize"], c["mults"]))
+        return discord.Embed(color=YELLOW, title=f"🎟️ {c['name']}", description=(
+            f"Bet: **{fmt(self.bet)}** {cur()}\n\nFind **3 matching** symbols to win!\n"
+            f"2 × {c['prize'][-1]} = your bet is returned\n\n{prizes}"))
+
+    def reveal(self, i):
+        t = self.tiles[i]
+        self.revealed.add(i)
+        t.emoji, t.disabled, t.style = self.board[i], True, discord.ButtonStyle.primary
+
+    async def click(self, interaction, idx):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if self.done or idx in self.revealed:
+            return
+        self.reveal(idx)
+        if len(self.revealed) == 9:
+            return await self.settle(interaction)
+        self.version += 1
+        v = self.version
+        async with self.edit_lock:
+            if v != self.version or self.done:
+                return
+            await interaction.edit_original_response(view=self)
+
+    def finalize(self):
+        """Reveals everything, pays, and returns the result embed."""
+        self.done = True
+        for i in range(9):
+            if i not in self.revealed:
+                self.reveal(i)
+        c, name = self.card, self.card["name"]
+        if isinstance(self.out, int):
+            sym, mult = c["prize"][self.out], c["mults"][self.out]
+            for i, s in enumerate(self.board):
+                if s == sym:
+                    self.tiles[i].style = discord.ButtonStyle.success
+            extra = f"**{name}**\n3 × {sym} → **x{mult:g}**\n\n"
+        elif self.out == "refund":
+            mult, extra = 1, f"**{name}**\nSo close! 2 × {c['prize'][-1]}\n\n"
+        else:
+            mult, extra = 0, f"**{name}**\nNo match this time.\n\n"
+        returned = int(self.bet * mult)
+        pending_done(self.token)
+        user_data(self.user.id)["cash"] += returned
+        save()
+        net = returned - self.bet
+        log_game(self.user, f"scratch {name}", self.bet, net)
+        self.all_btn.disabled = True
+        if net > 0:
+            return result_embed(self.user, True, net, extra)
+        if net < 0:
+            return result_embed(self.user, False, self.bet, extra)
+        return make_embed(self.user, f"{extra}```\nPush: your bet of {fmt(self.bet)} was returned\n```\n"
+                                     f"You now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
+
+    async def settle(self, interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if self.done:
+            return
+        e = self.finalize()
+        async with self.edit_lock:
+            await interaction.edit_original_response(embed=e, view=self)
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        e = self.finalize()
+        if self.message:
+            await self.message.edit(embed=e, view=self)
+
+@bot.command(name="scratch", usage="scratch [card] <amount | half | all>")
+async def scratch(ctx, *args):
+    usage = "scratch [card] <amount | half | all>"
+    if not 1 <= len(args) <= 2:
+        return await reply(ctx, f"Usage: `${usage}`\nSee the cards with `$cards`.", RED)
+    key = None
+    if len(args) == 2:
+        key = find_card(args[0])
+        if key is None:
+            return await reply(ctx, "Unknown card. See the list with `$cards`.", RED)
+    card = SCRATCH_CARDS[key or random.choice(list(SCRATCH_CARDS))]
+    bet = await take_bet(ctx, args[-1], usage, track=True)
+    if not bet:
+        return
+    view = ScratchView(ctx.author, bet, card, str(ctx.message.id))
+    try:
+        view.message = await ctx.reply(embed=view.info(), view=view, mention_author=False)
+    except Exception:
+        cancel_game(ctx.author, view.token, bet)
+        raise
+
+@bot.command(name="cards")
+async def cards(ctx):
+    lines = [f"`{k}` — {c['name']} (top prize x{c['mults'][-1]:g})" for k, c in SCRATCH_CARDS.items()]
+    await reply(ctx, "**🎟️ Scratch cards**\n" + "\n".join(lines) + "\n\nPlay: `$scratch [card] <amount | half | all>`", BLUE)
+
 # ================= ECONOMY =================
 @bot.command(name="bal", aliases=["balance"], usage="bal [@user]")
 async def bal(ctx, member: discord.Member = None):
@@ -1250,6 +1522,8 @@ INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מיני
 • `$slots` – מכונת מזל עם אנימציה. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח מתחיל ב-50%, עולה ב-1% אחרי כל ניצחון עד מקסימום 84%, וחוזר ל-50% אחרי הפסד.
+• `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.4, x1.8, x2.4, x4.2, x5.2), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
+• `$scratch [כרטיס] סכום` – כרטיס גירוד. מגרדים משבצות ומחפשים 3 סמלים זהים. בלי שם כרטיס מקבלים כרטיס רנדומלי. `$cards` מציג את כל הכרטיסים.
 
 **💰 כלכלה**
 • `$bal [@user]` – כסף בחוץ ובבנק.
