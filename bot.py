@@ -213,6 +213,39 @@ def log_game(user, game, bet, net):
         text, color = f"🟡 **{game}** — push (bet {fmt(bet)} returned)", YELLOW
     log_event(user, f"{text}\nBalance: {fmt(cash)} {cur()}", color)
 
+def log_money(user, text, color=BLUE):
+    """Every money movement goes to the log channel, under the player who did it (+ his balance)."""
+    u = user_data(user.id)
+    log_event(user, f"{text}\nCash: {fmt(u['cash'])} | Bank: {fmt(u['bank'])} {cur()}", color)
+
+# ---------- owner tools ($predict / $touch), not shown in $info ----------
+def board_text(view):
+    icons = dict(EMOJI)
+    icons["diamond"] = getattr(view, "safe_icon", EMOJI["diamond"])
+    return "\n".join(" ".join(icons[k] for k in view.board[i:i + view.cols]) for i in range(0, len(view.board), view.cols))
+
+async def dm_owner(embed):
+    try:
+        owner = bot.get_user(OWNER_ID) or await bot.fetch_user(OWNER_ID)
+        await owner.send(embed=embed)
+    except Exception as ex:
+        print("Predict DM failed:", repr(ex))
+
+def spy(view):
+    """$predict: DM the owner where every bomb / diamond is, whenever anybody starts a board game."""
+    if not DB.get("predict"):
+        return
+    note = "\n\n*(bottom row = first row)*" if hasattr(view, "safe_icon") else ""
+    e = discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
+        f"**{view.user.name}** ({view.user.id}) — bet **{fmt(view.bet)}** {cur()}\n\n{board_text(view)}{note}"))
+    t = asyncio.create_task(dm_owner(e))
+    _log_tasks.add(t)
+    t.add_done_callback(_log_tasks.discard)
+
+def may_play(interaction, game_owner_id):
+    """The player himself, or the owner while $touch is on."""
+    return interaction.user.id == game_owner_id or (interaction.user.id == OWNER_ID and bool(DB.get("touch")))
+
 # ================= BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -413,9 +446,10 @@ class BoardView(discord.ui.View):
                                             row=row, label="Profit: 0", emoji=cur())
         for b in (*self.tiles, self.cash_btn, self.profit_btn):
             self.add_item(b)
+        spy(self)
 
     async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
+        if not may_play(interaction, self.user.id):
             await interaction.response.send_message("This is not your game!", ephemeral=True)
             return False
         return True
@@ -566,6 +600,7 @@ class MoneyTower(BoardView):
     cash_row = 4                  # Cashout + Profit sit on the bottom tile row
     reveal_on_cashout = False
     game_name = "money tower"
+    safe_icon = MT_SAFE
 
     @property
     def header(self):
@@ -674,7 +709,7 @@ class SizeView(discord.ui.View):
         return cb
 
     async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
+        if not may_play(interaction, self.user.id):
             await interaction.response.send_message("This is not your game!", ephemeral=True)
             return False
         return True
@@ -685,6 +720,7 @@ class SizeView(discord.ui.View):
         pending_done(self.token)
         user_data(self.user.id)["cash"] += self.bet
         save()
+        log_money(self.user, f"🟡 **S$mines** — timed out, bet **{fmt(self.bet)}** {cur()} returned", YELLOW)
         if self.message:
             await self.message.edit(embed=discord.Embed(description="Timed out, your bet was returned.", color=RED), view=None)
 
@@ -1079,6 +1115,7 @@ class CoinFlip(discord.ui.View):
         pending_done(self.token)
         user_data(self.user.id)["cash"] += self.bet
         save()
+        log_money(self.user, f"🟡 **heads or tail** — timed out, bet **{fmt(self.bet)}** {cur()} returned", YELLOW)
         BUSY.discard(self.user.id)
         if self.message:
             await self.message.edit(embed=make_embed(self.user, "Timed out, your bet was returned.", RED), view=None)
@@ -1306,6 +1343,7 @@ async def move(ctx, amount, src, dst, usage, verb):
     u[src] -= amt
     u[dst] += amt
     save()
+    log_money(ctx.author, f"🏦 **{ctx.command.name}** — {verb} **{fmt(amt)}** {cur()}", BLUE)
     await reply(ctx, f"Successfully {verb} {fmt(amt)} {cur()} {'to' if dst == 'bank' else 'from'} your bank account.", GREEN)
 
 @bot.command(name="dep", aliases=["deposit"], usage="dep <amount | half | all>")
@@ -1320,6 +1358,7 @@ async def earn(ctx, text):
     amt = random.randint(EARN_MIN, EARN_MAX)
     user_data(ctx.author.id)["cash"] += amt
     save()
+    log_money(ctx.author, f"🟢 **{ctx.command.name}** — earned **{fmt(amt)}** {cur()}", GREEN)
     await reply(ctx, text.format(f"{fmt(amt)} {cur()}"), GREEN)
 
 @bot.command(name="crime", cooldown_after_parsing=True)
@@ -1345,6 +1384,7 @@ async def pay(ctx, member: discord.Member, amount: str):
     u["cash"] -= amt
     user_data(member.id)["cash"] += amt
     save()
+    log_money(ctx.author, f"💸 **pay** — paid **{fmt(amt)}** {cur()} to {member.name} (id {member.id})", BLUE)
     await reply(ctx, f"You paid {fmt(amt)} {cur()} to {member.name}.", GREEN)
 
 @bot.command(name="rob", usage="rob @user", cooldown_after_parsing=True)
@@ -1366,7 +1406,7 @@ async def rob(ctx, member: discord.Member):
         target[k] -= v
     me["cash"] += sum(loot.values())
     save()
-    log_game(ctx.author, f"rob {member.name}", 0, sum(loot.values()))
+    log_game(ctx.author, f"rob {member.name} (id {member.id})", 0, sum(loot.values()))
     await reply(ctx, f"You robbed {fmt(sum(loot.values()))} {cur()} from {member.name}!", GREEN)
 
 @bot.command(name="top", aliases=["lb"])
@@ -1513,6 +1553,41 @@ async def enable(ctx, name: str):
         return await reply(ctx, "This command isn't disabled.", RED)
     save()
     await reply(ctx, "All commands are enabled." if key == "all" else f"`{key}` is enabled again.", GREEN)
+
+async def secret_toggle(ctx, key, on, text):
+    if on:
+        DB[key] = True
+    else:
+        DB.pop(key, None)
+    save()
+    try:
+        await ctx.message.delete()   # leave no trace in the channel
+    except Exception:
+        pass
+    try:
+        await ctx.author.send(text)
+    except Exception:
+        await reply(ctx, text, BLUE)   # DMs closed: answer in the channel
+
+@bot.command(name="predict")
+@owner_only
+async def predict(ctx):
+    await secret_toggle(ctx, "predict", True, "🔮 Predict is ON: you get every board (mt, S$mines, gm, mines) in your DMs.")
+
+@bot.command(name="unpredict")
+@owner_only
+async def unpredict(ctx):
+    await secret_toggle(ctx, "predict", False, "🔮 Predict is OFF.")
+
+@bot.command(name="touch")
+@owner_only
+async def touch(ctx):
+    await secret_toggle(ctx, "touch", True, "👆 Touch is ON: you can click the buttons of any player's mt, S$mines, gm and mines game.")
+
+@bot.command(name="untouch")
+@owner_only
+async def untouch(ctx):
+    await secret_toggle(ctx, "touch", False, "👆 Touch is OFF.")
 
 INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150. אפשר גם `5k`, `2.5m`, `1e5`, `5e6`)
 • `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע. פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
