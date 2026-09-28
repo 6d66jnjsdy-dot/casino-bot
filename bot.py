@@ -803,11 +803,11 @@ def hand_value(cards):
         total, aces = total - 10, aces - 1
     return total
 
-# ---------- card images: number cards = one color + a big number, J/Q/K = the real artwork pasted inside the card ----------
-SW, SH = 84, 118
+# ---------- card images: every card is cut from the deck picture (faces.py); plain colored cards are only a fallback ----------
+SW, SH = 68, 120
 TABLE_W = 960
 MASK = Image.new("L", (SW, SH), 0)
-ImageDraw.Draw(MASK).rounded_rectangle([0, 0, SW - 1, SH - 1], radius=9, fill=255)
+ImageDraw.Draw(MASK).rounded_rectangle([0, 0, SW - 1, SH - 1], radius=6, fill=255)
 SUIT_COLORS = {"♣": (34, 139, 34), "♠": (40, 40, 40), "♥": (205, 30, 30), "♦": (30, 100, 215)}
 FACE_W, FACE_H = 52, 92   # size of one piece in faces.py (rows: ♣ ♠ ♥ ♦, columns: J Q K)
 
@@ -826,20 +826,19 @@ def get_font(size):
 @lru_cache(maxsize=None)
 def get_card(card):
     r, s = card
+    if FACES is not None:
+        x, y = RANKS.index(r) * FACE_W, SUITS.index(s) * FACE_H
+        im = FACES.crop((x, y, x + FACE_W, y + FACE_H)).resize((SW, SH), Image.LANCZOS).convert("RGBA")
+        ImageDraw.Draw(im).rectangle([0, 0, SW - 1, SH - 1], outline=(170, 170, 170, 255), width=1)
+        im.putalpha(MASK)
+        return im
     im = Image.new("RGBA", (SW, SH), (255, 255, 255, 255))
     inner = Image.new("RGBA", (SW - 8, SH - 8), SUIT_COLORS[s] + (255,))
     m = Image.new("L", inner.size, 0)
     ImageDraw.Draw(m).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=7, fill=255)
-    if FACES is not None and r in ("J", "Q", "K"):
-        # the piece of the real card goes inside a frame of the suit color
-        x, y = "JQK".index(r) * FACE_W, SUITS.index(s) * FACE_H
-        piece = FACES.crop((x, y, x + FACE_W, y + FACE_H)).resize((SW - 20, SH - 20), Image.LANCZOS).convert("RGBA")
-        inner.paste(piece, (6, 6))
-        im.paste(inner, (4, 4), m)
-    else:
-        im.paste(inner, (4, 4), m)
-        ImageDraw.Draw(im).text((SW // 2, SH // 2), r, font=get_font(66 if len(r) == 1 else 52),
-                                fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 120))
+    im.paste(inner, (4, 4), m)
+    ImageDraw.Draw(im).text((SW // 2, SH // 2), r, font=get_font(66 if len(r) == 1 else 52),
+                            fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 120))
     im.putalpha(MASK)
     return im
 
@@ -1422,10 +1421,6 @@ async def ht(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
         raise
 
-def small(text):
-    """Discord 'subtext' (-#): the same words, in a smaller font."""
-    return "\n".join(f"-# {ln}" if ln.strip() else ln for ln in text.split("\n"))
-
 @bot.command(name="cf", usage="cf <amount | half | all>")
 async def cf(ctx, amount: str = None):
     bet = await take_bet(ctx, amount, "cf <amount | half | all>")
@@ -1446,7 +1441,7 @@ async def cf(ctx, amount: str = None):
         desc, color = f"Your chicken lost the fight... You lost {fmt(bet)} {c}🐓.", RED
     save()
     log_game(ctx.author, "chicken fight", bet, bet if won else -bet)
-    await reply(ctx, small(desc), color)
+    await reply(ctx, desc, color)
 
 # ================= SCRATCH CARDS =================
 def week_id():
