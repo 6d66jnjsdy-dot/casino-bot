@@ -376,6 +376,7 @@ async def setup_hook():
     await start_web()
     disk_loop.start()
     backup_loop.start()
+    bot.add_view(ShopView())   # shop buttons keep working after a restart
     try:
         asyncio.get_running_loop().add_signal_handler(
             signal.SIGTERM, lambda: asyncio.create_task(graceful_shutdown()))
@@ -1996,6 +1997,87 @@ async def top(ctx):
     # mentions inside an embed are clickable but never ping anybody
     view.message = await ctx.reply(embed=view.build(), view=view, mention_author=False)
 
+# ================= SHOP ($shop) =================
+SHOP_TITLE = "TheCohen Casino Shop"
+SHOP_FOOTER = "Developed By zoharos_ & jx.liran"
+SHOP_COLOR = 0xDDC9A3
+SHOP_THUMBNAIL = None   # put an image link here for the picture on the right; None = server icon
+
+# (name, emoji, role id, price in the BANK) - cheapest at the top, most expensive at the bottom
+SHOP_ITEMS = [
+    ("Casino professional", "🏅", 1554242301927104643, 185_000_000),
+    ("Casino Summer",       "🏝️", 1554242805071876116, 285_000_000),
+    ("Casino Star",         "🌟", 1554241846165766225, 375_000_000),
+    ("Casino Elite",        "🗽", 1554239763006099487, 500_000_000),
+    ("Casino Emperor",      "⚜️", 1554240949213724854, 575_000_000),
+    ("Casino VIP",          "💎", 1554242535369482371, 650_000_000),
+]
+
+async def shop_say(interaction, text):
+    await interaction.response.send_message(text, ephemeral=True)
+
+async def shop_buy(interaction, item):
+    name, emoji, role_id, price = item
+    member = interaction.user
+    if interaction.guild is None or not isinstance(member, discord.Member):
+        return await shop_say(interaction, "This only works inside the server.")
+    if loaded is None or not loaded.is_set():
+        return await shop_say(interaction, "The bot is still starting, try again in a few seconds.")
+    role = interaction.guild.get_role(role_id)
+    if role is None:
+        return await shop_say(interaction, "This role doesn't exist anymore, tell an admin.")
+    owned = DB.setdefault("shop", {}).setdefault(str(member.id), [])
+    if role_id in owned or role in member.roles:
+        return await shop_say(interaction, f"You already own **{name}**. Each role can be bought only once.")
+    u = user_data(member.id)
+    if u["bank"] < price:
+        return await shop_say(
+            interaction,
+            f"You need **{fmt(price)}** {cur()} **in your bank** for {role.mention}.\n"
+            f"You have {fmt(u['bank'])} {cur()} in the bank. (`$dep` to deposit)")
+    # no awaits between the check and the payment, so a double click can't charge twice
+    u["bank"] -= price
+    owned.append(role_id)
+    save()
+    try:
+        await member.add_roles(role, reason="Casino shop")
+    except Exception as ex:
+        u["bank"] += price
+        if role_id in owned:
+            owned.remove(role_id)
+        save()
+        print("Shop: add_roles failed:", repr(ex))
+        return await shop_say(interaction, "I couldn't give you the role (my role must be above it). You were not charged.")
+    log_money(member, f"🛒 **shop** — bought **{name}** for **{fmt(price)}** {cur()}", YELLOW)
+    await shop_say(interaction, f"✅ You bought {role.mention} for **{fmt(price)}** {cur()} (from your bank).")
+
+class ShopButton(discord.ui.Button):
+    def __init__(self, item, row):
+        super().__init__(style=discord.ButtonStyle.secondary, label=item[0], emoji=item[1],
+                         custom_id=f"shop:{item[2]}", row=row)
+        self.item = item
+
+    async def callback(self, interaction):
+        await shop_buy(interaction, self.item)
+
+class ShopView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)   # persistent: the buttons keep working after a restart
+        for i, item in enumerate(SHOP_ITEMS):
+            self.add_item(ShopButton(item, i // 2))
+
+@bot.command(name="shop", usage="shop")
+async def shop(ctx):
+    lines = [f"<@&{rid}> - {fmt(price)} {cur()}" for _, _, rid, price in SHOP_ITEMS]
+    e = discord.Embed(description="\n".join(lines), color=SHOP_COLOR)
+    icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
+    e.set_author(name=SHOP_TITLE, icon_url=icon)
+    thumb = SHOP_THUMBNAIL or icon
+    if thumb:
+        e.set_thumbnail(url=thumb)
+    e.set_footer(text=SHOP_FOOTER)
+    await ctx.send(embed=e, view=ShopView())
+
 # ================= STAFF / ADMIN =================
 class NotStaff(commands.CheckFailure):
     pass
@@ -2186,6 +2268,7 @@ INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מיני
 • `$rob @user` – שוד. קולדאון 6 דקות ושודדים 80% מהמזומן של הקורבן בלבד – הכסף שבבנק מוגן ולא ניתן לשדוד אותו. למי שיש כסף יש 45% להיתפס ולהתאפס. שוד של מישהו בלי מזומן תמיד נכשל.
 • `$pay @user סכום` – העברת כסף לשחקן אחר.
 • `$top` / `$lb` – טבלת העשירים עם כפתורי Bank, Total, Cash ודפים.
+• `$shop` – חנות רולים. קונים רול בכפתור, התשלום רק מהכסף שבבנק, וכל רול אפשר לקנות פעם אחת בלבד.
 
 **🛠 צוות** (אדמין או רול צוות)
 • `$addmoney` / `$removemoney bank|cash @user סכום` – הוספה או הורדה של כסף.
