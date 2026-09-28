@@ -10,6 +10,7 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.join(HERE, "data"))   # point this
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "economy.json")
 CHANNELS = {1541567870591443026, 1502311424808980690}
+OWNER_ID = 1537816435370229820
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID") or 1541567870591443026)
 MIN_BET = 150
 EARN_MIN, EARN_MAX = 6500, 16000
@@ -22,6 +23,13 @@ EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "s
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
 MINES_MULT = [1.1, 1.3, 1.6, 2, 2.2, 4.6, 7.6, 10.2]
 MINES_COMPOUND = True   # True: every diamond multiplies the current total. False: the list is the total multiplier per click
+SMINES_COMPOUND = False   # S$mines: False = the numbers are the total multiplier per click (True would multiply them together)
+SMINES = {   # key: (columns, rows, mines, multiplier per click)
+    "2x2": (2, 2, 1, [1.4, 2.3, 4.3]),
+    "4x4": (4, 4, 2, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 6.4, 7, 12.3]),
+    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 4.6, 5.4, 19]),
+}
+ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
 
@@ -106,12 +114,19 @@ async def take_bet(ctx, amount, usage):
 # ================= BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="$", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None)   # "S$mines" = the board-size game
+
+def cmd_key(ctx):
+    return "s$mines" if ctx.command.name == "mines" and ctx.prefix.lower() == "s$" else ctx.command.name
 
 @bot.check
 async def only_allowed_channels(ctx):
     await loaded.wait()
-    return ctx.channel.id in CHANNELS
+    if ctx.channel.id not in CHANNELS:
+        return False
+    if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id != OWNER_ID:
+        raise commands.DisabledCommand()
+    return True
 
 # ================= BACKUP =================
 def backup_file():
@@ -204,6 +219,8 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, err):
+    if isinstance(err, commands.DisabledCommand):
+        return await reply(ctx, "This command is currently disabled.", RED)
     if isinstance(err, commands.MissingPermissions):
         return await reply(ctx, "You need Administrator permission to use this command.", RED)
     if isinstance(err, commands.CommandOnCooldown):
@@ -350,6 +367,58 @@ class Mines(BoardView):
         n = len(self.revealed)
         self.profit = self.bet * ((math.prod(MINES_MULT[:n]) if MINES_COMPOUND else MINES_MULT[n - 1]) - 1)
 
+class SMines(BoardView):
+    def __init__(self, user, bet, key):
+        self.cols, rows, self.mines, self.table = SMINES[key]
+        self.cells = self.cols * rows
+        super().__init__(user, bet)
+
+    def make_board(self):
+        board = ["bomb"] * self.mines + ["diamond"] * (self.cells - self.mines)
+        random.shuffle(board)
+        return board
+
+    def earn(self, kind):
+        n = min(len(self.revealed), len(self.table))
+        self.profit = self.bet * ((math.prod(self.table[:n]) if SMINES_COMPOUND else self.table[n - 1]) - 1)
+
+class SizeView(discord.ui.View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.user, self.bet, self.message, self.chosen = user, bet, None, False
+        for key, (_, _, m, _) in SMINES.items():
+            b = discord.ui.Button(style=discord.ButtonStyle.primary, label=f"{key} ({m} mine{'s' * (m > 1)})")
+            b.callback = self.pick(key)
+            self.add_item(b)
+
+    def embed(self):
+        rows = "\n".join(f"• {k}: {m} mine{'s' * (m > 1)}, {w * h - m} diamonds" for k, (w, h, m, _) in SMINES.items())
+        return discord.Embed(color=BLUE, description=(
+            f"**Choose Board Size**\n\nYou bet **{fmt(self.bet)}** {cur()}.\n\n{rows}\n\nClick a button below to start!"))
+
+    def pick(self, key):
+        async def cb(interaction):
+            self.chosen = True
+            self.stop()
+            game = SMines(self.user, self.bet, key)
+            game.message = interaction.message
+            await interaction.response.edit_message(content=game.header, embed=None, view=game)
+        return cb
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.chosen:
+            return
+        user_data(self.user.id)["cash"] += self.bet
+        save()
+        if self.message:
+            await self.message.edit(embed=discord.Embed(description="Timed out, your bet was returned.", color=RED), view=None)
+
 async def start_board(ctx, cls, amount, usage):
     bet = await take_bet(ctx, amount, usage)
     if bet:
@@ -362,7 +431,13 @@ async def gm(ctx, amount: str = None):
 
 @bot.command(name="mines", usage="mines <amount | half | all>")
 async def mines(ctx, amount: str = None):
-    await start_board(ctx, Mines, amount, "mines <amount | half | all>")
+    usage = "mines <amount | half | all>"
+    if ctx.prefix.lower() != "s$":
+        return await start_board(ctx, Mines, amount, usage)
+    bet = await take_bet(ctx, amount, usage)
+    if bet:
+        view = SizeView(ctx.author, bet)
+        view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
 
 # ================= BLACKJACK =================
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -378,16 +453,18 @@ def hand_value(cards):
         total, aces = total - 10, aces - 1
     return total
 
-# ---------- card images (cut straight from cards.png) ----------
+# ---------- card images ----------
+# Cards are drawn at full size on a wide canvas. Discord shrinks the wide image to fit the message,
+# so the cards look small but stay sharp. TABLE_W: bigger number = smaller cards on screen.
 SHEET = Image.open(os.path.join(HERE, "cards.png")).convert("RGBA")
-SW, SH = 66, 93                      # one card inside cards.png
-CARD_W, CARD_H = 26, 36              # card size on the table
-MASK = Image.new("L", (CARD_W, CARD_H), 0)
-ImageDraw.Draw(MASK).rounded_rectangle([0, 0, CARD_W - 1, CARD_H - 1], radius=3, fill=255)
+SW, SH = 66, 93
+TABLE_W = 800
+MASK = Image.new("L", (SW, SH), 0)
+ImageDraw.Draw(MASK).rounded_rectangle([0, 0, SW - 1, SH - 1], radius=7, fill=255)
 
 @lru_cache(maxsize=None)
 def get_font(size):
-    for name in ("DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf"):
+    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf"):
         try:
             return ImageFont.truetype(name, size)
         except Exception:
@@ -401,37 +478,38 @@ def get_font(size):
 def get_card(card):
     r, s = card
     x, y = RANKS.index(r) * SW, SUITS.index(s) * SH
-    im = SHEET.crop((x, y, x + SW, y + SH)).resize((CARD_W, CARD_H), Image.LANCZOS)
+    im = SHEET.crop((x, y, x + SW, y + SH))
     im.putalpha(MASK)
     return im
 
 @lru_cache(maxsize=None)
 def get_back():
-    im = Image.new("RGBA", (CARD_W, CARD_H), (250, 250, 250, 255))
-    inner = Image.new("RGBA", (CARD_W - 4, CARD_H - 4), (170, 30, 50, 255))
+    im = Image.new("RGBA", (SW, SH), (250, 250, 250, 255))
+    inner = Image.new("RGBA", (SW - 10, SH - 10), (170, 30, 50, 255))
     d = ImageDraw.Draw(inner)
-    for k in range(-CARD_H, CARD_W, 5):
-        d.line([(k, 0), (k + CARD_H, CARD_H)], fill=(205, 75, 90, 255), width=1)
-    im.paste(inner, (2, 2))
+    for k in range(-SH, SW, 12):
+        d.line([(k, 0), (k + SH, SH)], fill=(205, 75, 90, 255), width=2)
+    m = Image.new("L", inner.size, 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=5, fill=255)
+    im.paste(inner, (5, 5), m)
     im.putalpha(MASK)
     return im
 
 def render_table(dealer, hands, hide_dealer):
     rows = [("YOUR HAND" + (f" {i + 1}" if len(hands) > 1 else ""), list(h)) for i, h in enumerate(hands)]
     rows.append(("DEALER HAND", [dealer[0], None] if hide_dealer else list(dealer)))
-    PAD, LABEL_H, GAP, MAXW = 6, 14, 5, 260
-    step = lambda n: CARD_W + 3 if n <= 1 else min(CARD_W + 3, (MAXW - CARD_W) / (n - 1))
-    width = max(90, 2 * PAD + max(CARD_W + (len(c) - 1) * step(len(c)) for _, c in rows))
-    height = 2 * PAD + len(rows) * (LABEL_H + CARD_H) + (len(rows) - 1) * GAP
-    img = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
+    PAD, LABEL_H, GAP, GAPX = 16, 46, 16, 10
+    step = lambda n: SW + GAPX if n <= 1 else min(SW + GAPX, (TABLE_W - 2 * PAD - SW) / (n - 1))
+    height = 2 * PAD + len(rows) * (LABEL_H + SH) + (len(rows) - 1) * GAP
+    img = Image.new("RGBA", (TABLE_W, height), (0, 0, 0, 0))
     d, y = ImageDraw.Draw(img), PAD
     for label, cards in rows:
-        d.text((PAD, y), label, font=get_font(10), fill=(255, 255, 255, 255))
+        d.text((PAD, y), label, font=get_font(32), fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(255, 255, 255, 255))
         y += LABEL_H
         for i, c in enumerate(cards):
             im = get_back() if c is None else get_card(c)
             img.paste(im, (int(PAD + i * step(len(cards))), y), im)
-        y += CARD_H + GAP
+        y += SH + GAP
     buf = io.BytesIO()
     img.save(buf, "PNG")
     buf.seek(0)
@@ -735,7 +813,41 @@ async def crime(ctx):
 async def work(ctx):
     await earn(ctx, "You worked hard and got {}!")
 
-@bot.command(name="top")
+@bot.command(name="pay", usage="pay @user <amount | half | all>")
+async def pay(ctx, member: discord.Member, amount: str):
+    if member.bot or member.id == ctx.author.id:
+        return await reply(ctx, "You can't pay this user.", RED)
+    u = user_data(ctx.author.id)
+    amt = parse_amount(amount, u["cash"])
+    if amt is None or amt <= 0:
+        return await reply(ctx, "Usage: `$pay @user <amount | half | all>`", RED)
+    if amt > u["cash"]:
+        return await reply(ctx, "You don't have that much money.", RED)
+    u["cash"] -= amt
+    user_data(member.id)["cash"] += amt
+    save()
+    await reply(ctx, f"You paid {fmt(amt)} {cur()} to {member.name}.", GREEN)
+
+@bot.command(name="rob", usage="rob @user", cooldown_after_parsing=True)
+@commands.cooldown(1, ROB_COOLDOWN, commands.BucketType.user)
+async def rob(ctx, member: discord.Member):
+    me, target = user_data(ctx.author.id), user_data(member.id)
+    loot = {k: int(target[k] * ROB_PERCENT) for k in ROB_FROM}
+    if member.bot or member.id == ctx.author.id or not sum(loot.values()):
+        ctx.command.reset_cooldown(ctx)
+        return await reply(ctx, "You can't rob this user." if member.bot or member.id == ctx.author.id
+                           else f"{member.name} has nothing to rob.", RED)
+    if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:
+        me["cash"] = me["bank"] = 0
+        save()
+        return await reply(ctx, "You got caught and lost all your money!", RED)
+    for k, v in loot.items():
+        target[k] -= v
+    me["cash"] += sum(loot.values())
+    save()
+    await reply(ctx, f"You robbed {fmt(sum(loot.values()))} {cur()} from {member.name}!", GREEN)
+
+@bot.command(name="top", aliases=["lb"])
 async def top(ctx):
     ranked = sorted(DB["users"].items(), key=lambda kv: kv[1]["cash"] + kv[1]["bank"], reverse=True)[:10]
     lines = []
@@ -774,5 +886,75 @@ async def currency(ctx, symbol: str = None):
     DB["currency"] = symbol
     save()
     await reply(ctx, f"Currency changed to {symbol}", GREEN)
+
+# ================= OWNER: DISABLE / ENABLE =================
+owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)   # anyone else is ignored silently
+
+def resolve_key(name):
+    name = name.lower().lstrip("$")
+    if name in ("s$mines", "smines"):
+        return "s$mines"
+    cmd = bot.get_command(name)
+    return cmd.name if cmd else None
+
+@bot.command(name="disable", usage="disable <command>")
+@owner_only
+async def disable(ctx, name: str = None):
+    off = DB.setdefault("disabled", [])
+    if name is None:
+        return await reply(ctx, "Disabled: " + (", ".join(f"`{k}`" for k in off) or "none"), BLUE)
+    key = resolve_key(name)
+    if key is None:
+        return await reply(ctx, "Unknown command.", RED)
+    if key in ("disable", "enable"):
+        return await reply(ctx, "You can't disable this command.", RED)
+    if key not in off:
+        off.append(key)
+        save()
+    await reply(ctx, f"`{key}` is now disabled.", GREEN)
+
+@bot.command(name="enable", usage="enable <command | all>")
+@owner_only
+async def enable(ctx, name: str):
+    off = DB.setdefault("disabled", [])
+    key = "all" if name.lower() == "all" else resolve_key(name)
+    if key == "all":
+        off.clear()
+    elif key in off:
+        off.remove(key)
+    else:
+        return await reply(ctx, "This command isn't disabled.", RED)
+    save()
+    await reply(ctx, "All commands are enabled." if key == "all" else f"`{key}` is enabled again.", GREEN)
+
+INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150)
+• `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע. פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
+• `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו. פצצה מפסידה הכול.
+• `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שתיים, 5x4 עם שלוש. יותר פצצות, יותר סיכון ורווח.
+• `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
+• `$slots` – מכונת מזל עם אנימציה. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן.
+• `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
+• `$cf` – קרב תרנגולות. הסיכוי לנצח עולה כשמנצחים ברצף וחוזר להתחלה אחרי הפסד.
+
+**💰 כלכלה**
+• `$bal [@user]` – כסף בחוץ ובבנק.
+• `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו.
+• `$work` / `$crime` – הרווחה מהירה, פעם בשתי דקות.
+• `$rob @user` – שוד. קולדאון 6 דקות ושודדים את רוב הכסף של הקורבן. למי שיש כסף יש סיכוי גבוה להיתפס ולהתאפס.
+• `$pay @user סכום` – העברת כסף לשחקן אחר.
+• `$top` / `$lb` – טבלת העשירים.
+
+**🛠 אדמין**
+• `$addmoney` / `$removemoney bank|cash @user סכום` – הוספה או הורדה של כסף.
+• `$currency אימוג'י` – שינוי סמל המטבע.
+• `$info` – ההודעה הזאת.
+• `$disable` / `$enable` – חסימה ושחרור של פקודה (רק לבעלים).
+
+הבוט עובד רק בחדרים המיועדים."""
+
+@bot.command(name="info")
+@commands.has_permissions(administrator=True)
+async def info(ctx):
+    await ctx.reply(embed=make_embed(ctx.author, INFO, BLUE, "מדריך הבוט"), mention_author=False)
 
 bot.run(TOKEN)
