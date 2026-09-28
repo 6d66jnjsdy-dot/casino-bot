@@ -1,7 +1,7 @@
-import discord, random, json, os, asyncio, io
+import discord, random, json, os, asyncio, io, signal
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # ================= CONFIG =================
 TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or ""
@@ -10,6 +10,10 @@ TOKEN = TOKEN.strip().strip('"').strip("'")
 DB_FILE = os.environ.get("DB_FILE", "economy.json")  # on Render use /data/economy.json with a Disk
 MIN_BET = 150
 EARN_MIN, EARN_MAX = 6500, 16000       # $crime / $work
+# Blackjack fairness: the dealer stops drawing once he reaches this value.
+# 17 = real casino rule (player wins ~43%, loses ~48%)
+# 14 = about fair (45% / 46%)   13 = ~47% wins / 44% losses   12 = ~50% wins / 41% losses
+DEALER_STANDS_ON = 13
 CLICK_DELAY = 0.3                       # loading delay between clicks (seconds)
 
 GREEN = 0x43B581
@@ -33,9 +37,13 @@ def load():
 
 DB = load()
 
+dirty = False   # True when there are changes not yet backed up to Discord
+
 def save():
+    global dirty
     with open(DB_FILE, "w") as f:
         json.dump(DB, f)
+    dirty = True
 
 def user_data(uid):
     return DB["users"].setdefault(str(uid), {"cash": 0, "bank": 0})
@@ -234,6 +242,76 @@ intents.message_content = True
 intents.members = False
 bot = commands.Bot(command_prefix="$", intents=intents, help_command=None)
 
+# ---------- backup to a Discord channel (keeps the money between deploys) ----------
+BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID", "0") or 0)
+backup_msg = None
+
+def backup_file():
+    return discord.File(io.BytesIO(json.dumps(DB).encode()), filename="economy.json")
+
+async def get_backup_channel():
+    return bot.get_channel(BACKUP_CHANNEL_ID) or await bot.fetch_channel(BACKUP_CHANNEL_ID)
+
+async def restore_backup():
+    global backup_msg
+    if not BACKUP_CHANNEL_ID:
+        print("BACKUP_CHANNEL_ID is not set - money will be lost on every deploy!")
+        return
+    try:
+        ch = await get_backup_channel()
+        async for m in ch.history(limit=50):
+            att = next((a for a in m.attachments if a.filename == "economy.json"), None)
+            if att and m.author.id == bot.user.id:
+                backup_msg = m
+                if not DB["users"]:                      # fresh start -> load the saved data
+                    data = json.loads(await att.read())
+                    DB.clear()
+                    DB.update(data)
+                    with open(DB_FILE, "w") as f:
+                        json.dump(DB, f)
+                    print(f"Restored {len(DB['users'])} players from backup")
+                break
+    except Exception as e:
+        print("Backup restore failed:", repr(e))
+
+async def backup_now():
+    global backup_msg, dirty
+    if not BACKUP_CHANNEL_ID or not dirty:
+        return
+    dirty = False
+    try:
+        if backup_msg:
+            try:
+                backup_msg = await backup_msg.edit(attachments=[backup_file()])
+                return
+            except discord.NotFound:
+                backup_msg = None
+        ch = await get_backup_channel()
+        backup_msg = await ch.send("💾 Database backup - do not delete this message",
+                                   file=backup_file())
+    except Exception as e:
+        dirty = True
+        print("Backup failed:", repr(e))
+
+@tasks.loop(seconds=15)
+async def backup_loop():
+    await backup_now()
+
+async def graceful_shutdown():
+    await backup_now()
+    await bot.close()
+
+async def setup_hook():
+    await restore_backup()
+    backup_loop.start()
+    try:                                                 # Render sends SIGTERM on deploy
+        asyncio.get_running_loop().add_signal_handler(
+            signal.SIGTERM, lambda: asyncio.create_task(graceful_shutdown()))
+    except (NotImplementedError, RuntimeError):
+        pass
+
+bot.setup_hook = setup_hook
+
 @bot.event
 async def on_ready():
     print("Logged in as", bot.user)
@@ -299,7 +377,8 @@ def show_cards(cards):
     return ", ".join(show_card(c) for c in cards)
 
 # ---------- card images (drawn with Pillow, no assets needed) ----------
-CARD_W, CARD_H = 110, 154
+BIG_W, BIG_H = 110, 154        # cards are drawn at this size...
+CARD_W, CARD_H = 66, 92         # ...and shrunk to this size (smaller = smaller cards)
 RED_C = (200, 30, 40, 255)
 BLACK_C = (25, 25, 30, 255)
 
@@ -376,7 +455,7 @@ _PIPS = {
 def get_card(card):
     rank, suit = card
     col = RED_C if suit in "♥♦" else BLACK_C
-    W, H = CARD_W, CARD_H
+    W, H = BIG_W, BIG_H
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([0, 0, W - 1, H - 1], radius=10,
@@ -403,11 +482,11 @@ def get_card(card):
         for (cx, ry) in _PIPS[rank]:
             x = W * (.33 + .34 * cx) if cx in (0, 1) else W * cx
             paste_center(img, suit_sprite(suit, size, ry > .5), x, H * ry)
-    return img
+    return img.resize((CARD_W, CARD_H), Image.LANCZOS)
 
 @lru_cache(maxsize=None)
 def get_back():
-    W, H = CARD_W, CARD_H
+    W, H = BIG_W, BIG_H
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(img).rounded_rectangle([0, 0, W - 1, H - 1], radius=10,
                                           fill=(250, 250, 250, 255),
@@ -420,7 +499,7 @@ def get_back():
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1],
                                            radius=7, fill=255)
     img.paste(inner, (6, 6), mask)
-    return img
+    return img.resize((CARD_W, CARD_H), Image.LANCZOS)
 
 def render_table(dealer, hands, hide_dealer):
     """dealer: list of cards, hands: list of lists of cards -> PNG BytesIO"""
@@ -428,18 +507,18 @@ def render_table(dealer, hands, hide_dealer):
     rows = [("DEALER'S HAND", dealer_cards)]
     for i, h in enumerate(hands):
         rows.append(("YOUR HAND" + (f" {i + 1}" if len(hands) > 1 else ""), list(h)))
-    PAD, LABEL_H, GAP, MAXW = 14, 30, 14, 720
+    PAD, LABEL_H, GAP, MAXW = 8, 20, 8, 420
 
     def step(n):
-        return CARD_W + 10 if n <= 1 else min(CARD_W + 10, (MAXW - CARD_W) / (n - 1))
+        return CARD_W + 6 if n <= 1 else min(CARD_W + 6, (MAXW - CARD_W) / (n - 1))
 
-    width = max(260, 2 * PAD + max(CARD_W + (len(c) - 1) * step(len(c)) for _, c in rows))
+    width = max(150, 2 * PAD + max(CARD_W + (len(c) - 1) * step(len(c)) for _, c in rows))
     height = 2 * PAD + len(rows) * (LABEL_H + CARD_H) + (len(rows) - 1) * GAP
     img = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     y = PAD
     for label, cards in rows:
-        d.text((PAD, y), label, font=get_font(20), fill=(255, 255, 255, 255))
+        d.text((PAD, y), label, font=get_font(13), fill=(255, 255, 255, 255))
         y += LABEL_H
         st = step(len(cards))
         for i, c in enumerate(cards):
@@ -512,7 +591,7 @@ class BlackjackView(discord.ui.View):
     def finalize(self):
         self.done = True
         if any(not h["bust"] for h in self.hands):
-            while hand_value(self.dealer) < 17:
+            while hand_value(self.dealer) < DEALER_STANDS_ON:
                 self.dealer.append(self.deck.pop())
         dv = hand_value(self.dealer)
         staked = sum(h["bet"] for h in self.hands)
