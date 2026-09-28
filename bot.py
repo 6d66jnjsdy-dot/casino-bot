@@ -1,4 +1,4 @@
-import discord, random, json, os, asyncio, io, signal
+import discord, random, json, os, asyncio, io, signal, math
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands, tasks
@@ -21,6 +21,7 @@ GREEN, RED, BLUE, YELLOW = 0x43B581, 0xC0392B, 0x3B82F6, 0xF1C40F
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏮"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
 MINES_MULT = [1.1, 1.3, 1.6, 2, 2.2, 4.6, 7.6, 10.2]
+MINES_COMPOUND = True   # True: every diamond multiplies the current total. False: the list is the total multiplier per click
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
 
@@ -36,6 +37,7 @@ DB = load()
 dirty = False
 backup_msg = None
 loaded = None     # asyncio.Event, created in setup_hook
+backup_lock = asyncio.Lock()
 synced = False   # backups stay off until the restore finished, so an empty DB can never overwrite the backup
 
 def write_db():
@@ -47,9 +49,7 @@ def write_db():
 def save():
     global dirty
     write_db()
-    dirty = True
-    if bot.is_ready() and BACKUP_CHANNEL_ID:
-        asyncio.create_task(backup_now())
+    dirty = True   # the backup loop uploads it (one edit of the same message, never a new one)
 
 def user_data(uid):
     return DB["users"].setdefault(str(uid), {"cash": 0, "bank": 0})
@@ -120,12 +120,23 @@ def backup_file():
 async def get_backup_channel():
     return bot.get_channel(BACKUP_CHANNEL_ID) or await bot.fetch_channel(BACKUP_CHANNEL_ID)
 
+async def backup_candidates(ch):
+    pins = ch.pins()
+    if hasattr(pins, "__aiter__"):
+        async for m in pins:
+            yield m
+    else:
+        for m in await pins:
+            yield m
+    async for m in ch.history(limit=300):
+        yield m
+
 async def restore_backup():
     global backup_msg, synced
     if not BACKUP_CHANNEL_ID:
         return print("BACKUP_CHANNEL_ID is not set - backup disabled!")
     try:
-        async for m in (await get_backup_channel()).history(limit=50):
+        async for m in backup_candidates(await get_backup_channel()):
             att = next((a for a in m.attachments if a.filename == "economy.json"), None)
             if att and m.author.id == bot.user.id:
                 backup_msg = m
@@ -144,20 +155,27 @@ async def backup_now():
     global backup_msg, dirty
     if not (BACKUP_CHANNEL_ID and dirty and synced):
         return
-    dirty = False
-    try:
-        if backup_msg:
+    async with backup_lock:
+        if not dirty:
+            return
+        dirty = False
+        try:
+            if backup_msg:
+                try:
+                    backup_msg = await backup_msg.edit(attachments=[backup_file()])
+                    return
+                except discord.NotFound:
+                    backup_msg = None
+            backup_msg = await (await get_backup_channel()).send("💾 Database backup - do not delete this message", file=backup_file())
             try:
-                backup_msg = await backup_msg.edit(attachments=[backup_file()])
-                return
-            except discord.NotFound:
-                backup_msg = None
-        backup_msg = await (await get_backup_channel()).send("💾 Database backup - do not delete this message", file=backup_file())
-    except Exception as e:
-        dirty = True
-        print("Backup failed:", repr(e))
+                await backup_msg.pin()   # pinned = always found again after a restart
+            except Exception:
+                pass
+        except Exception as e:
+            dirty = True
+            print("Backup failed:", repr(e))
 
-@tasks.loop(seconds=15)
+@tasks.loop(seconds=10)
 async def backup_loop():
     await backup_now()
 
@@ -329,7 +347,8 @@ class Mines(BoardView):
         return board
 
     def earn(self, kind):
-        self.profit = self.bet * (MINES_MULT[len(self.revealed) - 1] - 1)
+        n = len(self.revealed)
+        self.profit = self.bet * ((math.prod(MINES_MULT[:n]) if MINES_COMPOUND else MINES_MULT[n - 1]) - 1)
 
 async def start_board(ctx, cls, amount, usage):
     bet = await take_bet(ctx, amount, usage)
@@ -362,9 +381,9 @@ def hand_value(cards):
 # ---------- card images (cut straight from cards.png) ----------
 SHEET = Image.open(os.path.join(HERE, "cards.png")).convert("RGBA")
 SW, SH = 66, 93                      # one card inside cards.png
-CARD_W, CARD_H = 46, 65              # card size on the table
+CARD_W, CARD_H = 26, 36              # card size on the table
 MASK = Image.new("L", (CARD_W, CARD_H), 0)
-ImageDraw.Draw(MASK).rounded_rectangle([0, 0, CARD_W - 1, CARD_H - 1], radius=5, fill=255)
+ImageDraw.Draw(MASK).rounded_rectangle([0, 0, CARD_W - 1, CARD_H - 1], radius=3, fill=255)
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -389,25 +408,25 @@ def get_card(card):
 @lru_cache(maxsize=None)
 def get_back():
     im = Image.new("RGBA", (CARD_W, CARD_H), (250, 250, 250, 255))
-    inner = Image.new("RGBA", (CARD_W - 6, CARD_H - 6), (170, 30, 50, 255))
+    inner = Image.new("RGBA", (CARD_W - 4, CARD_H - 4), (170, 30, 50, 255))
     d = ImageDraw.Draw(inner)
-    for k in range(-CARD_H, CARD_W, 7):
+    for k in range(-CARD_H, CARD_W, 5):
         d.line([(k, 0), (k + CARD_H, CARD_H)], fill=(205, 75, 90, 255), width=1)
-    im.paste(inner, (3, 3))
+    im.paste(inner, (2, 2))
     im.putalpha(MASK)
     return im
 
 def render_table(dealer, hands, hide_dealer):
     rows = [("YOUR HAND" + (f" {i + 1}" if len(hands) > 1 else ""), list(h)) for i, h in enumerate(hands)]
     rows.append(("DEALER HAND", [dealer[0], None] if hide_dealer else list(dealer)))
-    PAD, LABEL_H, GAP, MAXW = 8, 20, 8, 420
-    step = lambda n: CARD_W + 6 if n <= 1 else min(CARD_W + 6, (MAXW - CARD_W) / (n - 1))
-    width = max(150, 2 * PAD + max(CARD_W + (len(c) - 1) * step(len(c)) for _, c in rows))
+    PAD, LABEL_H, GAP, MAXW = 6, 14, 5, 260
+    step = lambda n: CARD_W + 3 if n <= 1 else min(CARD_W + 3, (MAXW - CARD_W) / (n - 1))
+    width = max(90, 2 * PAD + max(CARD_W + (len(c) - 1) * step(len(c)) for _, c in rows))
     height = 2 * PAD + len(rows) * (LABEL_H + CARD_H) + (len(rows) - 1) * GAP
     img = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
     d, y = ImageDraw.Draw(img), PAD
     for label, cards in rows:
-        d.text((PAD, y), label, font=get_font(13), fill=(255, 255, 255, 255))
+        d.text((PAD, y), label, font=get_font(10), fill=(255, 255, 255, 255))
         y += LABEL_H
         for i, c in enumerate(cards):
             im = get_back() if c is None else get_card(c)
@@ -600,19 +619,54 @@ async def slots(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
 
 # ================= HEADS OR TAIL / CHICKEN FIGHT =================
-@bot.command(name="ht", usage="ht <amount | half | all> [head | tail]")
-async def ht(ctx, amount: str = None, side: str = None):
-    bet = await take_bet(ctx, amount, "ht <amount | half | all> [head | tail]")
+class CoinFlip(discord.ui.View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.user, self.bet, self.message = user, bet, None
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    async def flip(self, interaction, pick):
+        land = random.choice(("Head", "Tail"))
+        won = pick == land
+        if won:
+            user_data(self.user.id)["cash"] += self.bet * 2
+            save()
+        BUSY.discard(self.user.id)
+        self.stop()
+        await interaction.response.edit_message(
+            embed=result_embed(self.user, won, self.bet, f"You chose **{pick}**, the coin landed on **{land}**.\n"), view=None)
+
+    @discord.ui.button(label="Head", style=discord.ButtonStyle.primary)
+    async def head(self, interaction, button):
+        await self.flip(interaction, "Head")
+
+    @discord.ui.button(label="Tail", style=discord.ButtonStyle.success)
+    async def tail(self, interaction, button):
+        await self.flip(interaction, "Tail")
+
+    async def on_timeout(self):
+        user_data(self.user.id)["cash"] += self.bet
+        save()
+        BUSY.discard(self.user.id)
+        if self.message:
+            await self.message.edit(embed=make_embed(self.user, "Timed out, your bet was returned.", RED), view=None)
+
+@bot.command(name="ht", usage="ht <amount | half | all>")
+async def ht(ctx, amount: str = None):
+    if ctx.author.id in BUSY:
+        return await reply(ctx, "You already have a game running.", RED)
+    bet = await take_bet(ctx, amount, "ht <amount | half | all>")
     if not bet:
         return
-    pick = {"h": "Head", "t": "Tail"}.get((side or "?")[0].lower()) or random.choice(("Head", "Tail"))
-    land = random.choice(("Head", "Tail"))
-    won = pick == land
-    if won:
-        user_data(ctx.author.id)["cash"] += bet * 2
-        save()
-    await ctx.reply(embed=result_embed(ctx.author, won, bet, f"You chose **{pick}**, the coin landed on **{land}**.\n"),
-                    mention_author=False)
+    BUSY.add(ctx.author.id)
+    view = CoinFlip(ctx.author, bet)
+    e = make_embed(ctx.author, f"🍀 **CoinFlip** 🍀\n\n**Betting Amount:** `{fmt(bet)}`\n\nChoose head or tail (עץ או פאלי)", YELLOW)
+    view.message = await ctx.reply(embed=e, view=view, mention_author=False)
 
 @bot.command(name="cf", usage="cf <amount | half | all>")
 async def cf(ctx, amount: str = None):
