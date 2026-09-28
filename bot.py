@@ -274,7 +274,7 @@ def may_play(interaction, game_owner_id):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None, case_insensitive=True)
 
 def cmd_key(ctx):
     return "s$mines" if ctx.command.name == "mines" and ctx.prefix.lower() == "s$" else ctx.command.name
@@ -390,6 +390,9 @@ async def on_ready():
         await restore_backup()
         refund_pending()
         loaded.set()
+        _t = asyncio.create_task(warm_animations())
+        _log_tasks.add(_t)
+        _t.add_done_callback(_log_tasks.discard)
     print("Logged in as", bot.user)
 
 @bot.event
@@ -1142,10 +1145,54 @@ def render_slots(final, win):
 
     frames = [frame(f) for f in range(total - 1)] + [frame(total - 1, last=True)]
     gif, png = io.BytesIO(), io.BytesIO()
-    pal = [fr.quantize(colors=128, method=Image.MEDIANCUT) for fr in frames]
+    pal = [fr.quantize(colors=64, method=Image.MEDIANCUT) for fr in frames]
     pal[0].save(gif, "GIF", save_all=True, append_images=pal[1:], duration=[100] * (len(pal) - 1) + [6000], loop=0, optimize=False)
     frames[-1].save(png, "PNG")
     return gif.getvalue(), png.getvalue()
+
+# ---------- pre-rendered animations: the game message is sent with the animation already attached ----------
+SLOT_CACHE = {}    # (sym, sym, sym) -> (gif, png)   all 216 combinations are prepared in the background
+ROUL_POOL = {n: [] for n in range(37)}   # winner -> ready animations (a new one is prepared after each use)
+ROUL_POOL_SIZE = 1
+
+async def get_slots_anim(final):
+    key = tuple(final)
+    if key not in SLOT_CACHE:
+        win = max(final.count(s) for s in SLOTS) >= 2
+        SLOT_CACHE[key] = await asyncio.to_thread(render_slots, list(final), win)
+    return SLOT_CACHE[key]
+
+async def refill_roul(n):
+    try:
+        while len(ROUL_POOL[n]) < ROUL_POOL_SIZE:
+            ROUL_POOL[n].append(await asyncio.to_thread(render_roulette, n))
+            await asyncio.sleep(0.1)
+    except Exception as ex:
+        print("Roulette prepare failed:", repr(ex))
+
+async def get_roul_anim(winner):
+    if ROUL_POOL[winner]:
+        anim = ROUL_POOL[winner].pop(0)
+    else:
+        anim = await asyncio.to_thread(render_roulette, winner)
+    t = asyncio.create_task(refill_roul(winner))
+    _log_tasks.add(t)
+    t.add_done_callback(_log_tasks.discard)
+    return anim
+
+async def warm_animations():
+    """Runs once in the background after the bot starts, so the first players don't wait for the rendering."""
+    try:
+        for n in range(37):
+            await refill_roul(n)
+        for a in SLOTS:
+            for b in SLOTS:
+                for c in SLOTS:
+                    await get_slots_anim([a, b, c])
+                    await asyncio.sleep(0.05)
+        print("Animations are ready")
+    except Exception as ex:
+        print("Warm-up failed:", repr(ex))
 
 @bot.command(name="slots", aliases=["slot"], usage="slots <amount | half | all>")
 async def slots(ctx, amount: str = None):
@@ -1163,26 +1210,17 @@ async def slots(ctx, amount: str = None):
         top = max(final.count(s) for s in SLOTS)
         mult = (SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0) * SLOT_BUFF
         win = int(bet * mult)
-        # 1) the message is sent IMMEDIATELY (the GIF is rendered afterwards, in the background)
+        # the animation is ready (pre-rendered), so the message is sent WITH it, straight away
+        try:
+            gif, png = await get_slots_anim(final)
+        except Exception:
+            cancel_game(ctx.author, token, bet)
+            raise
         e = make_embed(ctx.author, f"🎰 **Slots**\n\nYou bet **{fmt(bet)}** {cur()}\n\n⏳ Spinning...", YELLOW)
-        try:
-            msg = await ctx.reply(embed=e, mention_author=False)
-        except Exception:
-            cancel_game(ctx.author, token, bet)
-            raise
-        try:
-            gif, png = await asyncio.to_thread(render_slots, final, win > 0)
-        except Exception:
-            cancel_game(ctx.author, token, bet)
-            try:
-                await msg.edit(embed=make_embed(ctx.author, "Something went wrong, your bet was returned.", RED))
-            except Exception:
-                pass
-            raise
-        # 2) the animation is attached, and only now the timer starts
         e.set_image(url="attachment://slots.gif")
+        msg = None
         try:
-            await msg.edit(embed=e, attachments=[discord.File(io.BytesIO(gif), "slots.gif")])
+            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "slots.gif"), mention_author=False)
             await asyncio.sleep(SLOT_WAIT + LOAD_BUFFER)
         except discord.HTTPException:
             pass
@@ -1194,10 +1232,11 @@ async def slots(ctx, amount: str = None):
         extra = f"{line}\n" + (f"**x{mult:g}**\n\n" if win else "\n")
         result = result_embed(ctx.author, win > 0, win - bet if win else bet, extra)
         result.set_image(url="attachment://slots_result.png")
-        try:
-            await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
-        except discord.HTTPException:
-            pass
+        if msg:
+            try:
+                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
+            except discord.HTTPException:
+                pass
         log_game(ctx.author, "slots", bet, win - bet)
     finally:
         BUSY.discard(ctx.author.id)
@@ -1316,28 +1355,18 @@ async def roulette(ctx, amount: str = None, pick: str = None):
         winner = random.randint(0, 36)          # European wheel: 37 pockets (0-36), every pocket 1/37
         won = bool(test(winner))
         win = bet * mult if won else 0
-        # 1) the message is sent IMMEDIATELY (the GIF is rendered afterwards, in the background)
+        # the animation is ready (pre-rendered), so the message is sent WITH it, straight away
+        try:
+            gif, png = await get_roul_anim(winner)
+        except Exception:
+            cancel_game(ctx.author, token, bet)
+            ctx.command.reset_cooldown(ctx)
+            raise
         e = make_embed(ctx.author, f"🎡 **Roulette**\n\nYou bet **{fmt(bet)}** {cur()} on **{label}**\n\n⏳ Spinning...", YELLOW)
-        try:
-            msg = await ctx.reply(embed=e, mention_author=False)
-        except Exception:
-            cancel_game(ctx.author, token, bet)
-            ctx.command.reset_cooldown(ctx)
-            raise
-        try:
-            gif, png = await asyncio.to_thread(render_roulette, winner)
-        except Exception:
-            cancel_game(ctx.author, token, bet)
-            ctx.command.reset_cooldown(ctx)
-            try:
-                await msg.edit(embed=make_embed(ctx.author, "Something went wrong, your bet was returned.", RED))
-            except Exception:
-                pass
-            raise
-        # 2) the animation is attached, and only now the timer starts
         e.set_image(url="attachment://roulette.gif")
+        msg = None
         try:
-            await msg.edit(embed=e, attachments=[discord.File(io.BytesIO(gif), "roulette.gif")])
+            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "roulette.gif"), mention_author=False)
             await asyncio.sleep(ROUL_WAIT + LOAD_BUFFER)
         except discord.HTTPException:
             pass
@@ -1348,10 +1377,11 @@ async def roulette(ctx, amount: str = None, pick: str = None):
         emoji = {"red": "🔴", "black": "⚫", "green": "🟢"}[roul_color(winner)]
         result = result_embed(ctx.author, won, win - bet if won else bet, f"The ball landed on {emoji} **{winner}**\nYour bet: **{label}**\n\n")
         result.set_image(url="attachment://roulette_result.png")
-        try:
-            await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
-        except discord.HTTPException:
-            pass
+        if msg:
+            try:
+                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
+            except discord.HTTPException:
+                pass
         log_game(ctx.author, "roulette", bet, win - bet)
     finally:
         BUSY.discard(ctx.author.id)
@@ -1442,6 +1472,108 @@ async def cf(ctx, amount: str = None):
     save()
     log_game(ctx.author, "chicken fight", bet, bet if won else -bet)
     await reply(ctx, desc, color)
+
+# ================= HIGHER OR LOWER ($hl / $high-low) =================
+HL_MIN, HL_MAX = 1, 100
+HL_RTP = 0.95          # the payout is the fair multiplier x 0.95 (5% house edge)
+HL_FLOOR = 1.05        # the safest guess still pays a little
+HL_CAP = 25            # no crazy multipliers on a very unlikely guess
+HL_SAME = 25           # exactly the same number (1% chance)
+HL_COLOR = 0x9B8CD6
+
+def hl_mult(first, choice):
+    """Multiplier of a guess (None = impossible). The second number is uniform 1-100 and can equal the first."""
+    if choice == "same":
+        return HL_SAME
+    p = (HL_MAX - first if choice == "higher" else first - HL_MIN) / (HL_MAX - HL_MIN + 1)
+    if p <= 0:
+        return None
+    return round(min(HL_CAP, max(HL_FLOOR, HL_RTP / p)), 2)
+
+def hl_text(m):
+    return "-" if m is None else f"{m:g}x"
+
+class HigherLower(discord.ui.View):
+    def __init__(self, user, bet, token=None):
+        super().__init__(timeout=60)
+        self.user, self.bet, self.token, self.message, self.settled = user, bet, token, None, False
+        self.first = random.randint(HL_MIN, HL_MAX)
+        self.mults = {c: hl_mult(self.first, c) for c in ("higher", "same", "lower")}
+        self.higher.disabled = self.mults["higher"] is None
+        self.lower.disabled = self.mults["lower"] is None
+
+    def embed(self, second="❓", extra="", color=HL_COLOR):
+        m = self.mults
+        return discord.Embed(color=color, title="🎲 Higher or Lower 🎲", description=(
+            f"**Betting Amount:** `{fmt(self.bet)}`\n"
+            f"1️⃣: `{self.first}`\n2️⃣: `{second}`\n\n{extra}"
+            f"**Higher:** `{hl_text(m['higher'])}`\n**Same:** `{hl_text(m['same'])}`\n**Lower:** `{hl_text(m['lower'])}`"))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    async def guess(self, interaction, choice):
+        if self.settled:
+            return await interaction.response.defer()
+        self.settled = True
+        second = random.randint(HL_MIN, HL_MAX)
+        won = (second > self.first and choice == "higher") or (second < self.first and choice == "lower") \
+            or (second == self.first and choice == "same")
+        win = int(self.bet * self.mults[choice]) if won else 0
+        pending_done(self.token)
+        user_data(self.user.id)["cash"] += win
+        save()
+        net = win - self.bet
+        log_game(self.user, "higher or lower", self.bet, net)
+        BUSY.discard(self.user.id)
+        self.stop()
+        cash = user_data(self.user.id)["cash"]
+        line = f"+ You Won {fmt(net)}!" if net > 0 else f"- You Lost {fmt(self.bet)}!"
+        extra = f"You chose **{choice.capitalize()}**\n```diff\n{line}\n```\nYou now have {fmt(cash)} {cur()}.\n\n"
+        await interaction.response.edit_message(embed=self.embed(second, extra, GREEN if won else RED), view=None)
+
+    @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
+    async def higher(self, interaction, button):
+        await self.guess(interaction, "higher")
+
+    @discord.ui.button(label="Same", style=discord.ButtonStyle.primary)
+    async def same(self, interaction, button):
+        await self.guess(interaction, "same")
+
+    @discord.ui.button(label="Lower", style=discord.ButtonStyle.primary)
+    async def lower(self, interaction, button):
+        await self.guess(interaction, "lower")
+
+    async def on_timeout(self):
+        if self.settled:
+            return
+        self.settled = True
+        pending_done(self.token)
+        user_data(self.user.id)["cash"] += self.bet
+        save()
+        log_money(self.user, f"🟡 **higher or lower** — timed out, bet **{fmt(self.bet)}** {cur()} returned", YELLOW)
+        BUSY.discard(self.user.id)
+        if self.message:
+            await self.message.edit(embed=make_embed(self.user, "Timed out, your bet was returned.", RED), view=None)
+
+@bot.command(name="hl", aliases=["high-low", "highlow"], usage="hl <amount | half | all>")
+async def hl(ctx, amount: str = None):
+    if ctx.author.id in BUSY:
+        return await reply(ctx, "You already have a game running.", RED)
+    bet = await take_bet(ctx, amount, "hl <amount | half | all>", track=True)
+    if not bet:
+        return
+    BUSY.add(ctx.author.id)
+    view = HigherLower(ctx.author, bet, str(ctx.message.id))
+    try:
+        view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
+    except Exception:
+        cancel_game(ctx.author, view.token, bet)
+        BUSY.discard(ctx.author.id)
+        raise
 
 # ================= SCRATCH CARDS =================
 def week_id():
@@ -2041,6 +2173,7 @@ INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מיני
 • `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
 • `$slots` – מכונת סלוטים עם אנימציה של גלגלים שמסתובבים ונעצרים אחד אחרי השני. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן. התוצאה מתגלה כשהאנימציה נגמרת.
 • `$roulette סכום בחירה` (או `$rl`) – רולטה אירופאית (37 מספרים) עם גלגל מונפש. בחירות: מספר בודד 0-36 משלם x36. `red` / `black` / `even` / `odd` / `1-18` / `19-36` משלמים x2. `1-12` / `13-24` / `25-36` (או `1st` / `2nd` / `3rd`) משלמים x3. התוצאה מתגלה רק כשהאנימציה נגמרת. קולדאון 10 שניות.
+• `$hl` (או `$high-low`) – גבוה או נמוך. מקבלים מספר בין 1 ל-100 ומנחשים אם המספר הבא יהיה Higher, Same או Lower. המכפיל משתנה לפי הסיכוי (ככל שהניחוש פחות סביר הוא משלם יותר), ו-Same משלם x25.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח מתחיל ב-50%, עולה ב-1% אחרי כל ניצחון עד מקסימום 84%, וחוזר ל-50% אחרי הפסד.
 • `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.3, x1.7, x2.2, x2.9, x4.5), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
