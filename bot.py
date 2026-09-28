@@ -2,6 +2,7 @@ import discord, random, json, os, asyncio, io, signal, math
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands, tasks
+from aiohttp import web
 
 # ================= CONFIG =================
 TOKEN = (os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or "").strip().strip('"').strip("'")
@@ -19,7 +20,7 @@ EARN_MIN, EARN_MAX = 6500, 16000
 DEALER_STANDS_ON = 13
 CLICK_DELAY = 0.3
 EMPTY = "\u200e"   # blank button label
-GREEN, RED, BLUE, YELLOW = 0x2ECC71, 0xC0392B, 0x3B82F6, 0xF1C40F   # GREEN = sharp pure green
+GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F   # GREEN = the green bar of the win message
 
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏮"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
@@ -36,7 +37,6 @@ SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
 SLOTS_BOOST = 0.035    # +3.5 percentage points win chance in slots
 BJ_WIN_NERF = 0.09     # blackjack: chance the dealer gets a re-draw when the player would win (about -2.5 points of win rate; raise/lower to tune)
-HILO_EDGE = 0.94       # hi-lo payout = fair odds * this
 
 # ================= DATABASE =================
 def load():
@@ -205,9 +205,18 @@ async def graceful_shutdown():
     await backup_now()
     await bot.close()
 
+async def start_web():
+    """Tiny web page so a free host (Render) + an uptime pinger keep the bot awake."""
+    app = web.Application()
+    app.router.add_get("/", lambda request: web.Response(text="Bot is alive"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+
 async def setup_hook():
     global loaded
     loaded = asyncio.Event()
+    await start_web()
     backup_loop.start()
     try:
         asyncio.get_running_loop().add_signal_handler(
@@ -280,6 +289,7 @@ class Tile(discord.ui.Button):
 class BoardView(discord.ui.View):
     cols, header = 5, "\u200b"
     reveal_on_cashout = True   # False = a cash out does NOT show where the bombs / diamonds were
+    mines_style = False        # True = result message like the mines screenshot
 
     def __init__(self, user, bet):
         super().__init__(timeout=120)
@@ -306,11 +316,10 @@ class BoardView(discord.ui.View):
     def reveal(self, i):
         kind, t = self.board[i], self.tiles[i]
         self.revealed.add(i)
-        t.emoji = EMOJI[kind]
+        t.emoji, t.disabled = EMOJI[kind], True
         if kind == "bomb":
-            t.disabled, t.style = True, discord.ButtonStyle.danger
+            t.style = discord.ButtonStyle.danger
         else:
-            # stays enabled on purpose: Discord draws disabled buttons faded, this keeps the green sharp
             t.style = discord.ButtonStyle.success
             self.earn(kind)
             self.profit_btn.label = f"Profit: {fmt(self.profit)}"
@@ -347,8 +356,6 @@ class BoardView(discord.ui.View):
     def reveal_all(self, show):
         for i, kind in enumerate(self.board):
             t = self.tiles[i]
-            if i in self.revealed and kind != "bomb":
-                continue   # opened diamonds stay bright green
             t.disabled = True
             if show:
                 t.emoji = EMOJI[kind]
@@ -357,7 +364,14 @@ class BoardView(discord.ui.View):
         self.cash_btn.disabled = True
 
     def embed(self, lost):
-        return result_embed(self.user, not lost, self.bet if lost else self.profit)
+        if not self.mines_style:
+            return result_embed(self.user, not lost, self.bet if lost else self.profit)
+        amt = self.bet if lost else int(self.profit)
+        line = f"-You lost {fmt(amt)} {cur()}" if lost else f"+You won and got {fmt(amt)} {cur()}"
+        found = sum(1 for i in self.revealed if self.board[i] != "bomb")
+        cash = user_data(self.user.id)["cash"]
+        return make_embed(self.user, f"```\n{line}\n```\nYou found {found} {EMOJI['diamond']}\nYou now have: {fmt(cash)} {cur()}",
+                          RED if lost else GREEN)
 
     async def finish(self, interaction, lost):
         if self.done:
@@ -401,6 +415,7 @@ class GoldMines(BoardView):
 class Mines(BoardView):
     cols = 3
     reveal_on_cashout = False
+    mines_style = True
 
     def make_board(self):
         return take(self.user.id, "mines")
@@ -411,6 +426,7 @@ class Mines(BoardView):
 
 class SMines(BoardView):
     reveal_on_cashout = False
+    mines_style = True
 
     def __init__(self, user, bet, key):
         self.key = key
@@ -553,22 +569,6 @@ def render_table(dealer, hands, hide_dealer):
             im = get_back() if c is None else get_card(c)
             img.paste(im, (int(PAD + i * step(len(cards))), y), im)
         y += SH + GAP
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    buf.seek(0)
-    return buf
-
-def render_row(label, cards):
-    """One labelled row of cards, same look as the blackjack table."""
-    PAD, LABEL_H, GAPX = 16, 46, 10
-    n = len(cards)
-    step = SW + GAPX if n <= 1 else min(SW + GAPX, (TABLE_W - 2 * PAD - SW) / (n - 1))
-    img = Image.new("RGBA", (TABLE_W, 2 * PAD + LABEL_H + SH), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.text((PAD, PAD), label, font=get_font(32), fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(255, 255, 255, 255))
-    for i, c in enumerate(cards):
-        im = get_card(c)
-        img.paste(im, (int(PAD + i * step), PAD + LABEL_H), im)
     buf = io.BytesIO()
     img.save(buf, "PNG")
     buf.seek(0)
@@ -739,124 +739,6 @@ async def bj(ctx, amount: str = None):
     msg = await ctx.send(embed=e, file=f, view=view)
     if not natural:
         view.message = msg
-
-# ================= HI-LO (new card game) =================
-class HiLoView(discord.ui.View):
-    """Guess if the next card is higher or lower (A = lowest, K = highest, a tie loses).
-    Every correct guess multiplies the payout. Cash out after at least one correct guess."""
-
-    def __init__(self, user, bet):
-        super().__init__(timeout=120)
-        self.user, self.bet, self.message = user, bet, None
-        self.cards = [self.draw()]
-        self.mult, self.wins, self.net, self.render_n = 1.0, 0, 0, 0
-        self.done = False
-        self.refresh_buttons()
-
-    @staticmethod
-    def draw():
-        return random.choice(RANKS), random.choice(SUITS)
-
-    def rank(self):
-        return RANKS.index(self.cards[-1][0]) + 1
-
-    def step(self, higher):
-        r = self.rank()
-        n = 13 - r if higher else r - 1
-        return round(HILO_EDGE * 13 / n, 2) if n else None
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("This is not your game!", ephemeral=True)
-            return False
-        return True
-
-    def refresh_buttons(self):
-        up, down = self.step(True), self.step(False)
-        self.higher.disabled = self.done or up is None
-        self.lower.disabled = self.done or down is None
-        self.higher.label = f"Higher x{up}" if up else "Higher"
-        self.lower.label = f"Lower x{down}" if down else "Lower"
-        self.cashout.disabled = self.done or self.wins == 0
-        self.cashout.label = f"Cash Out ({fmt(self.bet * self.mult)})"
-
-    def pay(self, returned):
-        self.done, self.net = True, returned - self.bet
-        user_data(self.user.id)["cash"] += returned
-        save()
-        BUSY.discard(self.user.id)
-        self.refresh_buttons()
-
-    def render(self):
-        self.render_n += 1
-        filename = f"hl{self.render_n}.png"
-        file = discord.File(render_row("HI-LO", self.cards[-7:]), filename=filename)
-        c, color, head = cur(), YELLOW, None
-        if self.done:
-            color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
-                           (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
-                           (YELLOW, f"Push! +0 {c}"))
-        lines = ["🃏 **Hi-Lo** 🃏", ""] + ([f"**{head}**", ""] if head else [])
-        lines += [f"Current Card: **{self.cards[-1][0]}**",
-                  f"Multiplier: **x{self.mult:.2f}**",
-                  f"Cash Out Value: **{fmt(self.bet * self.mult)}** {c}"]
-        e = discord.Embed(description="\n".join(lines), color=color)
-        e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
-        e.set_image(url=f"attachment://{filename}")
-        return e, file
-
-    async def update(self, interaction):
-        self.refresh_buttons()
-        e, f = self.render()
-        await interaction.response.edit_message(embed=e, attachments=[f], view=self)
-
-    async def guess(self, interaction, higher):
-        if self.done:
-            return await interaction.response.defer()
-        gain, old = self.step(higher), self.rank()
-        self.cards.append(self.draw())
-        new = self.rank()
-        if (new > old) if higher else (new < old):
-            self.mult *= gain
-            self.wins += 1
-        else:
-            self.pay(0)
-        await self.update(interaction)
-
-    @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
-    async def higher(self, interaction, button):
-        await self.guess(interaction, True)
-
-    @discord.ui.button(label="Lower", style=discord.ButtonStyle.danger)
-    async def lower(self, interaction, button):
-        await self.guess(interaction, False)
-
-    @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.success)
-    async def cashout(self, interaction, button):
-        if self.done:
-            return await interaction.response.defer()
-        self.pay(int(self.bet * self.mult))
-        await self.update(interaction)
-
-    async def on_timeout(self):
-        if self.done:
-            return
-        self.pay(int(self.bet * self.mult))   # nothing won yet = bet returned
-        if self.message:
-            e, f = self.render()
-            await self.message.edit(embed=e, attachments=[f], view=self)
-
-@bot.command(name="hilo", aliases=["hl"], usage="hilo <amount | half | all>")
-async def hilo(ctx, amount: str = None):
-    if ctx.author.id in BUSY:
-        return await reply(ctx, "You already have a game running.", RED)
-    bet = await take_bet(ctx, amount, "hilo <amount | half | all>")
-    if not bet:
-        return
-    BUSY.add(ctx.author.id)
-    view = HiLoView(ctx.author, bet)
-    e, f = view.render()
-    view.message = await ctx.send(embed=e, file=f, view=view)
 
 # ================= SLOTS =================
 @bot.command(name="slots", aliases=["slot"], usage="slots <amount | half | all>")
@@ -1177,7 +1059,6 @@ INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מיני
 • `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו בלי לחשוף את הלוח. פצצה מפסידה הכול.
 • `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שלוש פצצות, 5x4 עם חמש פצצות.
 • `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
-• `$hilo` – קלף גבוה או נמוך. מנחשים אם הקלף הבא גבוה או נמוך יותר, כל ניחוש נכון מכפיל את הרווח, ואפשר לצאת עם Cash Out.
 • `$slots` – מכונת מזל עם אנימציה. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח עולה כשמנצחים ברצף וחוזר להתחלה אחרי הפסד.
