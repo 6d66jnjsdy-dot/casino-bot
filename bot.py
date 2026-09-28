@@ -1998,7 +1998,7 @@ async def top(ctx):
     view.message = await ctx.reply(embed=view.build(), view=view, mention_author=False)
 
 # ================= SHOP ($shop) =================
-SHOP_TITLE = "TheCohen Casino Shop"
+SHOP_TITLE = "Amram Casino Shop"
 SHOP_COLOR = 0xDDC9A3
 SHOP_THUMBNAIL = None   # put an image link here for the picture on the right; None = server icon
 
