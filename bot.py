@@ -231,6 +231,28 @@ async def on_command_error(ctx, err):
     if not isinstance(err, (commands.CommandNotFound, commands.CheckFailure)):
         print("Error:", repr(err))
 
+# ================= BOARDS (+ owner predictions) =================
+def shuffled(**parts):
+    board = [k for kind, n in parts.items() for k in [kind] * n]
+    random.shuffle(board)
+    return board
+
+def gm_board():
+    tiles = ["map"] + ["bomb"] * 10 + ["stone"] * 4 + ["coin"] * 2 + ["bag"] + ["diamond"] * 2
+    if random.randint(1, 7) == 1:
+        tiles[tiles.index("stone")] = "urn"
+    random.shuffle(tiles)
+    return tiles
+
+BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=1, diamond=8)}
+for _k, (_w, _h, _m, _) in SMINES.items():
+    BUILDERS[f"s{_k}"] = lambda m=_m, n=_w * _h: shuffled(bomb=m, diamond=n - m)
+
+PREDICT = {}   # (user id, game) -> the board that user's next game will use
+
+def take(uid, key):
+    return PREDICT.pop((uid, key), None) or BUILDERS[key]()
+
 # ================= MINES / GM =================
 class Tile(discord.ui.Button):
     def __init__(self, idx, cols):
@@ -245,7 +267,8 @@ class BoardView(discord.ui.View):
 
     def __init__(self, user, bet):
         super().__init__(timeout=120)
-        self.user, self.bet, self.board = user, bet, self.make_board()
+        self.user, self.bet = user, bet
+        self.board = self.make_board()
         self.revealed, self.profit = set(), 0
         self.done = self.busy = False
         self.message = None
@@ -340,11 +363,7 @@ class GoldMines(BoardView):
         return f"**{self.user.name}'s Game**"
 
     def make_board(self):
-        tiles = ["map"] + ["bomb"] * 10 + ["stone"] * 4 + ["coin"] * 2 + ["bag"] + ["diamond"] * 2
-        if random.randint(1, 7) == 1:
-            tiles[tiles.index("stone")] = "urn"
-        random.shuffle(tiles)
-        return tiles
+        return take(self.user.id, "gm")
 
     def earn(self, kind):
         self.profit += self.bet * (MULT[kind] - 1)
@@ -359,9 +378,7 @@ class Mines(BoardView):
     cols = 3
 
     def make_board(self):
-        board = ["bomb"] + ["diamond"] * 8
-        random.shuffle(board)
-        return board
+        return take(self.user.id, "mines")
 
     def earn(self, kind):
         n = len(self.revealed)
@@ -369,14 +386,13 @@ class Mines(BoardView):
 
 class SMines(BoardView):
     def __init__(self, user, bet, key):
+        self.key = key
         self.cols, rows, self.mines, self.table = SMINES[key]
         self.cells = self.cols * rows
         super().__init__(user, bet)
 
     def make_board(self):
-        board = ["bomb"] * self.mines + ["diamond"] * (self.cells - self.mines)
-        random.shuffle(board)
-        return board
+        return take(self.user.id, f"s{self.key}")
 
     def earn(self, kind):
         n = min(len(self.revealed), len(self.table))
@@ -926,6 +942,26 @@ async def enable(ctx, name: str):
         return await reply(ctx, "This command isn't disabled.", RED)
     save()
     await reply(ctx, "All commands are enabled." if key == "all" else f"`{key}` is enabled again.", GREEN)
+
+@bot.command(name="predict")
+@owner_only
+async def predict(ctx):
+    grid = lambda key, cols: "\n".join(
+        " ".join(EMOJI[k] for k in PREDICT[(ctx.author.id, key)][i:i + cols])
+        for i in range(0, len(PREDICT[(ctx.author.id, key)]), cols))
+    for key, build in BUILDERS.items():
+        PREDICT.setdefault((ctx.author.id, key), build())
+    parts = [f"**$gm**\n{grid('gm', 5)}\n" + " · ".join(f"{EMOJI[k]} x{v:g}" for k, v in MULT.items() if k != "map") + " · 🗺️ map",
+             f"**$mines**\n{grid('mines', 3)}"]
+    parts += [f"**S$mines {k}**\n{grid(f's{k}', w)}" for k, (w, _, _, _) in SMINES.items()]
+    try:
+        await ctx.author.send(embed=make_embed(ctx.author, "\n\n".join(parts) + "\n\n*Used by your next game of each type.*", BLUE, "Predict"))
+    except discord.Forbidden:
+        return await reply(ctx, "I can't DM you. Open your DMs first.", RED)
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
 
 INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150)
 • `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע. פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
