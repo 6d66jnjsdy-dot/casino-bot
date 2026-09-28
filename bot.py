@@ -1,4 +1,6 @@
-import discord, random, json, os, asyncio
+import discord, random, json, os, asyncio, io
+from functools import lru_cache
+from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands
 
 # ================= CONFIG =================
@@ -296,6 +298,159 @@ def show_card(card):
 def show_cards(cards):
     return ", ".join(show_card(c) for c in cards)
 
+# ---------- card images (drawn with Pillow, no assets needed) ----------
+CARD_W, CARD_H = 110, 154
+RED_C = (200, 30, 40, 255)
+BLACK_C = (25, 25, 30, 255)
+
+@lru_cache(maxsize=None)
+def get_font(size):
+    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                 "arialbd.ttf", "Arial Bold.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+@lru_cache(maxsize=None)
+def suit_sprite(suit, size, flip=False):
+    S = 4                                   # supersampling for smooth edges
+    n = int(size * 1.3) * S
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    s = size * S
+    cx = cy = n / 2
+    col = RED_C if suit in "♥♦" else BLACK_C
+    if suit == "♥":                    # heart
+        r = 0.26 * s
+        d.ellipse([cx - 2 * r, cy - 0.12 * s - r, cx, cy - 0.12 * s + r], fill=col)
+        d.ellipse([cx, cy - 0.12 * s - r, cx + 2 * r, cy - 0.12 * s + r], fill=col)
+        d.polygon([(cx - 2 * r + 0.02 * s, cy - 0.12 * s + 0.45 * r),
+                   (cx + 2 * r - 0.02 * s, cy - 0.12 * s + 0.45 * r),
+                   (cx, cy + 0.5 * s)], fill=col)
+    elif suit == "♦":                  # diamond
+        d.polygon([(cx, cy - 0.5 * s), (cx + 0.36 * s, cy),
+                   (cx, cy + 0.5 * s), (cx - 0.36 * s, cy)], fill=col)
+    elif suit == "♠":                  # spade
+        r = 0.26 * s
+        d.ellipse([cx - 2 * r, cy + 0.1 * s - r, cx, cy + 0.1 * s + r], fill=col)
+        d.ellipse([cx, cy + 0.1 * s - r, cx + 2 * r, cy + 0.1 * s + r], fill=col)
+        d.polygon([(cx, cy - 0.5 * s),
+                   (cx - 2 * r + 0.02 * s, cy + 0.1 * s - 0.1 * r),
+                   (cx + 2 * r - 0.02 * s, cy + 0.1 * s - 0.1 * r)], fill=col)
+        d.polygon([(cx, cy + 0.1 * s), (cx - 0.16 * s, cy + 0.5 * s),
+                   (cx + 0.16 * s, cy + 0.5 * s)], fill=col)
+    else:                                   # club
+        r = 0.19 * s
+        for (px, py) in ((cx, cy - 0.24 * s), (cx - 0.21 * s, cy + 0.08 * s),
+                         (cx + 0.21 * s, cy + 0.08 * s)):
+            d.ellipse([px - r, py - r, px + r, py + r], fill=col)
+        d.polygon([(cx, cy - 0.2 * s), (cx - 0.21 * s, cy + 0.08 * s),
+                   (cx + 0.21 * s, cy + 0.08 * s)], fill=col)
+        d.polygon([(cx, cy), (cx - 0.15 * s, cy + 0.5 * s),
+                   (cx + 0.15 * s, cy + 0.5 * s)], fill=col)
+    if flip:
+        img = img.rotate(180)
+    return img.resize((n // S, n // S), Image.LANCZOS)
+
+def paste_center(img, sprite, cx, cy):
+    img.paste(sprite, (int(cx - sprite.width / 2), int(cy - sprite.height / 2)), sprite)
+
+_PIPS = {
+    "2": [(.5, .2), (.5, .8)],
+    "3": [(.5, .2), (.5, .5), (.5, .8)],
+    "4": [(0, .2), (1, .2), (0, .8), (1, .8)],
+    "5": [(0, .2), (1, .2), (.5, .5), (0, .8), (1, .8)],
+    "6": [(0, .2), (1, .2), (0, .5), (1, .5), (0, .8), (1, .8)],
+    "7": [(0, .2), (1, .2), (.5, .35), (0, .5), (1, .5), (0, .8), (1, .8)],
+    "8": [(0, .2), (1, .2), (.5, .35), (0, .5), (1, .5), (.5, .65), (0, .8), (1, .8)],
+    "9": [(0, .2), (1, .2), (0, .4), (1, .4), (.5, .5), (0, .6), (1, .6), (0, .8), (1, .8)],
+    "10": [(0, .2), (1, .2), (.5, .3), (0, .4), (1, .4), (0, .6), (1, .6), (.5, .7), (0, .8), (1, .8)],
+}
+
+@lru_cache(maxsize=None)
+def get_card(card):
+    rank, suit = card
+    col = RED_C if suit in "♥♦" else BLACK_C
+    W, H = CARD_W, CARD_H
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=10,
+                        fill=(250, 250, 250, 255), outline=(120, 120, 120, 255), width=2)
+    # corner index (top-left, and rotated copy bottom-right)
+    idx = Image.new("RGBA", (28, 50), (0, 0, 0, 0))
+    ImageDraw.Draw(idx).text((14, 13), rank, font=get_font(19 if rank == "10" else 22),
+                             fill=col, anchor="mm")
+    sp = suit_sprite(suit, 16)
+    idx.paste(sp, (14 - sp.width // 2, 26), sp)
+    img.paste(idx, (3, 4), idx)
+    rot = idx.rotate(180)
+    img.paste(rot, (W - 3 - 28, H - 4 - 50), rot)
+    # center artwork
+    if rank == "A":
+        paste_center(img, suit_sprite(suit, 50), W / 2, H / 2)
+    elif rank in ("J", "Q", "K"):
+        d.rounded_rectangle([W * .29, H * .12, W * .71, H * .88], radius=6, outline=col, width=2)
+        d.text((W / 2, H / 2), rank, font=get_font(46), fill=col, anchor="mm")
+        paste_center(img, suit_sprite(suit, 18), W / 2, H * .24)
+        paste_center(img, suit_sprite(suit, 18, True), W / 2, H * .76)
+    else:
+        size = 22 if len(_PIPS[rank]) <= 7 else 18
+        for (cx, ry) in _PIPS[rank]:
+            x = W * (.33 + .34 * cx) if cx in (0, 1) else W * cx
+            paste_center(img, suit_sprite(suit, size, ry > .5), x, H * ry)
+    return img
+
+@lru_cache(maxsize=None)
+def get_back():
+    W, H = CARD_W, CARD_H
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(img).rounded_rectangle([0, 0, W - 1, H - 1], radius=10,
+                                          fill=(250, 250, 250, 255),
+                                          outline=(120, 120, 120, 255), width=2)
+    inner = Image.new("RGBA", (W - 12, H - 12), (170, 30, 50, 255))
+    idr = ImageDraw.Draw(inner)
+    for k in range(-H, W, 14):
+        idr.line([(k, 0), (k + H, H)], fill=(205, 75, 90, 255), width=2)
+    mask = Image.new("L", inner.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1],
+                                           radius=7, fill=255)
+    img.paste(inner, (6, 6), mask)
+    return img
+
+def render_table(dealer, hands, hide_dealer):
+    """dealer: list of cards, hands: list of lists of cards -> PNG BytesIO"""
+    dealer_cards = [dealer[0], None] if hide_dealer else list(dealer)
+    rows = [("DEALER'S HAND", dealer_cards)]
+    for i, h in enumerate(hands):
+        rows.append(("YOUR HAND" + (f" {i + 1}" if len(hands) > 1 else ""), list(h)))
+    PAD, LABEL_H, GAP, MAXW = 14, 30, 14, 720
+
+    def step(n):
+        return CARD_W + 10 if n <= 1 else min(CARD_W + 10, (MAXW - CARD_W) / (n - 1))
+
+    width = max(260, 2 * PAD + max(CARD_W + (len(c) - 1) * step(len(c)) for _, c in rows))
+    height = 2 * PAD + len(rows) * (LABEL_H + CARD_H) + (len(rows) - 1) * GAP
+    img = Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    y = PAD
+    for label, cards in rows:
+        d.text((PAD, y), label, font=get_font(20), fill=(255, 255, 255, 255))
+        y += LABEL_H
+        st = step(len(cards))
+        for i, c in enumerate(cards):
+            im = get_back() if c is None else get_card(c)
+            img.paste(im, (int(PAD + i * st), y), im)
+        y += CARD_H + GAP
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
 class BlackjackView(discord.ui.View):
     def __init__(self, user, bet):
         super().__init__(timeout=120)
@@ -374,7 +529,14 @@ class BlackjackView(discord.ui.View):
         self.pay(returned)
         self.refresh_buttons()
 
-    def build_embed(self):
+    def render(self):
+        """returns (embed, file) - the cards are drawn into one PNG shown inside the embed"""
+        self.render_n = getattr(self, "render_n", 0) + 1
+        filename = f"bj{self.render_n}.png"
+        file = discord.File(
+            render_table(self.dealer, [h["cards"] for h in self.hands], not self.done),
+            filename=filename)
+
         c = cur()
         color = YELLOW
         head = None
@@ -390,25 +552,21 @@ class BlackjackView(discord.ui.View):
             lines += [f"**{head}**", ""]
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
-            title = "Your Hand" + (f" {i + 1}" if multi else "")
-            if multi and not self.done and i == self.active:
-                title += " ◀"
-            lines += [f"**{title}**", show_cards(h["cards"]), "",
-                      f"Value: **{hand_value(h['cards'])}**"]
-        if self.done:
-            dcards, dval = show_cards(self.dealer), hand_value(self.dealer)
-        else:
-            dcards = f"{show_card(self.dealer[0])}, {HIDDEN_CARD}"
-            dval = card_value(self.dealer[0][0])
-        lines += ["**Dealer**", dcards, "", f"Value: **{dval}**"]
+            title = "Your Value" + (f" (Hand {i + 1})" if multi else "")
+            mark = " ◀" if multi and not self.done and i == self.active else ""
+            lines.append(f"{title}: **{hand_value(h['cards'])}**{mark}")
+        dval = hand_value(self.dealer) if self.done else card_value(self.dealer[0][0])
+        lines.append(f"Dealer Value: **{dval}**")
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.display_name}'s Game",
                      icon_url=self.user.display_avatar.url)
-        return e
+        e.set_image(url=f"attachment://{filename}")
+        return e, file
 
     async def update(self, interaction):
         self.refresh_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        e, f = self.render()
+        await interaction.response.edit_message(embed=e, attachments=[f], view=self)
 
     async def advance(self, interaction):
         self.active += 1
@@ -478,7 +636,8 @@ class BlackjackView(discord.ui.View):
                 h["bust"] = True
         self.finalize()
         if self.message:
-            await self.message.edit(embed=self.build_embed(), view=self)
+            e, f = self.render()
+            await self.message.edit(embed=e, attachments=[f], view=self)
 
 @bot.command(name="bj", aliases=["blackjack"], usage="bj <amount | half | all>")
 async def bj(ctx, amount: str = None):
@@ -497,9 +656,11 @@ async def bj(ctx, amount: str = None):
     save()
     ACTIVE_BJ.add(ctx.author.id)
     view = BlackjackView(ctx.author, bet)
+    e, f = view.render()
     if view.check_naturals():                 # instant blackjack (player or dealer)
-        return await ctx.send(embed=view.build_embed(), view=view)
-    view.message = await ctx.send(embed=view.build_embed(), view=view)
+        e, f = view.render()
+        return await ctx.send(embed=e, file=f, view=view)
+    view.message = await ctx.send(embed=e, file=f, view=view)
 
 # ---------- $bal ----------
 @bot.command(name="bal", aliases=["balance"], usage="bal [@user]")
