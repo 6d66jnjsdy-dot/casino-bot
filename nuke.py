@@ -1,36 +1,27 @@
+import os
 import discord
 from discord.ext import commands
 
+intents = discord.Intents.default()
+intents.message_content = True
 
-def setup(bot):
+bot = commands.Bot(
+    command_prefix="$",
+    intents=intents
+)
 
-    @bot.command()
-    @commands.has_permissions(administrator=True)
-    async def nuke(ctx):
-        await ctx.send(
-            "⚠️ הפקודה הזו מיועדת לניקוי השרת. "
-            "הקלד `$nuke-confirm` כדי לאשר."
-        )
+import nuke
+nuke.setup(bot)
 
-    @bot.command()
-    @commands.has_permissions(administrator=True)
-    async def nuke_confirm(ctx):
 
-        guild = ctx.guild
+@bot.event
+async def on_ready():
+    print(f"Bot is online: {bot.user}")
 
-        # מחיקת חדרים
-        for channel in list(guild.channels):
-            try:
-                await channel.delete()
-            except (discord.Forbidden, discord.HTTPException):
-                pass
 
-        # מחיקת רולים שהבוט רשאי למחוק
-        for role in list(guild.roles):
-            if role.is_default():
-                continue
+token = os.getenv("DISCORD_TOKEN")
 
-            try:
-                await role.delete()
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+if not token:
+    raise RuntimeError("DISCORD_TOKEN is missing")
+
+bot.run(token)
