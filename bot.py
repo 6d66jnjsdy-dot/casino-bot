@@ -1999,7 +1999,6 @@ async def top(ctx):
 
 # ================= SHOP ($shop) =================
 SHOP_TITLE = "TheCohen Casino Shop"
-SHOP_FOOTER = "Developed By zoharos_ & jx.liran"
 SHOP_COLOR = 0xDDC9A3
 SHOP_THUMBNAIL = None   # put an image link here for the picture on the right; None = server icon
 
@@ -2077,7 +2076,6 @@ async def shop(ctx):
         thumb = SHOP_THUMBNAIL or icon
         if thumb:
             e.set_thumbnail(url=thumb)
-        e.set_footer(text=SHOP_FOOTER)
         await ctx.send(embed=e, view=ShopView())
     except Exception as ex:
         import traceback
