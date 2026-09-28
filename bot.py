@@ -1,7 +1,10 @@
 import discord, random, json, os
 from discord.ext import commands
 
-TOKEN = "PUT_TOKEN_HERE"
+TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or ""
+TOKEN = TOKEN.strip().strip('"').strip("'")
+print("TOKEN LEN:", len(TOKEN), "START:", TOKEN[:4])
+
 MONEY = "💸"
 MIN_BET = 150
 START_BALANCE = 5000
@@ -9,7 +12,6 @@ DB_FILE = "balances.json"
 
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙",
          "stone": "🪨", "bag": "💰", "urn": "🏮"}
-# מכפיל לכל פגיעה (מוסיף bet * (mult-1) לרווח, לא מכפיל את הקודם)
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
 
 # ---------- database ----------
@@ -24,8 +26,7 @@ def save(db):
         json.dump(db, f)
 
 def get_bal(uid):
-    db = load()
-    return db.get(str(uid), START_BALANCE)
+    return load().get(str(uid), START_BALANCE)
 
 def set_bal(uid, amount):
     db = load()
@@ -34,10 +35,8 @@ def set_bal(uid, amount):
 
 # ---------- board ----------
 def make_board():
-    # 20 משבצות: מפה 1, פצצות 11, אבנים 3, מטבעות 2, שק 1, יהלומים 2
     tiles = (["map"] + ["bomb"] * 11 + ["stone"] * 3 +
              ["coin"] * 2 + ["bag"] + ["diamond"] * 2)
-    # 1 ל-7: כד מחליף אבן אחת
     if random.randint(1, 7) == 1:
         tiles[tiles.index("stone")] = "urn"
     random.shuffle(tiles)
@@ -106,12 +105,11 @@ class GameView(discord.ui.View):
         self.reveal_tile(idx)
         if kind == "bomb":
             return await self.finish(interaction, lost=True)
-        if kind == "map":  # מגלה 3 משבצות בטוחות מיד
+        if kind == "map":
             safe = [i for i, k in enumerate(self.board)
                     if k != "bomb" and i not in self.revealed]
             for i in random.sample(safe, min(3, len(safe))):
                 self.reveal_tile(i)
-        # ניצחון אוטומטי אם נחשפו כל הבטוחות
         if all(k == "bomb" or i in self.revealed
                for i, k in enumerate(self.board)):
             return await self.finish(interaction, lost=False)
@@ -130,12 +128,10 @@ class GameView(discord.ui.View):
         bal = get_bal(self.user.id)
         if lost:
             e = discord.Embed(color=discord.Color.red())
-            text = f"- You Lost {self.bet:,}! {MONEY}"
-            block = f"```diff\n{text}\n```"
+            block = f"```diff\n- You Lost {self.bet:,}! {MONEY}\n```"
         else:
             e = discord.Embed(color=discord.Color.green())
-            text = f"+ You Won {int(self.profit):,}! {MONEY}"
-            block = f"```diff\n{text}\n```"
+            block = f"```diff\n+ You Won {int(self.profit):,}! {MONEY}\n```"
         e.set_author(name=self.user.display_name,
                      icon_url=self.user.display_avatar.url)
         e.title = "Result"
@@ -150,8 +146,8 @@ class GameView(discord.ui.View):
             set_bal(self.user.id, get_bal(self.user.id) + self.bet + int(self.profit))
         self.reveal_all()
         self.stop()
-        embed = self.result_embed(lost)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(
+            embed=self.result_embed(lost), view=self)
 
     async def on_timeout(self):
         if self.done:
@@ -166,6 +162,10 @@ class GameView(discord.ui.View):
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="$", intents=intents)
+
+@bot.event
+async def on_ready():
+    print("Logged in as", bot.user)
 
 @bot.command(name="gm")
 async def gm(ctx, amount: str = None):
