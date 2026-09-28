@@ -1,9 +1,14 @@
 import discord, random, json, os, asyncio, io, signal, math, time
+from datetime import datetime, timezone
 from functools import lru_cache
-from collections import Counter
 from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands, tasks
 from aiohttp import web
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 # ================= CONFIG =================
 TOKEN = (os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or "").strip().strip('"').strip("'")
@@ -13,52 +18,68 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "economy.json")
 CHANNELS = {1541567870591443026, 1502311424808980690}
 OWNER_ID = 1537816435370229820
-# The backup keeps everybody's money safe when the host wipes its disk (Render free, etc).
-# By default the bot keeps ONE backup message in the OWNER's DMs (never in the game channels) and edits it.
-# Set the BACKUP_CHANNEL_ID env var if you prefer a private channel instead.
+# The backup keeps everybody's money (and the scratch card stock) safe when the host wipes its disk.
+# By default the bot keeps ONE backup message in the OWNER's DMs and edits it.
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID") or 0)
 MIN_BET = 150
 EARN_MIN, EARN_MAX = 6500, 16000
 DEALER_STANDS_ON = 13
 EMPTY = "\u200e"   # blank button label
-GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F   # GREEN = the green bar of the win message
+GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F
 
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏮"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
 MINES_MULT = [1.1, 1.3, 1.6, 2, 2.2, 4.6, 7.6, 10.2]
-MINES_COMPOUND = False   # False: the list is the TOTAL multiplier of the bet per click (no compounding). True: every diamond multiplies the previous total
-SMINES_COMPOUND = False   # S$mines: False = the numbers are the total multiplier per click (True would multiply them together)
-SMINES = {   # key: (columns, rows, mines, multiplier per click)   (one entry per safe cell)
+MINES_COMPOUND = False
+SMINES_COMPOUND = False
+SMINES = {   # key: (columns, rows, mines, multiplier per click)
     "2x2": (2, 2, 1, [1.4, 2.3, 4.3]),
     "4x4": (4, 4, 3, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 7, 12.3]),
     "5x4": (5, 4, 5, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 5.4, 19]),
 }
-MT_MULT = [1.4, 1.8, 2.4, 4.2, 5.2]   # $mt: TOTAL multiplier after 1..5 climbed rows (not compounded). Row 5 = automatic cashout
-MT_SAFE = "💲"                         # the safe tile of the money tower
+MT_MULT = [1.4, 1.8, 2.4, 4.2, 5.2]
+MT_SAFE = "💲"
 
-
-def _card(name, prize, dud, top, luck=1.0):
-    """Scratch card: 5 prize symbols (the last one is the top prize) + 1 dud symbol that pays nothing."""
-    return {"name": name, "prize": prize, "dud": dud, "mults": [1.5, 2, 3, 5, top], "luck": luck}
-
-
+# ---------- SCRATCH CARDS (a real, limited stock) ----------
+# total   = how many cards exist in the stock (shuffled once, then sold one by one, saved in the database)
+# wins    = {multiplier: how many cards in the stock have it}. Everything else in the stock is a total loss.
+#           multiplier > 1 = profit, < 1 = partial refund (0.5 = you get half the price back, 0.2 = 20% back)
+# weekly  = the stock is rebuilt every week (Monday, Israel time)
+# price   = (start, max): the price rises linearly from start to max as the stock is sold
+# symbols = the symbol of every winning multiplier (3 of them on the card = that prize), duds = filler symbols
 SCRATCH_CARDS = {
-    "falafel": _card("🧆 פלאפל בפיתה", ["🌶️", "🍅", "🥒", "🥙", "🧆"], "🧂", 50),
-    "summer": _card("🍉 קיץ בתל אביב", ["🍦", "🕶️", "🏖️", "☀️", "🍉"], "🌊", 25),
-    "hanukkah": _card("🕎 חנוכה שמח", ["🍩", "🎁", "🪙", "✨", "🕎"], "🕯️", 40),
-    "league": _card("⚽ ליגת העל", ["📣", "🧤", "🥅", "🏆", "⚽"], "🟨", 30),
-    "deadsea": _card("🏜️ ים המלח", ["🧂", "⛰️", "🐪", "🏜️", "💎"], "🌵", 100),
-    "hamsa": _card("🪬 חמסה של מזל", ["🍀", "🧿", "🪙", "⭐", "🪬"], "🌙", 15, luck=1.1),
-    "shuk": _card("🛒 שוק הכרמל", ["🧀", "🥖", "🍊", "🍇", "🐟"], "🧺", 20),
-    "independence": _card("🇮🇱 יום העצמאות", ["🥁", "🔥", "🍖", "🎆", "🇮🇱"], "🎈", 60),
+    "deadsea": {
+        "name": "🏜️ ים המלח", "total": 750, "weekly": False, "price": (5_000_000, 45_000_000),
+        "wins": {15: 1, 1.7: 20, 1.3: 50, 1.2: 50, 0.5: 80, 0.2: 150},
+        "symbols": {15: "💎", 1.7: "🐪", 1.3: "⛰️", 1.2: "🧂", 0.5: "🌵", 0.2: "🌊"},
+        "duds": ["🪨", "☀️"],
+    },
+    "independence": {
+        "name": "🇮🇱 יום העצמאות", "total": 250, "weekly": False, "price": (20_000_000, 100_000_000),
+        "wins": {28.5: 1, 1.6: 20, 0.5: 20},
+        "symbols": {28.5: "🇮🇱", 1.6: "🎆", 0.5: "🍖"},
+        "duds": ["🥁", "🔥", "🎈", "🎇"],
+    },
+    "falafel": {
+        "name": "🧆 פלאפל בפיתה", "total": 375, "weekly": True, "price": (5_000_000, 650_000_000),
+        "wins": {50: 1, 1.7: 75, 0.6: 20},
+        "symbols": {50: "🧆", 1.7: "🥙", 0.6: "🥒"},
+        "duds": ["🌶️", "🍅", "🧂", "🥕"],
+    },
+    "league": {
+        "name": "⚽ ליגת העל", "total": 5, "weekly": True, "price": (1_000_000, 5_000_000),
+        "wins": {85: 1},
+        "symbols": {85: "🏆"},
+        "duds": ["📣", "🧤", "🥅", "🟨", "⚽"],
+    },
 }
-SCRATCH_REFUND = 10   # % chance of a "2 top symbols" card = the bet is returned
-CF_MIN, CF_MAX = 50, 84   # chicken fight win chance: starts at 50%, +1% per win, capped at 84%
-ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360   # ROB_FAIL = 45% chance to get caught
+
+CF_MIN, CF_MAX = 50, 84
+ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
-SLOTS_BOOST = 0.035    # +3.5 percentage points win chance in slots
-BJ_WIN_NERF = 0.09     # blackjack: chance the dealer gets a re-draw when the player would win (about -2.5 points of win rate; raise/lower to tune)
+SLOTS_BOOST = 0.035
+BJ_WIN_NERF = 0.09
 
 # ================= DATABASE =================
 def load():
@@ -69,12 +90,12 @@ def load():
         return {"currency": "💸", "users": {}}
 
 DB = load()
-dirty = False        # the Discord backup needs an upload
-disk_dirty = False   # the local file needs a write
+dirty = False
+disk_dirty = False
 backup_msg = None
-loaded = None     # asyncio.Event, created in setup_hook
+loaded = None
 backup_lock = asyncio.Lock()
-synced = False   # backups stay off until the restore finished, so an empty DB can never overwrite the backup
+synced = False
 
 def _write_text(text):
     tmp = DB_FILE + ".tmp"
@@ -83,12 +104,9 @@ def _write_text(text):
     os.replace(tmp, DB_FILE)
 
 def write_db():
-    """Synchronous write (only used at restore time)."""
     _write_text(json.dumps(DB))
 
 def save():
-    """Marks the data as changed. The disk loop writes it (in a thread, never blocking the games)
-    and the backup loop uploads it (only if the backup is available)."""
     global dirty, disk_dirty
     dirty = disk_dirty = True
 
@@ -122,7 +140,7 @@ def parse_amount(text, available):
     if t[-1:] in ("k", "m", "b"):
         mult, t = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}[t[-1]], t[:-1]
     try:
-        return int(float(t) * mult)   # float() already understands 1e5 / 5e6 / 2.5e3
+        return int(float(t) * mult)
     except (ValueError, OverflowError):
         return None
 
@@ -152,13 +170,12 @@ async def take_bet(ctx, amount, usage, track=False):
     if bet > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
     u["cash"] -= bet
-    if track:   # remember the running game, so the bet is refunded if the bot restarts mid-game
+    if track:
         DB.setdefault("pending", {})[str(ctx.message.id)] = {"uid": str(ctx.author.id), "bet": bet}
     save()
     return bet
 
 def pending_done(token):
-    """The game is settled: forget its pending bet (the caller saves right after)."""
     if token:
         DB.get("pending", {}).pop(token, None)
 
@@ -167,7 +184,10 @@ def pending_bump(token, amount):
         DB["pending"][token]["bet"] += amount
 
 def cancel_game(user, token, bet):
-    """The game could not even be shown to the player: give the bet back."""
+    """The game could not even be shown to the player: give the bet back (and the scratch card, if any)."""
+    rec = DB.get("pending", {}).get(token) or {}
+    if rec.get("scratch"):
+        return_card(*rec["scratch"])
     pending_done(token)
     user_data(user.id)["cash"] += bet
     save()
@@ -177,6 +197,8 @@ def refund_pending():
     pend = DB.get("pending") or {}
     for rec in pend.values():
         user_data(rec["uid"])["cash"] += rec["bet"]
+        if rec.get("scratch"):
+            return_card(*rec["scratch"])   # the unscratched card goes back into the stock
     if pend:
         print(f"Refunded {len(pend)} unfinished game(s)")
     DB["pending"] = {}
@@ -196,7 +218,6 @@ async def send_log(user, text, color):
         print("Log failed:", repr(ex))
 
 def log_event(user, text, color):
-    """Fire-and-forget: a slow / broken log channel can never slow down or break a game."""
     if not DB.get("log_channel"):
         return
     t = asyncio.create_task(send_log(user, text, color))
@@ -214,7 +235,6 @@ def log_game(user, game, bet, net):
     log_event(user, f"{text}\nBalance: {fmt(cash)} {cur()}", color)
 
 def log_money(user, text, color=BLUE):
-    """Every money movement goes to the log channel, under the player who did it (+ his balance)."""
     u = user_data(user.id)
     log_event(user, f"{text}\nCash: {fmt(u['cash'])} | Bank: {fmt(u['bank'])} {cur()}", color)
 
@@ -232,7 +252,6 @@ async def dm_owner(embed):
         print("Predict DM failed:", repr(ex))
 
 def spy(view):
-    """$predict: DM the owner where every bomb / diamond is, whenever anybody starts a board game."""
     if not DB.get("predict"):
         return
     note = "\n\n*(bottom row = first row)*" if hasattr(view, "safe_icon") else ""
@@ -243,14 +262,13 @@ def spy(view):
     t.add_done_callback(_log_tasks.discard)
 
 def may_play(interaction, game_owner_id):
-    """The player himself, or the owner while $touch is on."""
     return interaction.user.id == game_owner_id or (interaction.user.id == OWNER_ID and bool(DB.get("touch")))
 
 # ================= BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True   # needed by $addmoneyrole (enable "Server Members Intent" in the Developer Portal)
-bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None)   # "S$mines" = the board-size game
+intents.members = True
+bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None)
 
 def cmd_key(ctx):
     return "s$mines" if ctx.command.name == "mines" and ctx.prefix.lower() == "s$" else ctx.command.name
@@ -261,7 +279,7 @@ async def only_allowed_channels(ctx):
     if ctx.channel.id not in CHANNELS:
         return False
     if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id != OWNER_ID:
-        return False   # disabled command: the bot stays completely silent
+        return False
     return True
 
 # ================= BACKUP =================
@@ -271,7 +289,7 @@ def backup_file():
 async def get_backup_channel():
     if BACKUP_CHANNEL_ID:
         return bot.get_channel(BACKUP_CHANNEL_ID) or await bot.fetch_channel(BACKUP_CHANNEL_ID)
-    return await (await bot.fetch_user(OWNER_ID)).create_dm()   # default: the owner's DMs
+    return await (await bot.fetch_user(OWNER_ID)).create_dm()
 
 async def backup_candidates(ch):
     pins = ch.pins()
@@ -319,7 +337,7 @@ async def backup_now():
                     backup_msg = None
             backup_msg = await (await get_backup_channel()).send("💾 Database backup - do not delete this message", file=backup_file())
             try:
-                await backup_msg.pin()   # pinned = always found again after a restart
+                await backup_msg.pin()
             except Exception:
                 pass
         except Exception as e:
@@ -340,7 +358,6 @@ async def graceful_shutdown():
     await bot.close()
 
 async def start_web():
-    """Tiny web page so a free host (Render) + an uptime pinger keep the bot awake."""
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="Bot is alive"))
     runner = web.AppRunner(app)
@@ -400,10 +417,9 @@ BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=1, diamond=8)}
 for _k, (_w, _h, _m, _) in SMINES.items():
     BUILDERS[f"s{_k}"] = lambda m=_m, n=_w * _h: shuffled(bomb=m, diamond=n - m)
 
-LAST_BOMBS = {}   # (user id, game) -> bomb positions of that user's previous board
+LAST_BOMBS = {}
 
 def take(uid, key):
-    """New board whose bombs are NOT in (mostly) the same places as the player's previous board."""
     prev = LAST_BOMBS.get((uid, key), set())
     for _ in range(30):
         board = BUILDERS[key]()
@@ -413,7 +429,7 @@ def take(uid, key):
     LAST_BOMBS[(uid, key)] = bombs
     return board
 
-# ================= MINES / GM =================
+# ================= MINES / GM / MONEY TOWER =================
 class Tile(discord.ui.Button):
     def __init__(self, idx, cols):
         super().__init__(style=discord.ButtonStyle.secondary, label=EMPTY, row=idx // cols)
@@ -424,10 +440,10 @@ class Tile(discord.ui.Button):
 
 class BoardView(discord.ui.View):
     cols, header = 5, "\u200b"
-    reveal_on_cashout = True   # False = a cash out does NOT show where the bombs / diamonds were
-    mines_style = False        # True = result message like the mines screenshot
+    reveal_on_cashout = True
+    mines_style = True         # every board game uses the same cash out / lost message
     game_name = "game"
-    cash_row = None            # None = the row under the tiles
+    cash_row = None
 
     def __init__(self, user, bet, token=None):
         super().__init__(timeout=120)
@@ -435,8 +451,8 @@ class BoardView(discord.ui.View):
         self.board = self.make_board()
         self.revealed, self.profit = set(), 0
         self.done = False
-        self.version = 0                  # bumps on every click, so only the newest board gets drawn
-        self.edit_lock = asyncio.Lock()   # edits go out one at a time, in order
+        self.version = 0
+        self.edit_lock = asyncio.Lock()
         self.message = None
         self.tiles = [Tile(i, self.cols) for i in range(len(self.board))]
         row = self.cash_row if self.cash_row is not None else len(self.tiles) // self.cols
@@ -469,7 +485,6 @@ class BoardView(discord.ui.View):
         pass
 
     async def click(self, interaction, idx):
-        # acknowledge instantly (Discord gives only 3 seconds), then update the state with no awaits in between
         if not interaction.response.is_done():
             await interaction.response.defer()
         if self.done or idx in self.revealed:
@@ -480,8 +495,6 @@ class BoardView(discord.ui.View):
             return await self.finish(interaction, True)
         self.after(kind)
         if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
-            # everything found: lock the bombs but keep Cashout open, the player collects it themselves
-            # (if they wait too long the game times out and pays out automatically)
             for i, t in enumerate(self.tiles):
                 if i not in self.revealed:
                     t.disabled = True
@@ -489,7 +502,7 @@ class BoardView(discord.ui.View):
         v = self.version
         async with self.edit_lock:
             if v != self.version or self.done:
-                return   # a newer click will draw the latest board
+                return
             await interaction.edit_original_response(content=self.header, view=self)
 
     def payout(self):
@@ -507,10 +520,9 @@ class BoardView(discord.ui.View):
         self.cash_btn.disabled = True
 
     def embed(self, lost):
-        if not self.mines_style:
-            return result_embed(self.user, not lost, self.bet if lost else self.profit)
-        amt = self.bet if lost else int(self.profit)
-        line = f"-You lost {fmt(amt)} {cur()}" if lost else f"+You won and got {fmt(amt)} {cur()}"
+        """Same message in every board game (gm, mines, S$mines, mt)."""
+        got = self.bet + int(self.profit)
+        line = f"-You lost {fmt(self.bet)} {cur()}" if lost else f"+You won and got {fmt(got)} {cur()}"
         found = sum(1 for i in self.revealed if self.board[i] != "bomb")
         cash = user_data(self.user.id)["cash"]
         return make_embed(self.user, f"```\n{line}\n```\nYou found {found} {EMOJI['diamond']}\nYou now have: {fmt(cash)} {cur()}",
@@ -565,7 +577,6 @@ class GoldMines(BoardView):
 class Mines(BoardView):
     cols = 3
     reveal_on_cashout = False
-    mines_style = True
     game_name = "mines"
 
     def make_board(self):
@@ -577,7 +588,6 @@ class Mines(BoardView):
 
 class SMines(BoardView):
     reveal_on_cashout = False
-    mines_style = True
 
     def __init__(self, user, bet, key, token=None):
         self.key = key
@@ -594,10 +604,9 @@ class SMines(BoardView):
         self.profit = self.bet * ((math.prod(self.table[:n]) if SMINES_COMPOUND else self.table[n - 1]) - 1)
 
 class MoneyTower(BoardView):
-    """5 rows x 3 tiles (1 bomb per row). You climb from the bottom row up. Every safe tile = the next
-    multiplier of MT_MULT (applies to the bet only, not compounded). Climbing all 5 rows = automatic cashout."""
+    """5 rows x 3 tiles (1 bomb per row). Climb from the bottom row up; climbing all 5 rows = automatic cashout."""
     cols = 3
-    cash_row = 4                  # Cashout + Profit sit on the bottom tile row
+    cash_row = 4
     reveal_on_cashout = False
     game_name = "money tower"
     safe_icon = MT_SAFE
@@ -610,7 +619,7 @@ class MoneyTower(BoardView):
         self.climbed = 0
         super().__init__(user, bet, token)
         for i, t in enumerate(self.tiles):
-            t.disabled = i // 3 != 4      # only the bottom row is open at the start
+            t.disabled = i // 3 != 4
 
     def make_board(self):
         board = []
@@ -637,19 +646,19 @@ class MoneyTower(BoardView):
         if not interaction.response.is_done():
             await interaction.response.defer()
         row = idx // 3
-        if self.done or idx in self.revealed or row != 4 - self.climbed:   # only the current row can be clicked
+        if self.done or idx in self.revealed or row != 4 - self.climbed:
             return
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
             return await self.finish(interaction, True)
-        for j in range(row * 3, row * 3 + 3):   # row cleared: lock it and show where its bomb was
+        for j in range(row * 3, row * 3 + 3):
             self.tiles[j].disabled = True
             if self.board[j] == "bomb":
                 self.tiles[j].emoji, self.tiles[j].style = EMOJI["bomb"], discord.ButtonStyle.danger
         if self.climbed >= 5:
-            return await self.finish(interaction, False)   # top reached: automatic cashout
-        for j in range((row - 1) * 3, (row - 1) * 3 + 3):   # open the next row
+            return await self.finish(interaction, False)
+        for j in range((row - 1) * 3, (row - 1) * 3 + 3):
             self.tiles[j].disabled = False
         self.version += 1
         v = self.version
@@ -665,17 +674,6 @@ class MoneyTower(BoardView):
             if show and kind == "bomb":
                 t.emoji, t.style = EMOJI["bomb"], discord.ButtonStyle.danger
         self.cash_btn.disabled = True
-
-    def embed(self, lost):
-        rows = f"You climbed {self.climbed} row{'s' if self.climbed != 1 else ''}."
-        if lost:
-            e = discord.Embed(title="💥 You hit a bomb!", color=RED,
-                              description=f"```\n-You lost {fmt(self.bet)} {cur()}\n```\n{rows}")
-        else:
-            e = discord.Embed(title="💰 You cashed out!", color=GREEN,
-                              description=f"```\n+You won and got {fmt(self.bet + int(self.profit))} {cur()}\n```\n{rows}")
-        e.timestamp = discord.utils.utcnow()
-        return e
 
 class SizeView(discord.ui.View):
     def __init__(self, user, bet, token=None):
@@ -693,7 +691,7 @@ class SizeView(discord.ui.View):
 
     def pick(self, key):
         async def cb(interaction):
-            if self.chosen:   # double click: never start two games
+            if self.chosen:
                 if not interaction.response.is_done():
                     await interaction.response.defer()
                 return
@@ -758,9 +756,8 @@ async def mt(ctx, amount: str = None):
 
 # ================= BLACKJACK =================
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
-SUITS = ["♣", "♠", "♥", "♦"]          # same row order as cards.png
+SUITS = ["♣", "♠", "♥", "♦"]
 class BusySet:
-    """Players that are in a game. A lock older than 10 minutes is stale (a game never lasts that long) and frees itself."""
     def __init__(self):
         self.d = {}
 
@@ -789,8 +786,6 @@ def hand_value(cards):
     return total
 
 # ---------- card images ----------
-# Cards are drawn at full size on a wide canvas. Discord shrinks the wide image to fit the message,
-# so the cards look small but stay sharp. TABLE_W: bigger number = smaller cards on screen.
 SHEET = Image.open(os.path.join(HERE, "cards.png")).convert("RGBA")
 SW, SH = 66, 93
 TABLE_W = 960
@@ -867,7 +862,7 @@ class BlackjackView(discord.ui.View):
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("This is not your game!", ephemeral=True)
             return False
-        if self.done:   # a late / double click after the game ended must never pay twice
+        if self.done:
             if not interaction.response.is_done():
                 await interaction.response.defer()
             return False
@@ -910,9 +905,8 @@ class BlackjackView(discord.ui.View):
     def finalize(self):
         if any(not h["bust"] for h in self.hands):
             self.dealer_play()
-            # lower the player's win rate: sometimes the dealer re-draws his hidden card + hits
             if self.player_wins() and random.random() < BJ_WIN_NERF:
-                up = self.dealer[0]   # the visible card never changes
+                up = self.dealer[0]
                 for _ in range(5):
                     self.deck.extend(self.dealer[1:])
                     random.shuffle(self.deck)
@@ -950,7 +944,6 @@ class BlackjackView(discord.ui.View):
         return e, file
 
     async def update(self, interaction):
-        # the state is already changed by the caller. Acknowledge at once (3s limit), then draw + upload the image
         self.refresh_buttons()
         if not interaction.response.is_done():
             await interaction.response.defer()
@@ -1025,7 +1018,7 @@ async def bj(ctx, amount: str = None):
         natural = view.check_naturals()
         e, f = view.render()
         msg = await ctx.send(embed=e, file=f, view=view)
-    except Exception:   # never leave the player locked out / without the bet
+    except Exception:
         if not view.done:
             cancel_game(ctx.author, view.token, bet)
         BUSY.discard(ctx.author.id)
@@ -1044,17 +1037,15 @@ async def slots(ctx, amount: str = None):
     BUSY.add(ctx.author.id)
     try:
         final = [random.choice(SLOTS) for _ in range(3)]
-        # 3 different symbols = loss (120/216 of spins). Turn some of those into a pair to raise the win chance by SLOTS_BOOST
         if len(set(final)) == 3 and random.random() < SLOTS_BOOST / (120 / 216):
             final[1] = final[0]
         top = max(final.count(s) for s in SLOTS)
         mult = SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0
         win = int(bet * mult)
-        user_data(ctx.author.id)["cash"] += win   # paid BEFORE the animation: a Discord error can never eat the bet
+        user_data(ctx.author.id)["cash"] += win
         save()
         log_game(ctx.author, "slots", bet, win - bet)
         machine = lambda reels: "🎰  ┃ " + " ┃ ".join(reels) + " ┃  🎰"
-        # reel 1 stops at 3s, reel 2 at 4s, reel 3 at 5s
         frame = lambda t: make_embed(
             ctx.author,
             f"**Slots**\n\n{machine([final[i] if t >= 3 + i else random.choice(SLOTS) for i in range(3)])}\n\n⏳ **{5 - t}s**",
@@ -1068,7 +1059,7 @@ async def slots(ctx, amount: str = None):
             await asyncio.sleep(1)
             await msg.edit(embed=result)
         except discord.HTTPException:
-            pass   # money is already settled
+            pass
     finally:
         BUSY.discard(ctx.author.id)
 
@@ -1085,7 +1076,7 @@ class CoinFlip(discord.ui.View):
         return True
 
     async def flip(self, interaction, pick):
-        if self.settled:   # double click: never pay twice
+        if self.settled:
             return await interaction.response.defer()
         self.settled = True
         land = random.choice(("Head", "Tail"))
@@ -1160,52 +1151,71 @@ async def cf(ctx, amount: str = None):
     await reply(ctx, desc, color)
 
 # ================= SCRATCH CARDS =================
-def scratch_outcome(card):
-    """'lose', 'refund' or the index of the winning prize symbol. Top prize chance = 15 / top prize %."""
-    mults, luck = card["mults"], card["luck"]
-    table = [(i, w * luck) for i, w in enumerate([16, 9, 4, 1.5, 15 / mults[-1]])] + [("refund", SCRATCH_REFUND * luck)]
-    r = random.uniform(0, 100)
-    for out, w in table:
-        if r < w:
-            return out
-        r -= w
-    return "lose"
+def week_id():
+    try:
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    y, w, _ = now.isocalendar()
+    return f"{y}-W{w}"
 
-def scratch_board(card, out):
-    """9 symbols that match the outcome: win = exactly 3 of the winning symbol, nothing else reaches 3."""
-    prize, dud = card["prize"], card["dud"]
-    top, pool = prize[-1], prize + [dud]
-    for _ in range(3000):
-        b = random.choices(pool, k=9)
-        c = Counter(b)
-        if out == "lose":
-            good = all(c[s] <= 2 for s in prize) and c[top] <= 1
-        elif out == "refund":
-            good = c[top] == 2 and all(c[s] <= 2 for s in prize)
-        else:
-            good = c[prize[out]] == 3 and all(c[s] <= 2 for i, s in enumerate(prize) if i != out)
-        if good:
-            return b
-    if out == "lose":
-        return [dud] * 9
-    return ([top] * 2 if out == "refund" else [prize[out]] * 3) + [dud] * (7 if out == "refund" else 6)
+def build_stock(key):
+    """A fresh stock: every card of the stock exists once, shuffled. Saved in the database (survives restarts)."""
+    c = SCRATCH_CARDS[key]
+    pool = [m for m, n in c["wins"].items() for _ in range(n)]
+    pool += [0] * (c["total"] - len(pool))   # everything else = total loss
+    random.shuffle(pool)
+    return {"left": pool, "sold": 0, "week": week_id()}
 
-def find_card(text):
-    t = text.lower()
+def get_stock(key):
+    c = SCRATCH_CARDS[key]
+    scratch = DB.setdefault("scratch", {})
+    st = scratch.get(key)
+    if st is None or (c["weekly"] and st.get("week") != week_id()):
+        st = scratch[key] = build_stock(key)
+        save()
+    return st
+
+def card_price(key):
+    """Rises linearly from the start price to the max price as the stock gets sold."""
+    c, st = SCRATCH_CARDS[key], get_stock(key)
+    lo, hi = c["price"]
+    return int(lo + (hi - lo) * min(st["sold"], c["total"] - 1) / max(1, c["total"] - 1))
+
+def return_card(key, mult):
+    """A card that was never scratched (game cancelled / bot restarted) goes back into the stock."""
+    st, c = DB.get("scratch", {}).get(key), SCRATCH_CARDS.get(key)
+    if not st or not c or (c["weekly"] and st.get("week") != week_id()):
+        return
+    st["left"].insert(random.randint(0, len(st["left"])), mult)
+    st["sold"] = max(0, st["sold"] - 1)
+
+def stock_lines():
+    lines = []
     for key, c in SCRATCH_CARDS.items():
-        if t == key:
-            return key
-    for key, c in SCRATCH_CARDS.items():
-        if len(t) >= 2 and t in c["name"].lower():
-            return key
-    return None
+        st = get_stock(key)
+        left = len(st["left"])
+        lines.append(f"**{c['name']}**{' 🔁 weekly' if c['weekly'] else ''}\n"
+                     f"Price: **{fmt(card_price(key))}** {cur()} • Left: **{left}/{c['total']}**"
+                     + (" • ❌ SOLD OUT" if not left else "") + f" • Top prize: **x{max(c['wins']):g}**")
+    return "\n\n".join(lines)
+
+def scratch_board(card, mult):
+    """9 symbols. A prize = exactly 3 of its symbol. Nothing else ever reaches 3 (a total loss has no triple)."""
+    sym = card["symbols"].get(mult)
+    others = [s for s in list(card["symbols"].values()) + card["duds"] if s != sym]
+    pool = others * 2
+    random.shuffle(pool)
+    cells = ([sym] * 3 if sym else []) + pool[:9 - (3 if sym else 0)]
+    random.shuffle(cells)
+    return cells
 
 class ScratchView(discord.ui.View):
-    def __init__(self, user, bet, card, token=None):
+    def __init__(self, user, bet, key, mult, token=None):
         super().__init__(timeout=120)
-        self.user, self.bet, self.card, self.token = user, bet, card, token
-        self.out = scratch_outcome(card)          # decided up front, the scratching only reveals it
-        self.board = scratch_board(card, self.out)
+        self.user, self.bet, self.key, self.mult, self.token = user, bet, key, mult, token
+        self.card = SCRATCH_CARDS[key]
+        self.board = scratch_board(self.card, mult)
         self.revealed, self.done, self.message = set(), False, None
         self.version, self.edit_lock = 0, asyncio.Lock()
         self.tiles = [Tile(i, 3) for i in range(9)]
@@ -1224,10 +1234,11 @@ class ScratchView(discord.ui.View):
 
     def info(self):
         c = self.card
-        prizes = "\n".join(f"{s} ×3 → **x{m:g}**" for s, m in zip(c["prize"], c["mults"]))
+        prizes = "\n".join(
+            f"{s} ×3 → **x{m:g}**" + (" (partial refund)" if m < 1 else "")
+            for m, s in sorted(c["symbols"].items(), reverse=True))
         return discord.Embed(color=YELLOW, title=f"🎟️ {c['name']}", description=(
-            f"Bet: **{fmt(self.bet)}** {cur()}\n\nFind **3 matching** symbols to win!\n"
-            f"2 × {c['prize'][-1]} = your bet is returned\n\n{prizes}"))
+            f"You paid **{fmt(self.bet)}** {cur()}\n\nScratch and find **3 matching** symbols!\n\n{prizes}"))
 
     def reveal(self, i):
         t = self.tiles[i]
@@ -1255,18 +1266,16 @@ class ScratchView(discord.ui.View):
         for i in range(9):
             if i not in self.revealed:
                 self.reveal(i)
-        c, name = self.card, self.card["name"]
-        if isinstance(self.out, int):
-            sym, mult = c["prize"][self.out], c["mults"][self.out]
+        name, mult = self.card["name"], self.mult
+        sym = self.card["symbols"].get(mult)
+        if sym:
             for i, s in enumerate(self.board):
                 if s == sym:
-                    self.tiles[i].style = discord.ButtonStyle.success
+                    self.tiles[i].style = discord.ButtonStyle.success if mult >= 1 else discord.ButtonStyle.danger
             extra = f"**{name}**\n3 × {sym} → **x{mult:g}**\n\n"
-        elif self.out == "refund":
-            mult, extra = 1, f"**{name}**\nSo close! 2 × {c['prize'][-1]}\n\n"
         else:
-            mult, extra = 0, f"**{name}**\nNo match this time.\n\n"
-        returned = int(self.bet * mult)
+            extra = f"**{name}**\nNo match this time.\n\n"
+        returned = round(self.bet * mult)
         pending_done(self.token)
         user_data(self.user.id)["cash"] += returned
         save()
@@ -1276,7 +1285,9 @@ class ScratchView(discord.ui.View):
         if net > 0:
             return result_embed(self.user, True, net, extra)
         if net < 0:
-            return result_embed(self.user, False, self.bet, extra)
+            if returned:
+                extra += f"You got back {fmt(returned)} {cur()}.\n"
+            return result_embed(self.user, False, -net, extra)
         return make_embed(self.user, f"{extra}```\nPush: your bet of {fmt(self.bet)} was returned\n```\n"
                                      f"You now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
 
@@ -1296,31 +1307,77 @@ class ScratchView(discord.ui.View):
         if self.message:
             await self.message.edit(embed=e, view=self)
 
-@bot.command(name="scratch", usage="scratch [card] <amount | half | all>")
-async def scratch(ctx, *args):
-    usage = "scratch [card] <amount | half | all>"
-    if not 1 <= len(args) <= 2:
-        return await reply(ctx, f"Usage: `${usage}`\nSee the cards with `$cards`.", RED)
-    key = None
-    if len(args) == 2:
-        key = find_card(args[0])
-        if key is None:
-            return await reply(ctx, "Unknown card. See the list with `$cards`.", RED)
-    card = SCRATCH_CARDS[key or random.choice(list(SCRATCH_CARDS))]
-    bet = await take_bet(ctx, args[-1], usage, track=True)
-    if not bet:
-        return
-    view = ScratchView(ctx.author, bet, card, str(ctx.message.id))
-    try:
-        view.message = await ctx.reply(embed=view.info(), view=view, mention_author=False)
-    except Exception:
-        cancel_game(ctx.author, view.token, bet)
-        raise
+class ScratchMenu(discord.ui.View):
+    """$scratch: one button per card. Clicking a button buys the next card of that stock."""
+    def __init__(self, user):
+        super().__init__(timeout=120)
+        self.user, self.message, self.chosen = user, None, False
+        for key, c in SCRATCH_CARDS.items():
+            left = len(get_stock(key)["left"])
+            b = discord.ui.Button(style=discord.ButtonStyle.primary if left else discord.ButtonStyle.secondary,
+                                  label=f"{c['name']} • {fmt(card_price(key))}"[:80], disabled=not left)
+            b.callback = self.pick(key)
+            self.add_item(b)
+
+    def embed(self):
+        return discord.Embed(color=YELLOW, title="🎟️ Scratch Cards",
+                             description=f"{stock_lines()}\n\nPick a card below to buy it and scratch!")
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This is not your menu!", ephemeral=True)
+            return False
+        return True
+
+    def pick(self, key):
+        async def cb(interaction):
+            if self.chosen:
+                if not interaction.response.is_done():
+                    await interaction.response.defer()
+                return
+            # no awaits between the checks and the purchase: two players can never get the same card
+            st = get_stock(key)
+            if not st["left"]:
+                return await interaction.response.send_message("This card is sold out.", ephemeral=True)
+            price, u = card_price(key), user_data(self.user.id)
+            if u["cash"] < price:
+                return await interaction.response.send_message(
+                    f"You need **{fmt(price)}** {cur()} in cash for this card.", ephemeral=True)
+            self.chosen = True
+            self.stop()
+            mult = st["left"].pop()
+            st["sold"] += 1
+            u["cash"] -= price
+            token = f"scr{interaction.id}"
+            DB.setdefault("pending", {})[token] = {"uid": str(self.user.id), "bet": price, "scratch": [key, mult]}
+            save()
+            try:
+                view = ScratchView(self.user, price, key, mult, token)
+                view.message = interaction.message
+                await interaction.response.edit_message(embed=view.info(), view=view)
+            except Exception:
+                cancel_game(self.user, token, price)
+                raise
+        return cb
+
+    async def on_timeout(self):
+        if self.chosen or not self.message:
+            return
+        for b in self.children:
+            b.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except Exception:
+            pass
+
+@bot.command(name="scratch")
+async def scratch(ctx):
+    view = ScratchMenu(ctx.author)
+    view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
 
 @bot.command(name="cards")
 async def cards(ctx):
-    lines = [f"`{k}` — {c['name']} (top prize x{c['mults'][-1]:g})" for k, c in SCRATCH_CARDS.items()]
-    await reply(ctx, "**🎟️ Scratch cards**\n" + "\n".join(lines) + "\n\nPlay: `$scratch [card] <amount | half | all>`", BLUE)
+    await reply(ctx, f"**🎟️ Scratch cards**\n\n{stock_lines()}\n\nPlay: `$scratch`", BLUE)
 
 # ================= ECONOMY =================
 @bot.command(name="bal", aliases=["balance"], usage="bal [@user]")
@@ -1390,13 +1447,14 @@ async def pay(ctx, member: discord.Member, amount: str):
 @bot.command(name="rob", usage="rob @user", cooldown_after_parsing=True)
 @commands.cooldown(1, ROB_COOLDOWN, commands.BucketType.user)
 async def rob(ctx, member: discord.Member):
+    if member.bot or member.id == ctx.author.id:
+        ctx.command.reset_cooldown(ctx)
+        return await reply(ctx, "You can't rob this user.", RED)
     me, target = user_data(ctx.author.id), user_data(member.id)
     loot = {k: int(target[k] * ROB_PERCENT) for k in ROB_FROM}
-    if member.bot or member.id == ctx.author.id or not sum(loot.values()):
-        ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "You can't rob this user." if member.bot or member.id == ctx.author.id
-                           else f"{member.name} has nothing to rob.", RED)
-    if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:   # 45% to get caught if you have any money
+    if not sum(loot.values()):   # a poor target: the robbery still happens, and it fails (cooldown starts)
+        return await reply(ctx, f"You tried to rob a poor person and lost 0 {cur()}.", RED)
+    if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:
         lost = me["cash"] + me["bank"]
         me["cash"] = me["bank"] = 0
         save()
@@ -1409,14 +1467,89 @@ async def rob(ctx, member: discord.Member):
     log_game(ctx.author, f"rob {member.name} (id {member.id})", 0, sum(loot.values()))
     await reply(ctx, f"You robbed {fmt(sum(loot.values()))} {cur()} from {member.name}!", GREEN)
 
+# ---------- leaderboard ($top / $lb) ----------
+TOP_MODES = {"bank": lambda d: d["bank"], "total": lambda d: d["cash"] + d["bank"], "cash": lambda d: d["cash"]}
+TOP_PAGE = 10
+
+class TopView(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=180)
+        self.user, self.mode, self.page, self.message = user, "total", 0, None
+        self.mode_btns = {}
+        for m in ("bank", "total", "cash"):
+            b = discord.ui.Button(label=m.capitalize(), row=0)
+            b.callback = self.set_mode(m)
+            self.mode_btns[m] = b
+            self.add_item(b)
+        refresh = discord.ui.Button(emoji="🔃", style=discord.ButtonStyle.secondary, row=0)
+        refresh.callback = self.refresh
+        self.add_item(refresh)
+        self.prev_btn = discord.ui.Button(label="Previous Page", style=discord.ButtonStyle.secondary, row=1)
+        self.prev_btn.callback = self.turn(-1)
+        self.page_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.next_btn = discord.ui.Button(label="Next Page", style=discord.ButtonStyle.secondary, row=1)
+        self.next_btn.callback = self.turn(1)
+        for b in (self.prev_btn, self.page_btn, self.next_btn):
+            self.add_item(b)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Open your own leaderboard with `$lb`.", ephemeral=True)
+            return False
+        return True
+
+    def ranked(self):
+        f = TOP_MODES[self.mode]
+        rows = [(int(uid), f(d)) for uid, d in DB["users"].items()]
+        return sorted((r for r in rows if r[1] > 0), key=lambda r: r[1], reverse=True)
+
+    def build(self):
+        ranked = self.ranked()
+        pages = max(1, math.ceil(len(ranked) / TOP_PAGE))
+        self.page = max(0, min(self.page, pages - 1))
+        start = self.page * TOP_PAGE
+        lines = [f"{start + i}. <@{uid}> • {fmt(v)} {cur()}" for i, (uid, v) in enumerate(ranked[start:start + TOP_PAGE], 1)]
+        for m, b in self.mode_btns.items():
+            b.style = discord.ButtonStyle.primary if m == self.mode else discord.ButtonStyle.secondary
+        self.prev_btn.disabled = self.page <= 0
+        self.next_btn.disabled = self.page >= pages - 1
+        self.page_btn.label = f"Page • {self.page + 1}/{pages}"
+        e = discord.Embed(description="\n".join(lines) or "Nobody has any money yet.", color=BLUE)
+        e.set_author(name=f"Top {self.mode.capitalize()} Users", icon_url=self.user.display_avatar.url)
+        return e
+
+    async def show(self, interaction):
+        await interaction.response.edit_message(embed=self.build(), view=self)
+
+    def set_mode(self, mode):
+        async def cb(interaction):
+            self.mode, self.page = mode, 0
+            await self.show(interaction)
+        return cb
+
+    def turn(self, step):
+        async def cb(interaction):
+            self.page += step
+            await self.show(interaction)
+        return cb
+
+    async def refresh(self, interaction):
+        await self.show(interaction)
+
+    async def on_timeout(self):
+        for b in self.children:
+            b.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
 @bot.command(name="top", aliases=["lb"])
 async def top(ctx):
-    ranked = sorted(DB["users"].items(), key=lambda kv: kv[1]["cash"] + kv[1]["bank"], reverse=True)[:10]
-    lines = []
-    for n, (uid, d) in enumerate(ranked, 1):
-        m = bot.get_user(int(uid))
-        lines.append(f"**{n}.** {m.name if m else f'<@{uid}>'} — {fmt(d['cash'] + d['bank'])} {cur()}")
-    await reply(ctx, "\n".join(lines) or "Nobody has any money yet.", BLUE)
+    view = TopView(ctx.author)
+    # mentions inside an embed are clickable but never ping anybody
+    view.message = await ctx.reply(embed=view.build(), view=view, mention_author=False)
 
 # ================= STAFF / ADMIN =================
 class NotStaff(commands.CheckFailure):
@@ -1428,7 +1561,6 @@ def admin_or_owner(ctx):
     raise commands.MissingPermissions(["administrator"])
 
 def is_staff(ctx):
-    """Owner, Administrators, or anyone with the role set by $staff-role."""
     if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator:
         return True
     rid = DB.get("staff_role")
@@ -1466,7 +1598,7 @@ async def setgamelogs(ctx, channel: discord.TextChannel = None):
 async def change_money(ctx, where, member, amount, sign):
     where = where.lower()
     u = user_data(member.id)
-    amount = parse_amount(amount, u.get(where, 0) if sign < 0 else 0)   # 1e5 / 5k / 2m all work
+    amount = parse_amount(amount, u.get(where, 0) if sign < 0 else 0)
     if where not in ("bank", "cash") or amount is None or amount <= 0:
         return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
     amount = min(amount, u[where]) if sign < 0 else amount
@@ -1515,7 +1647,7 @@ async def currency(ctx, symbol: str = None):
     await reply(ctx, f"Currency changed to {symbol}", GREEN)
 
 # ================= OWNER: DISABLE / UNDISABLE =================
-owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)   # anyone else is ignored silently
+owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)
 
 def resolve_key(name):
     name = name.lower().lstrip("$")
@@ -1533,7 +1665,7 @@ async def disable(ctx, name: str = None):
     key = resolve_key(name)
     if key is None:
         return await reply(ctx, "Unknown command.", RED)
-    if key in ("disable", "enable"):   # "enable" is also "undisable"
+    if key in ("disable", "enable"):
         return await reply(ctx, "You can't disable this command.", RED)
     if key not in off:
         off.append(key)
@@ -1561,13 +1693,13 @@ async def secret_toggle(ctx, key, on, text):
         DB.pop(key, None)
     save()
     try:
-        await ctx.message.delete()   # leave no trace in the channel
+        await ctx.message.delete()
     except Exception:
         pass
     try:
         await ctx.author.send(text)
     except Exception:
-        await reply(ctx, text, BLUE)   # DMs closed: answer in the channel
+        await reply(ctx, text, BLUE)
 
 @bot.command(name="predict")
 @owner_only
@@ -1598,15 +1730,15 @@ INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מיני
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח מתחיל ב-50%, עולה ב-1% אחרי כל ניצחון עד מקסימום 84%, וחוזר ל-50% אחרי הפסד.
 • `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.4, x1.8, x2.4, x4.2, x5.2), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
-• `$scratch [כרטיס] סכום` – כרטיס גירוד. מגרדים משבצות ומחפשים 3 סמלים זהים. בלי שם כרטיס מקבלים כרטיס רנדומלי. `$cards` מציג את כל הכרטיסים.
+• `$scratch` – כרטיסי גירוד אמיתיים ממלאי מוגבל (ים המלח, יום העצמאות, פלאפל בפיתה, ליגת העל). בוחרים כרטיס בכפתור, המחיר עולה ככל שנמכרים יותר כרטיסים, ופלאפל וליגת העל מתאפסים כל שבוע. `$cards` מציג את המלאי.
 
 **💰 כלכלה**
 • `$bal [@user]` – כסף בחוץ ובבנק.
 • `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו (למשל `$with 1e5`).
 • `$work` / `$crime` – הרווחה מהירה, פעם בשתי דקות.
-• `$rob @user` – שוד. קולדאון 6 דקות ושודדים את רוב הכסף של הקורבן. למי שיש כסף יש 45% להיתפס ולהתאפס.
+• `$rob @user` – שוד. קולדאון 6 דקות ושודדים את רוב הכסף של הקורבן. למי שיש כסף יש 45% להיתפס ולהתאפס. שוד של מישהו בלי כסף תמיד נכשל.
 • `$pay @user סכום` – העברת כסף לשחקן אחר.
-• `$top` / `$lb` – טבלת העשירים.
+• `$top` / `$lb` – טבלת העשירים עם כפתורי Bank, Total, Cash ודפים.
 
 **🛠 צוות** (אדמין או רול צוות)
 • `$addmoney` / `$removemoney bank|cash @user סכום` – הוספה או הורדה של כסף.
