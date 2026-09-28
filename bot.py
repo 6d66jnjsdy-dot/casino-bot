@@ -11,27 +11,32 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "economy.json")
 CHANNELS = {1541567870591443026, 1502311424808980690}
 OWNER_ID = 1537816435370229820
-BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID") or 1541567870591443026)
+# 0 = the bot never sends the economy.json file to Discord. Data is still saved locally in DATA_DIR.
+# Set the BACKUP_CHANNEL_ID env var to a private channel only if your host wipes the disk on restart.
+BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID") or 0)
 MIN_BET = 150
 EARN_MIN, EARN_MAX = 6500, 16000
 DEALER_STANDS_ON = 13
 CLICK_DELAY = 0.3
 EMPTY = "\u200e"   # blank button label
-GREEN, RED, BLUE, YELLOW = 0x43B581, 0xC0392B, 0x3B82F6, 0xF1C40F
+GREEN, RED, BLUE, YELLOW = 0x2ECC71, 0xC0392B, 0x3B82F6, 0xF1C40F   # GREEN = sharp pure green
 
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏮"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
 MINES_MULT = [1.1, 1.3, 1.6, 2, 2.2, 4.6, 7.6, 10.2]
 MINES_COMPOUND = True   # True: every diamond multiplies the current total. False: the list is the total multiplier per click
 SMINES_COMPOUND = False   # S$mines: False = the numbers are the total multiplier per click (True would multiply them together)
-SMINES = {   # key: (columns, rows, mines, multiplier per click)
+SMINES = {   # key: (columns, rows, mines, multiplier per click)   (one entry per safe cell)
     "2x2": (2, 2, 1, [1.4, 2.3, 4.3]),
-    "4x4": (4, 4, 2, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 6.4, 7, 12.3]),
-    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 4.6, 5.4, 19]),
+    "4x4": (4, 4, 3, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 7, 12.3]),
+    "5x4": (5, 4, 5, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 5.4, 19]),
 }
-ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360
+ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360   # ROB_FAIL = 45% chance to get caught
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
+SLOTS_BOOST = 0.035    # +3.5 percentage points win chance in slots
+BJ_WIN_NERF = 0.09     # blackjack: chance the dealer gets a re-draw when the player would win (about -2.5 points of win rate; raise/lower to tune)
+HILO_EDGE = 0.94       # hi-lo payout = fair odds * this
 
 # ================= DATABASE =================
 def load():
@@ -57,7 +62,7 @@ def write_db():
 def save():
     global dirty
     write_db()
-    dirty = True   # the backup loop uploads it (one edit of the same message, never a new one)
+    dirty = True   # the backup loop uploads it (only if BACKUP_CHANNEL_ID is set)
 
 def user_data(uid):
     return DB["users"].setdefault(str(uid), {"cash": 0, "bank": 0})
@@ -69,17 +74,18 @@ def fmt(n):
     return f"{int(n):,}"
 
 def parse_amount(text, available):
+    """Understands: 500, 1,000, 5k, 2.5m, 1b, 1e5, 5e6, all, half."""
     if text is None:
         return None
     t = text.lower().replace(",", "")
     if t in ("all", "half"):
         return available if t == "all" else available // 2
     mult = 1
-    if t[-1:] in ("k", "m"):
-        mult, t = (1000 if t[-1] == "k" else 1_000_000), t[:-1]
+    if t[-1:] in ("k", "m", "b"):
+        mult, t = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}[t[-1]], t[:-1]
     try:
-        return int(float(t) * mult)
-    except ValueError:
+        return int(float(t) * mult)   # float() already understands 1e5 / 5e6 / 2.5e3
+    except (ValueError, OverflowError):
         return None
 
 # ================= EMBEDS =================
@@ -114,6 +120,7 @@ async def take_bet(ctx, amount, usage):
 # ================= BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True   # needed by $addmoneyrole (enable "Server Members Intent" in the Developer Portal)
 bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None)   # "S$mines" = the board-size game
 
 def cmd_key(ctx):
@@ -125,10 +132,10 @@ async def only_allowed_channels(ctx):
     if ctx.channel.id not in CHANNELS:
         return False
     if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id != OWNER_ID:
-        raise commands.DisabledCommand()
+        return False   # disabled command: the bot stays completely silent
     return True
 
-# ================= BACKUP =================
+# ================= BACKUP (only when BACKUP_CHANNEL_ID is set) =================
 def backup_file():
     return discord.File(io.BytesIO(json.dumps(DB).encode()), filename="economy.json")
 
@@ -149,7 +156,7 @@ async def backup_candidates(ch):
 async def restore_backup():
     global backup_msg, synced
     if not BACKUP_CHANNEL_ID:
-        return print("BACKUP_CHANNEL_ID is not set - backup disabled!")
+        return print("No backup channel set - data is only saved locally in", DATA_DIR)
     try:
         async for m in backup_candidates(await get_backup_channel()):
             att = next((a for a in m.attachments if a.filename == "economy.json"), None)
@@ -219,8 +226,8 @@ async def on_ready():
 
 @bot.event
 async def on_command_error(ctx, err):
-    if isinstance(err, commands.DisabledCommand):
-        return await reply(ctx, "This command is currently disabled.", RED)
+    if isinstance(err, NotStaff):
+        return await reply(ctx, "You need Administrator permission or the staff role to use this command.", RED)
     if isinstance(err, commands.MissingPermissions):
         return await reply(ctx, "You need Administrator permission to use this command.", RED)
     if isinstance(err, commands.CommandOnCooldown):
@@ -231,7 +238,7 @@ async def on_command_error(ctx, err):
     if not isinstance(err, (commands.CommandNotFound, commands.CheckFailure)):
         print("Error:", repr(err))
 
-# ================= BOARDS (+ owner predictions) =================
+# ================= BOARDS =================
 def shuffled(**parts):
     board = [k for kind, n in parts.items() for k in [kind] * n]
     random.shuffle(board)
@@ -248,10 +255,18 @@ BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=1, diamond=8)}
 for _k, (_w, _h, _m, _) in SMINES.items():
     BUILDERS[f"s{_k}"] = lambda m=_m, n=_w * _h: shuffled(bomb=m, diamond=n - m)
 
-PREDICT = {}   # (user id, game) -> the board that user's next game will use
+LAST_BOMBS = {}   # (user id, game) -> bomb positions of that user's previous board
 
 def take(uid, key):
-    return PREDICT.pop((uid, key), None) or BUILDERS[key]()
+    """New board whose bombs are NOT in (mostly) the same places as the player's previous board."""
+    prev = LAST_BOMBS.get((uid, key), set())
+    for _ in range(30):
+        board = BUILDERS[key]()
+        bombs = {i for i, k in enumerate(board) if k == "bomb"}
+        if not prev or len(prev & bombs) <= len(bombs) / 2:
+            break
+    LAST_BOMBS[(uid, key)] = bombs
+    return board
 
 # ================= MINES / GM =================
 class Tile(discord.ui.Button):
@@ -264,6 +279,7 @@ class Tile(discord.ui.Button):
 
 class BoardView(discord.ui.View):
     cols, header = 5, "\u200b"
+    reveal_on_cashout = True   # False = a cash out does NOT show where the bombs / diamonds were
 
     def __init__(self, user, bet):
         super().__init__(timeout=120)
@@ -290,10 +306,11 @@ class BoardView(discord.ui.View):
     def reveal(self, i):
         kind, t = self.board[i], self.tiles[i]
         self.revealed.add(i)
-        t.emoji, t.disabled = EMOJI[kind], True
+        t.emoji = EMOJI[kind]
         if kind == "bomb":
-            t.style = discord.ButtonStyle.danger
+            t.disabled, t.style = True, discord.ButtonStyle.danger
         else:
+            # stays enabled on purpose: Discord draws disabled buttons faded, this keeps the green sharp
             t.style = discord.ButtonStyle.success
             self.earn(kind)
             self.profit_btn.label = f"Profit: {fmt(self.profit)}"
@@ -302,7 +319,7 @@ class BoardView(discord.ui.View):
         pass
 
     async def click(self, interaction, idx):
-        if self.done or self.busy:
+        if self.done or self.busy or idx in self.revealed:
             if not interaction.response.is_done():
                 await interaction.response.defer()
             return
@@ -316,19 +333,27 @@ class BoardView(discord.ui.View):
             return await self.finish(interaction, True)
         self.after(kind)
         if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
-            return await self.finish(interaction, False)
+            # everything found: lock the bombs but keep Cashout open, the player collects it themselves
+            # (if they wait too long the game times out and pays out automatically)
+            for i, t in enumerate(self.tiles):
+                if i not in self.revealed:
+                    t.disabled = True
         await interaction.edit_original_response(content=self.header, view=self)
 
     def payout(self):
         user_data(self.user.id)["cash"] += self.bet + int(self.profit)
         save()
 
-    def reveal_all(self):
+    def reveal_all(self, show):
         for i, kind in enumerate(self.board):
             t = self.tiles[i]
-            t.emoji, t.disabled = EMOJI[kind], True
-            if kind == "bomb":
-                t.style = discord.ButtonStyle.danger
+            if i in self.revealed and kind != "bomb":
+                continue   # opened diamonds stay bright green
+            t.disabled = True
+            if show:
+                t.emoji = EMOJI[kind]
+                if kind == "bomb":
+                    t.style = discord.ButtonStyle.danger
         self.cash_btn.disabled = True
 
     def embed(self, lost):
@@ -340,8 +365,7 @@ class BoardView(discord.ui.View):
         self.done = True
         if not lost:
             self.payout()
-        self.reveal_all()
-        self.stop()
+        self.reveal_all(lost or self.reveal_on_cashout)
         kw = dict(content=self.header, embed=self.embed(lost), view=self)
         if interaction.response.is_done():
             await interaction.edit_original_response(**kw)
@@ -353,7 +377,7 @@ class BoardView(discord.ui.View):
             return
         self.done = True
         self.payout()
-        self.reveal_all()
+        self.reveal_all(self.reveal_on_cashout)
         if self.message:
             await self.message.edit(content=self.header, embed=self.embed(False), view=self)
 
@@ -376,6 +400,7 @@ class GoldMines(BoardView):
 
 class Mines(BoardView):
     cols = 3
+    reveal_on_cashout = False
 
     def make_board(self):
         return take(self.user.id, "mines")
@@ -385,6 +410,8 @@ class Mines(BoardView):
         self.profit = self.bet * ((math.prod(MINES_MULT[:n]) if MINES_COMPOUND else MINES_MULT[n - 1]) - 1)
 
 class SMines(BoardView):
+    reveal_on_cashout = False
+
     def __init__(self, user, bet, key):
         self.key = key
         self.cols, rows, self.mines, self.table = SMINES[key]
@@ -474,7 +501,7 @@ def hand_value(cards):
 # so the cards look small but stay sharp. TABLE_W: bigger number = smaller cards on screen.
 SHEET = Image.open(os.path.join(HERE, "cards.png")).convert("RGBA")
 SW, SH = 66, 93
-TABLE_W = 800
+TABLE_W = 960
 MASK = Image.new("L", (SW, SH), 0)
 ImageDraw.Draw(MASK).rounded_rectangle([0, 0, SW - 1, SH - 1], radius=7, fill=255)
 
@@ -531,6 +558,22 @@ def render_table(dealer, hands, hide_dealer):
     buf.seek(0)
     return buf
 
+def render_row(label, cards):
+    """One labelled row of cards, same look as the blackjack table."""
+    PAD, LABEL_H, GAPX = 16, 46, 10
+    n = len(cards)
+    step = SW + GAPX if n <= 1 else min(SW + GAPX, (TABLE_W - 2 * PAD - SW) / (n - 1))
+    img = Image.new("RGBA", (TABLE_W, 2 * PAD + LABEL_H + SH), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.text((PAD, PAD), label, font=get_font(32), fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(255, 255, 255, 255))
+    for i, c in enumerate(cards):
+        im = get_card(c)
+        img.paste(im, (int(PAD + i * step), PAD + LABEL_H), im)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
 class BlackjackView(discord.ui.View):
     def __init__(self, user, bet):
         super().__init__(timeout=120)
@@ -574,10 +617,27 @@ class BlackjackView(discord.ui.View):
         self.pay(bet if p and d else int(bet * 2.5) if p else 0, bet)
         return True
 
+    def dealer_play(self):
+        while hand_value(self.dealer) < DEALER_STANDS_ON:
+            self.dealer.append(self.deck.pop())
+
+    def player_wins(self):
+        dv = hand_value(self.dealer)
+        return any(not h["bust"] and (hand_value(h["cards"]) > dv or dv > 21) for h in self.hands)
+
     def finalize(self):
         if any(not h["bust"] for h in self.hands):
-            while hand_value(self.dealer) < DEALER_STANDS_ON:
-                self.dealer.append(self.deck.pop())
+            self.dealer_play()
+            # lower the player's win rate: sometimes the dealer re-draws his hidden card + hits
+            if self.player_wins() and random.random() < BJ_WIN_NERF:
+                up = self.dealer[0]   # the visible card never changes
+                for _ in range(5):
+                    self.deck.extend(self.dealer[1:])
+                    random.shuffle(self.deck)
+                    self.dealer = [up, self.deck.pop()]
+                    self.dealer_play()
+                    if not self.player_wins():
+                        break
         dv, returned = hand_value(self.dealer), 0
         for h in self.hands:
             pv = hand_value(h["cards"])
@@ -680,6 +740,124 @@ async def bj(ctx, amount: str = None):
     if not natural:
         view.message = msg
 
+# ================= HI-LO (new card game) =================
+class HiLoView(discord.ui.View):
+    """Guess if the next card is higher or lower (A = lowest, K = highest, a tie loses).
+    Every correct guess multiplies the payout. Cash out after at least one correct guess."""
+
+    def __init__(self, user, bet):
+        super().__init__(timeout=120)
+        self.user, self.bet, self.message = user, bet, None
+        self.cards = [self.draw()]
+        self.mult, self.wins, self.net, self.render_n = 1.0, 0, 0, 0
+        self.done = False
+        self.refresh_buttons()
+
+    @staticmethod
+    def draw():
+        return random.choice(RANKS), random.choice(SUITS)
+
+    def rank(self):
+        return RANKS.index(self.cards[-1][0]) + 1
+
+    def step(self, higher):
+        r = self.rank()
+        n = 13 - r if higher else r - 1
+        return round(HILO_EDGE * 13 / n, 2) if n else None
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    def refresh_buttons(self):
+        up, down = self.step(True), self.step(False)
+        self.higher.disabled = self.done or up is None
+        self.lower.disabled = self.done or down is None
+        self.higher.label = f"Higher x{up}" if up else "Higher"
+        self.lower.label = f"Lower x{down}" if down else "Lower"
+        self.cashout.disabled = self.done or self.wins == 0
+        self.cashout.label = f"Cash Out ({fmt(self.bet * self.mult)})"
+
+    def pay(self, returned):
+        self.done, self.net = True, returned - self.bet
+        user_data(self.user.id)["cash"] += returned
+        save()
+        BUSY.discard(self.user.id)
+        self.refresh_buttons()
+
+    def render(self):
+        self.render_n += 1
+        filename = f"hl{self.render_n}.png"
+        file = discord.File(render_row("HI-LO", self.cards[-7:]), filename=filename)
+        c, color, head = cur(), YELLOW, None
+        if self.done:
+            color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
+                           (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
+                           (YELLOW, f"Push! +0 {c}"))
+        lines = ["🃏 **Hi-Lo** 🃏", ""] + ([f"**{head}**", ""] if head else [])
+        lines += [f"Current Card: **{self.cards[-1][0]}**",
+                  f"Multiplier: **x{self.mult:.2f}**",
+                  f"Cash Out Value: **{fmt(self.bet * self.mult)}** {c}"]
+        e = discord.Embed(description="\n".join(lines), color=color)
+        e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
+        e.set_image(url=f"attachment://{filename}")
+        return e, file
+
+    async def update(self, interaction):
+        self.refresh_buttons()
+        e, f = self.render()
+        await interaction.response.edit_message(embed=e, attachments=[f], view=self)
+
+    async def guess(self, interaction, higher):
+        if self.done:
+            return await interaction.response.defer()
+        gain, old = self.step(higher), self.rank()
+        self.cards.append(self.draw())
+        new = self.rank()
+        if (new > old) if higher else (new < old):
+            self.mult *= gain
+            self.wins += 1
+        else:
+            self.pay(0)
+        await self.update(interaction)
+
+    @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
+    async def higher(self, interaction, button):
+        await self.guess(interaction, True)
+
+    @discord.ui.button(label="Lower", style=discord.ButtonStyle.danger)
+    async def lower(self, interaction, button):
+        await self.guess(interaction, False)
+
+    @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.success)
+    async def cashout(self, interaction, button):
+        if self.done:
+            return await interaction.response.defer()
+        self.pay(int(self.bet * self.mult))
+        await self.update(interaction)
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        self.pay(int(self.bet * self.mult))   # nothing won yet = bet returned
+        if self.message:
+            e, f = self.render()
+            await self.message.edit(embed=e, attachments=[f], view=self)
+
+@bot.command(name="hilo", aliases=["hl"], usage="hilo <amount | half | all>")
+async def hilo(ctx, amount: str = None):
+    if ctx.author.id in BUSY:
+        return await reply(ctx, "You already have a game running.", RED)
+    bet = await take_bet(ctx, amount, "hilo <amount | half | all>")
+    if not bet:
+        return
+    BUSY.add(ctx.author.id)
+    view = HiLoView(ctx.author, bet)
+    e, f = view.render()
+    view.message = await ctx.send(embed=e, file=f, view=view)
+
 # ================= SLOTS =================
 @bot.command(name="slots", aliases=["slot"], usage="slots <amount | half | all>")
 async def slots(ctx, amount: str = None):
@@ -691,6 +869,9 @@ async def slots(ctx, amount: str = None):
     BUSY.add(ctx.author.id)
     try:
         final = [random.choice(SLOTS) for _ in range(3)]
+        # 3 different symbols = loss (120/216 of spins). Turn some of those into a pair to raise the win chance by SLOTS_BOOST
+        if len(set(final)) == 3 and random.random() < SLOTS_BOOST / (120 / 216):
+            final[1] = final[0]
         machine = lambda reels: "🎰  ┃ " + " ┃ ".join(reels) + " ┃  🎰"
         # reel 1 stops at 3s, reel 2 at 4s, reel 3 at 5s
         frame = lambda t: make_embed(
@@ -853,7 +1034,7 @@ async def rob(ctx, member: discord.Member):
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "You can't rob this user." if member.bot or member.id == ctx.author.id
                            else f"{member.name} has nothing to rob.", RED)
-    if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:
+    if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:   # 45% to get caught if you have any money
         me["cash"] = me["bank"] = 0
         save()
         return await reply(ctx, "You got caught and lost all your money!", RED)
@@ -872,12 +1053,43 @@ async def top(ctx):
         lines.append(f"**{n}.** {m.name if m else f'<@{uid}>'} — {fmt(d['cash'] + d['bank'])} {cur()}")
     await reply(ctx, "\n".join(lines) or "Nobody has any money yet.", BLUE)
 
-# ================= ADMIN =================
+# ================= STAFF / ADMIN =================
+class NotStaff(commands.CheckFailure):
+    pass
+
+def admin_or_owner(ctx):
+    if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator:
+        return True
+    raise commands.MissingPermissions(["administrator"])
+
+def is_staff(ctx):
+    """Owner, Administrators, or anyone with the role set by $staff-role."""
+    if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator:
+        return True
+    rid = DB.get("staff_role")
+    if rid and any(r.id == rid for r in ctx.author.roles):
+        return True
+    raise NotStaff()
+
+admin_only = commands.check(admin_or_owner)
+staff_only = commands.check(is_staff)
+
+@bot.command(name="staff-role", usage="staff-role @role")
+@admin_only
+async def staff_role(ctx, role: discord.Role = None):
+    if role is None:
+        current = ctx.guild.get_role(DB.get("staff_role") or 0)
+        return await reply(ctx, f"Staff role: {current.mention if current else 'not set'}\nSet it with `$staff-role @role`", BLUE)
+    DB["staff_role"] = role.id
+    save()
+    await reply(ctx, f"Staff role set to {role.mention}. Members with this role can now use the staff commands.", GREEN)
+
 async def change_money(ctx, where, member, amount, sign):
     where = where.lower()
-    if where not in ("bank", "cash"):
-        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
     u = user_data(member.id)
+    amount = parse_amount(amount, u.get(where, 0) if sign < 0 else 0)   # 1e5 / 5k / 2m all work
+    if where not in ("bank", "cash") or amount is None or amount <= 0:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
     amount = min(amount, u[where]) if sign < 0 else amount
     u[where] += sign * amount
     save()
@@ -885,25 +1097,42 @@ async def change_money(ctx, where, member, amount, sign):
                      f"{'to' if sign > 0 else 'from'} {member.name}'s {where}.", GREEN)
 
 @bot.command(name="addmoney", usage="addmoney <bank|cash> @user <amount>")
-@commands.has_permissions(administrator=True)
-async def addmoney(ctx, where: str, member: discord.Member, amount: int):
+@staff_only
+async def addmoney(ctx, where: str, member: discord.Member, amount: str):
     await change_money(ctx, where, member, amount, 1)
 
 @bot.command(name="removemoney", usage="removemoney <bank|cash> @user <amount>")
-@commands.has_permissions(administrator=True)
-async def removemoney(ctx, where: str, member: discord.Member, amount: int):
+@staff_only
+async def removemoney(ctx, where: str, member: discord.Member, amount: str):
     await change_money(ctx, where, member, amount, -1)
 
-@bot.command(name="currency", usage="currency <emoji>")
-@commands.has_permissions(administrator=True)
+@bot.command(name="addmoneyrole", usage="addmoneyrole <bank|cash> @role <amount>")
+@staff_only
+async def addmoneyrole(ctx, where: str, role: discord.Role, amount: str):
+    where = where.lower()
+    amt = parse_amount(amount, 0)
+    if where not in ("bank", "cash") or amt is None or amt <= 0:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    if not ctx.guild.chunked:
+        await ctx.guild.chunk()
+    members = [m for m in role.members if not m.bot]
+    if not members:
+        return await reply(ctx, "No members found in that role.", RED)
+    for m in members:
+        user_data(m.id)[where] += amt
+    save()
+    await reply(ctx, f"Added {fmt(amt)} {cur()} to the {where} of each of the {len(members)} members of {role.mention}.", GREEN)
+
+@bot.command(name="set-currency", aliases=["currency"], usage="set-currency <emoji>")
+@staff_only
 async def currency(ctx, symbol: str = None):
     if symbol is None:
-        return await reply(ctx, f"Current currency: {cur()}\nChange it with `$currency <emoji>`", BLUE)
+        return await reply(ctx, f"Current currency: {cur()}\nChange it with `$set-currency <emoji>`", BLUE)
     DB["currency"] = symbol
     save()
     await reply(ctx, f"Currency changed to {symbol}", GREEN)
 
-# ================= OWNER: DISABLE / ENABLE =================
+# ================= OWNER: DISABLE / UNDISABLE =================
 owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)   # anyone else is ignored silently
 
 def resolve_key(name):
@@ -922,14 +1151,14 @@ async def disable(ctx, name: str = None):
     key = resolve_key(name)
     if key is None:
         return await reply(ctx, "Unknown command.", RED)
-    if key in ("disable", "enable"):
+    if key in ("disable", "enable"):   # "enable" is also "undisable"
         return await reply(ctx, "You can't disable this command.", RED)
     if key not in off:
         off.append(key)
         save()
-    await reply(ctx, f"`{key}` is now disabled.", GREEN)
+    await reply(ctx, f"`{key}` is now disabled. The bot will not answer to it anymore.", GREEN)
 
-@bot.command(name="enable", usage="enable <command | all>")
+@bot.command(name="enable", aliases=["undisable"], usage="undisable <command | all>")
 @owner_only
 async def enable(ctx, name: str):
     off = DB.setdefault("disabled", [])
@@ -943,48 +1172,36 @@ async def enable(ctx, name: str):
     save()
     await reply(ctx, "All commands are enabled." if key == "all" else f"`{key}` is enabled again.", GREEN)
 
-@bot.command(name="predict")
-@owner_only
-async def predict(ctx):
-    grid = lambda key, cols: "\n".join(
-        " ".join(EMOJI[k] for k in PREDICT[(ctx.author.id, key)][i:i + cols])
-        for i in range(0, len(PREDICT[(ctx.author.id, key)]), cols))
-    for key, build in BUILDERS.items():
-        PREDICT.setdefault((ctx.author.id, key), build())
-    parts = [f"**$gm**\n{grid('gm', 5)}\n" + " · ".join(f"{EMOJI[k]} x{v:g}" for k, v in MULT.items() if k != "map") + " · 🗺️ map",
-             f"**$mines**\n{grid('mines', 3)}"]
-    parts += [f"**S$mines {k}**\n{grid(f's{k}', w)}" for k, (w, _, _, _) in SMINES.items()]
-    try:
-        await ctx.author.send(embed=make_embed(ctx.author, "\n\n".join(parts) + "\n\n*Used by your next game of each type.*", BLUE, "Predict"))
-    except discord.Forbidden:
-        return await reply(ctx, "I can't DM you. Open your DMs first.", RED)
-    try:
-        await ctx.message.delete()
-    except discord.HTTPException:
-        pass
-
-INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150)
+INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150. אפשר גם `5k`, `2.5m`, `1e5`, `5e6`)
 • `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע. פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
-• `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו. פצצה מפסידה הכול.
-• `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שתיים, 5x4 עם שלוש. יותר פצצות, יותר סיכון ורווח.
+• `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו בלי לחשוף את הלוח. פצצה מפסידה הכול.
+• `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שלוש פצצות, 5x4 עם חמש פצצות.
 • `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
+• `$hilo` – קלף גבוה או נמוך. מנחשים אם הקלף הבא גבוה או נמוך יותר, כל ניחוש נכון מכפיל את הרווח, ואפשר לצאת עם Cash Out.
 • `$slots` – מכונת מזל עם אנימציה. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח עולה כשמנצחים ברצף וחוזר להתחלה אחרי הפסד.
 
 **💰 כלכלה**
 • `$bal [@user]` – כסף בחוץ ובבנק.
-• `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו.
+• `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו (למשל `$with 1e5`).
 • `$work` / `$crime` – הרווחה מהירה, פעם בשתי דקות.
-• `$rob @user` – שוד. קולדאון 6 דקות ושודדים את רוב הכסף של הקורבן. למי שיש כסף יש סיכוי גבוה להיתפס ולהתאפס.
+• `$rob @user` – שוד. קולדאון 6 דקות ושודדים את רוב הכסף של הקורבן. למי שיש כסף יש 45% להיתפס ולהתאפס.
 • `$pay @user סכום` – העברת כסף לשחקן אחר.
 • `$top` / `$lb` – טבלת העשירים.
 
-**🛠 אדמין**
+**🛠 צוות** (אדמין או רול צוות)
 • `$addmoney` / `$removemoney bank|cash @user סכום` – הוספה או הורדה של כסף.
-• `$currency אימוג'י` – שינוי סמל המטבע.
+• `$addmoneyrole bank|cash @role סכום` – הוספת כסף לכל חברי הרול.
+• `$set-currency אימוג'י` – שינוי סמל המטבע.
+
+**⚙️ אדמין**
+• `$staff-role @role` – קובע איזה רול נחשב צוות.
 • `$info` – ההודעה הזאת.
-• `$disable` / `$enable` – חסימה ושחרור של פקודה (רק לבעלים).
+
+**👑 בעלים**
+• `$disable פקודה` – חוסם פקודה, והבוט לא מגיב עליה בכלל.
+• `$undisable פקודה | all` – משחרר חסימה.
 
 הבוט עובד רק בחדרים המיועדים."""
 
