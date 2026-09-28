@@ -37,7 +37,7 @@ SMINES = {   # key: (columns, rows, mines, multiplier per click)
     "4x4": (4, 4, 3, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 7, 12.3]),
     "5x4": (5, 4, 5, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 5.4, 19]),
 }
-MT_MULT = [1.3, 1.7, 2.2, 2,9, 4.5]
+MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]   # (was "2,9" by mistake = two separate numbers)
 MT_SAFE = "💲"
 
 # ---------- SCRATCH CARDS (a real, limited stock) ----------
@@ -75,9 +75,11 @@ SCRATCH_CARDS = {
 }
 
 CF_MIN, CF_MAX = 50, 84
-ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash", "bank"), 0.8, 0.45, 360
+ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360   # only cash can be robbed, the bank is safe
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
+SLOT_BUFF = 1.065      # every slots payout (pairs, triples, jackpot) is +6.5%
+SLOT_WAIT = 5          # seconds the slots animation runs before the result
 SLOTS_BOOST = 0.035
 BJ_WIN_NERF = 0.09
 
@@ -457,7 +459,7 @@ class BoardView(discord.ui.View):
         self.tiles = [Tile(i, self.cols) for i in range(len(self.board))]
         row = self.cash_row if self.cash_row is not None else len(self.tiles) // self.cols
         self.cash_btn = discord.ui.Button(style=discord.ButtonStyle.success, label="Cashout", row=row)
-        self.cash_btn.callback = lambda i: self.finish(i, False)
+        self.cash_btn.callback = self.cashout
         self.profit_btn = discord.ui.Button(style=discord.ButtonStyle.primary, disabled=True,
                                             row=row, label="Profit: 0", emoji=cur())
         for b in (*self.tiles, self.cash_btn, self.profit_btn):
@@ -469,6 +471,11 @@ class BoardView(discord.ui.View):
             await interaction.response.send_message("This is not your game!", ephemeral=True)
             return False
         return True
+
+    async def cashout(self, interaction):
+        if not self.done and not self.revealed:
+            return await interaction.response.send_message("Open at least one tile before you cash out.", ephemeral=True)
+        await self.finish(interaction, False)
 
     def reveal(self, i):
         kind, t = self.board[i], self.tiles[i]
@@ -520,7 +527,7 @@ class BoardView(discord.ui.View):
         self.cash_btn.disabled = True
 
     def embed(self, lost):
-        """Same message in every board game (gm, mines, S$mines, mt)."""
+        """Same message in every board game (gm, mines, S$mines)."""
         got = self.bet + int(self.profit)
         line = f"-You lost {fmt(self.bet)} {cur()}" if lost else f"+You won and got {fmt(got)} {cur()}"
         found = sum(1 for i in self.revealed if self.board[i] != "bomb")
@@ -630,6 +637,12 @@ class MoneyTower(BoardView):
     def earn(self, kind):
         self.profit = self.bet * (MT_MULT[self.climbed - 1] - 1)
 
+    def embed(self, lost):
+        got = self.bet + int(self.profit)
+        line = f"-You lost {fmt(self.bet)} {cur()}" if lost else f"+You won and got {fmt(got)} {cur()}"
+        return make_embed(self.user, f"```\n{line}\n```\nYou climbed {self.climbed} rows.",
+                          RED if lost else GREEN, None if lost else "💰 You cashed out!")
+
     def reveal(self, i):
         kind, t = self.board[i], self.tiles[i]
         self.revealed.add(i)
@@ -652,10 +665,8 @@ class MoneyTower(BoardView):
         self.reveal(idx)
         if kind == "bomb":
             return await self.finish(interaction, True)
-        for j in range(row * 3, row * 3 + 3):
+        for j in range(row * 3, row * 3 + 3):     # the row is locked, and its bomb stays hidden
             self.tiles[j].disabled = True
-            if self.board[j] == "bomb":
-                self.tiles[j].emoji, self.tiles[j].style = EMOJI["bomb"], discord.ButtonStyle.danger
         if self.climbed >= 5:
             return await self.finish(interaction, False)
         for j in range((row - 1) * 3, (row - 1) * 3 + 3):
@@ -1031,40 +1042,140 @@ async def bj(ctx, amount: str = None):
     if not natural:
         view.message = msg
 
-# ================= SLOTS =================
+# ================= SLOTS (animated GIF: 3 reels that spin and stop one by one) =================
+SLOT_ICON = 68
+SLOT_NAMES = dict(zip(SLOTS, ["cherry", "lemon", "grape", "bell", "diamond", "seven"]))
+
+@lru_cache(maxsize=None)
+def slot_icon(sym):
+    """Draws a symbol as a vector-style icon (no emoji font needed on the host)."""
+    S = 256
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    name = SLOT_NAMES[sym]
+    if name == "cherry":
+        leaf, dark = (60, 150, 70, 255), (120, 10, 25, 255)
+        d.line([(82, 170), (140, 40)], fill=leaf, width=12)
+        d.line([(178, 180), (140, 40)], fill=leaf, width=12)
+        d.ellipse([140, 20, 222, 70], fill=leaf)
+        for cx, cy in ((80, 190), (176, 200)):
+            d.ellipse([cx - 50, cy - 50, cx + 50, cy + 50], fill=(215, 30, 50, 255), outline=dark, width=6)
+            d.ellipse([cx - 28, cy - 32, cx - 6, cy - 10], fill=(255, 150, 160, 255))
+    elif name == "lemon":
+        d.ellipse([12, 98, 52, 158], fill=(225, 190, 40, 255))
+        d.ellipse([204, 98, 244, 158], fill=(225, 190, 40, 255))
+        d.ellipse([28, 58, 228, 198], fill=(252, 226, 60, 255), outline=(200, 160, 20, 255), width=6)
+        d.ellipse([70, 82, 130, 112], fill=(255, 246, 165, 255))
+    elif name == "grape":
+        for cx, cy in ((64, 100), (128, 100), (192, 100), (96, 152), (160, 152), (128, 204)):
+            d.ellipse([cx - 32, cy - 32, cx + 32, cy + 32], fill=(140, 60, 180, 255), outline=(80, 30, 110, 255), width=5)
+            d.ellipse([cx - 18, cy - 20, cx - 6, cy - 8], fill=(210, 160, 235, 255))
+        d.line([(128, 70), (128, 26)], fill=(90, 60, 30, 255), width=10)
+        d.ellipse([128, 14, 208, 54], fill=(60, 150, 70, 255))
+    elif name == "bell":
+        gold, edge = (245, 190, 40, 255), (160, 105, 10, 255)
+        d.ellipse([56, 28, 200, 172], fill=gold, outline=edge, width=6)
+        d.polygon([(58, 100), (198, 100), (232, 190), (24, 190)], fill=gold)
+        d.line([(58, 100), (24, 190)], fill=edge, width=6)
+        d.line([(198, 100), (232, 190)], fill=edge, width=6)
+        d.line([(24, 190), (232, 190)], fill=edge, width=8)
+        d.ellipse([106, 196, 150, 240], fill=gold, outline=edge, width=5)
+        d.ellipse([84, 52, 122, 112], fill=(255, 232, 140, 255))
+    elif name == "diamond":
+        pts = [(70, 50), (186, 50), (236, 108), (128, 226), (20, 108)]
+        d.polygon(pts, fill=(90, 200, 255, 255))
+        d.line(pts + [pts[0]], fill=(20, 110, 170, 255), width=6, joint="curve")
+        light = (215, 245, 255, 255)
+        d.line([(20, 108), (236, 108)], fill=light, width=5)
+        d.line([(70, 50), (96, 108), (128, 226)], fill=light, width=5)
+        d.line([(186, 50), (160, 108), (128, 226)], fill=light, width=5)
+        d.line([(96, 108), (128, 50), (160, 108)], fill=light, width=5)
+    else:   # seven
+        d.text((128, 132), "7", font=get_font(230), fill=(225, 30, 40, 255), anchor="mm",
+               stroke_width=10, stroke_fill=(255, 215, 80, 255))
+    return im.resize((SLOT_ICON, SLOT_ICON), Image.LANCZOS)
+
+def render_slots(final, win):
+    """Returns (gif_bytes, png_bytes). The 3 reels spin and stop one after the other on `final`."""
+    cell, rw, gap, pad = 84, 112, 10, 18
+    W, H = pad * 2 + rw * 3 + gap * 2, pad * 2 + cell * 3
+    cycle = random.sample(SLOTS, len(SLOTS))
+    n = len(cycle)
+    stops, total = (26, 34, 42), 46
+    targets = [(2 + i) * n + cycle.index(final[i]) for i in range(3)]
+    shade = Image.new("RGBA", (rw, cell), (0, 0, 0, 110))
+
+    def frame(f, last=False):
+        im = Image.new("RGB", (W, H), (60, 12, 24))
+        d = ImageDraw.Draw(im)
+        d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60), width=6)
+        for i in range(3):
+            p = min(1.0, f / stops[i])
+            pos = targets[i] * (1 - (1 - p) ** 3)
+            reel = Image.new("RGBA", (rw, cell * 3), (250, 248, 240, 255))
+            base = int(pos)
+            for k in range(base - 2, base + 3):
+                icon = slot_icon(cycle[k % n])
+                yc = cell * 1.5 + (pos - k) * cell
+                reel.paste(icon, ((rw - SLOT_ICON) // 2, int(yc - SLOT_ICON / 2)), icon)
+            reel.paste(shade, (0, 0), shade)
+            reel.paste(shade, (0, cell * 2), shade)
+            im.paste(reel.convert("RGB"), (pad + i * (rw + gap), pad))
+        d.line([(pad - 10, H // 2), (W - pad + 10, H // 2)], fill=(230, 40, 40), width=3)
+        if last and win:
+            d.rectangle([pad - 4, pad + cell - 2, W - pad + 4, pad + cell * 2 + 2], outline=(90, 255, 120), width=5)
+        return im
+
+    frames = [frame(f) for f in range(total - 1)] + [frame(total - 1, last=True)]
+    gif, png = io.BytesIO(), io.BytesIO()
+    pal = [fr.quantize(colors=128, method=Image.MEDIANCUT) for fr in frames]
+    pal[0].save(gif, "GIF", save_all=True, append_images=pal[1:], duration=[100] * (len(pal) - 1) + [6000], loop=0, optimize=False)
+    frames[-1].save(png, "PNG")
+    return gif.getvalue(), png.getvalue()
+
 @bot.command(name="slots", aliases=["slot"], usage="slots <amount | half | all>")
 async def slots(ctx, amount: str = None):
     if ctx.author.id in BUSY:
         return await reply(ctx, "You already have a game running.", RED)
-    bet = await take_bet(ctx, amount, "slots <amount | half | all>")
+    bet = await take_bet(ctx, amount, "slots <amount | half | all>", track=True)
     if not bet:
         return
+    token = str(ctx.message.id)
     BUSY.add(ctx.author.id)
     try:
         final = [random.choice(SLOTS) for _ in range(3)]
         if len(set(final)) == 3 and random.random() < SLOTS_BOOST / (120 / 216):
             final[1] = final[0]
         top = max(final.count(s) for s in SLOTS)
-        mult = SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0
+        mult = (SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0) * SLOT_BUFF
         win = int(bet * mult)
+        try:
+            gif, png = await asyncio.to_thread(render_slots, final, win > 0)
+        except Exception:
+            cancel_game(ctx.author, token, bet)
+            raise
+        e = make_embed(ctx.author, f"🎰 **Slots**\n\nYou bet **{fmt(bet)}** {cur()}\n\n⏳ Spinning...", YELLOW)
+        e.set_image(url="attachment://slots.gif")
+        msg = None
+        try:
+            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "slots.gif"), mention_author=False)
+            await asyncio.sleep(SLOT_WAIT)
+        except discord.HTTPException:
+            pass
+        # the money moves only AFTER the animation ended
+        pending_done(token)
         user_data(ctx.author.id)["cash"] += win
         save()
         log_game(ctx.author, "slots", bet, win - bet)
-        machine = lambda reels: "🎰  ┃ " + " ┃ ".join(reels) + " ┃  🎰"
-        frame = lambda t: make_embed(
-            ctx.author,
-            f"**Slots**\n\n{machine([final[i] if t >= 3 + i else random.choice(SLOTS) for i in range(3)])}\n\n⏳ **{5 - t}s**",
-            YELLOW)
-        result = result_embed(ctx.author, win > 0, win - bet if win else bet, f"{machine(final)}\n\n")
-        try:
-            msg = await ctx.reply(embed=frame(0), mention_author=False)
-            for t in range(1, 5):
-                await asyncio.sleep(1)
-                await msg.edit(embed=frame(t))
-            await asyncio.sleep(1)
-            await msg.edit(embed=result)
-        except discord.HTTPException:
-            pass
+        line = "🎰  ┃ " + " ┃ ".join(final) + " ┃  🎰"
+        extra = f"{line}\n" + (f"**x{mult:g}**\n\n" if win else "\n")
+        result = result_embed(ctx.author, win > 0, win - bet if win else bet, extra)
+        result.set_image(url="attachment://slots_result.png")
+        if msg:
+            try:
+                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
+            except discord.HTTPException:
+                pass
     finally:
         BUSY.discard(ctx.author.id)
 
@@ -1072,7 +1183,8 @@ async def slots(ctx, amount: str = None):
 ROUL_ORDER = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
 ROUL_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 ROUL_COOLDOWN = 10
-ROUL_SIZE, ROUL_FRAMES = 380, 56
+ROUL_WAIT = 10                     # seconds until the result is shown (the animation runs the whole time)
+ROUL_SIZE, ROUL_FRAMES, ROUL_FRAME_MS = 380, 70, 130
 
 def roul_color(n):
     return "green" if n == 0 else "red" if n in ROUL_RED else "black"
@@ -1146,7 +1258,7 @@ def render_roulette(winner):
     frames[-1] = frame(1.0, final=True)
     gif, png = io.BytesIO(), io.BytesIO()
     pal = [f.quantize(colors=64, method=Image.MEDIANCUT) for f in frames]
-    pal[0].save(gif, "GIF", save_all=True, append_images=pal[1:], duration=[70] * (len(pal) - 1) + [6000], loop=0, optimize=False)
+    pal[0].save(gif, "GIF", save_all=True, append_images=pal[1:], duration=[ROUL_FRAME_MS] * (len(pal) - 1) + [6000], loop=0, optimize=False)
     frames[-1].save(png, "PNG")
     return gif.getvalue(), png.getvalue()
 
@@ -1159,30 +1271,43 @@ async def roulette(ctx, amount: str = None, pick: str = None):
     if choice is None or ctx.author.id in BUSY:
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "You already have a game running." if choice else f"Usage: `${usage}`", RED)
-    bet = await take_bet(ctx, amount, usage)
+    bet = await take_bet(ctx, amount, usage, track=True)
     if not bet:
         return ctx.command.reset_cooldown(ctx)
+    token = str(ctx.message.id)
     BUSY.add(ctx.author.id)
     try:
         label, test, mult = choice
-        winner = random.randint(0, 36)
+        winner = random.randint(0, 36)          # European wheel: 37 pockets (0-36), every pocket 1/37
         won = bool(test(winner))
         win = bet * mult if won else 0
+        try:
+            gif, png = await asyncio.to_thread(render_roulette, winner)
+        except Exception:
+            cancel_game(ctx.author, token, bet)
+            ctx.command.reset_cooldown(ctx)
+            raise
+        e = make_embed(ctx.author, f"🎡 **Roulette**\n\nYou bet **{fmt(bet)}** {cur()} on **{label}**\n\n⏳ Spinning...", YELLOW)
+        e.set_image(url="attachment://roulette.gif")
+        msg = None
+        try:
+            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "roulette.gif"), mention_author=False)
+            await asyncio.sleep(ROUL_WAIT)
+        except discord.HTTPException:
+            pass
+        # the money moves (and the log is written) only AFTER the animation ended
+        pending_done(token)
         user_data(ctx.author.id)["cash"] += win
         save()
         log_game(ctx.author, "roulette", bet, win - bet)
-        gif, png = await asyncio.to_thread(render_roulette, winner)
-        e = make_embed(ctx.author, f"🎡 **Roulette**\n\nYou bet **{fmt(bet)}** {cur()} on **{label}**\n\n⏳ Spinning...", YELLOW)
-        e.set_image(url="attachment://roulette.gif")
         emoji = {"red": "🔴", "black": "⚫", "green": "🟢"}[roul_color(winner)]
         result = result_embed(ctx.author, won, win - bet if won else bet, f"The ball landed on {emoji} **{winner}**\nYour bet: **{label}**\n\n")
         result.set_image(url="attachment://roulette_result.png")
-        try:
-            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "roulette.gif"), mention_author=False)
-            await asyncio.sleep(5)
-            await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
-        except discord.HTTPException:
-            pass
+        if msg:
+            try:
+                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
+            except discord.HTTPException:
+                pass
     finally:
         BUSY.discard(ctx.author.id)
 
@@ -1594,8 +1719,8 @@ async def rob(ctx, member: discord.Member):
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "You can't rob this user.", RED)
     me, target = user_data(ctx.author.id), user_data(member.id)
-    loot = {k: int(target[k] * ROB_PERCENT) for k in ROB_FROM}
-    if not sum(loot.values()):   # a poor target: the robbery still happens, and it fails (cooldown starts)
+    loot = {k: int(target[k] * ROB_PERCENT) for k in ROB_FROM}   # cash only: money in the bank can't be robbed
+    if not sum(loot.values()):   # nothing outside the bank: the robbery still happens, and it fails (cooldown starts)
         return await reply(ctx, f"You tried to rob a poor person and lost 0 {cur()}.", RED)
     if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:
         lost = me["cash"] + me["bank"]
@@ -1869,18 +1994,18 @@ INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מיני
 • `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו בלי לחשוף את הלוח. פצצה מפסידה הכול.
 • `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שלוש פצצות, 5x4 עם חמש פצצות.
 • `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
-• `$slots` – מכונת מזל עם אנימציה. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן.
-• `$roulette סכום בחירה` (או `$rl`) – רולטה עם גלגל מונפש. בחירה: `red` / `black` / `green` / `even` / `odd` / `low` / `high` / מספר 0-36. צבע, זוגי, אי-זוגי, נמוך וגבוה משלמים x2, מספר או ירוק משלמים x36. קולדאון 10 שניות.
+• `$slots` – מכונת סלוטים עם אנימציה של גלגלים שמסתובבים ונעצרים אחד אחרי השני. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן. התוצאה מתגלה אחרי כ-5 שניות.
+• `$roulette סכום בחירה` (או `$rl`) – רולטה אירופאית (37 מספרים, 0 ירוק) עם גלגל מונפש. בחירה: `red` / `black` / `green` / `even` / `odd` / `low` / `high` / מספר 0-36. צבע, זוגי, אי-זוגי, נמוך וגבוה משלמים x2, מספר או ירוק משלמים x36. התוצאה מתגלה רק אחרי 10 שניות, כשהאנימציה נגמרת. קולדאון 10 שניות.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח מתחיל ב-50%, עולה ב-1% אחרי כל ניצחון עד מקסימום 84%, וחוזר ל-50% אחרי הפסד.
-• `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.4, x1.8, x2.4, x4.2, x5.2), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
+• `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.3, x1.7, x2.2, x2.9, x4.5), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
 • `$scratch [סכום]` – כרטיסי גירוד אמיתיים ממלאי מוגבל (ים המלח, יום העצמאות, פלאפל בפיתה, ליגת העל). בוחרים כרטיס בכפתור. אפשר לבחור סכום (`$scratch 5m`), והתשלום נלקח מהמזומן ואז מהבנק. בלי סכום, המחיר עולה ככל שנמכרים יותר כרטיסים, ופלאפל וליגת העל מתאפסים כל שבוע. `$cards` מציג את המלאי.
 
 **💰 כלכלה**
 • `$bal [@user]` – כסף בחוץ ובבנק.
 • `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו (למשל `$with 1e5`).
 • `$work` / `$crime` – הרווחה מהירה, פעם בשתי דקות.
-• `$rob @user` – שוד. קולדאון 6 דקות ושודדים את רוב הכסף של הקורבן, גם מהבנק. למי שיש כסף יש 45% להיתפס ולהתאפס. שוד של מישהו בלי כסף תמיד נכשל.
+• `$rob @user` – שוד. קולדאון 6 דקות ושודדים 80% מהמזומן של הקורבן בלבד – הכסף שבבנק מוגן ולא ניתן לשדוד אותו. למי שיש כסף יש 45% להיתפס ולהתאפס. שוד של מישהו בלי מזומן תמיד נכשל.
 • `$pay @user סכום` – העברת כסף לשחקן אחר.
 • `$top` / `$lb` – טבלת העשירים עם כפתורי Bank, Total, Cash ודפים.
 
