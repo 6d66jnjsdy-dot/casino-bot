@@ -26,7 +26,7 @@ GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F   # GREEN = th
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏮"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
 MINES_MULT = [1.1, 1.3, 1.6, 2, 2.2, 4.6, 7.6, 10.2]
-MINES_COMPOUND = True   # True: every diamond multiplies the current total. False: the list is the total multiplier per click
+MINES_COMPOUND = False   # False: the list is the TOTAL multiplier of the bet per click (no compounding). True: every diamond multiplies the previous total
 SMINES_COMPOUND = False   # S$mines: False = the numbers are the total multiplier per click (True would multiply them together)
 SMINES = {   # key: (columns, rows, mines, multiplier per click)   (one entry per safe cell)
     "2x2": (2, 2, 1, [1.4, 2.3, 4.3]),
