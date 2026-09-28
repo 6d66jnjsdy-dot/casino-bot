@@ -2068,15 +2068,21 @@ class ShopView(discord.ui.View):
 
 @bot.command(name="shop", usage="shop")
 async def shop(ctx):
-    lines = [f"<@&{rid}> - {fmt(price)} {cur()}" for _, _, rid, price in SHOP_ITEMS]
-    e = discord.Embed(description="\n".join(lines), color=SHOP_COLOR)
-    icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
-    e.set_author(name=SHOP_TITLE, icon_url=icon)
-    thumb = SHOP_THUMBNAIL or icon
-    if thumb:
-        e.set_thumbnail(url=thumb)
-    e.set_footer(text=SHOP_FOOTER)
-    await ctx.send(embed=e, view=ShopView())
+    print("SHOP command triggered by", ctx.author.id)
+    try:
+        lines = [f"<@&{rid}> - {fmt(price)} {cur()}" for _, _, rid, price in SHOP_ITEMS]
+        e = discord.Embed(description="\n".join(lines), color=SHOP_COLOR)
+        icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
+        e.set_author(name=SHOP_TITLE, icon_url=icon)
+        thumb = SHOP_THUMBNAIL or icon
+        if thumb:
+            e.set_thumbnail(url=thumb)
+        e.set_footer(text=SHOP_FOOTER)
+        await ctx.send(embed=e, view=ShopView())
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        await ctx.send(f"Shop error: `{type(ex).__name__}: {ex}`"[:1900])
 
 # ================= STAFF / ADMIN =================
 class NotStaff(commands.CheckFailure):
