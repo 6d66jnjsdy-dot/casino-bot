@@ -19,8 +19,6 @@ BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID") or 0)
 MIN_BET = 150
 EARN_MIN, EARN_MAX = 6500, 16000
 DEALER_STANDS_ON = 13
-CLICK_DELAY = 0.3
-CLICK_GAP = 0.7   # minimum seconds between two tile clicks (stops click spamming)
 EMPTY = "\u200e"   # blank button label
 GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F   # GREEN = the green bar of the win message
 
@@ -50,22 +48,38 @@ def load():
         return {"currency": "💸", "users": {}}
 
 DB = load()
-dirty = False
+dirty = False        # the Discord backup needs an upload
+disk_dirty = False   # the local file needs a write
 backup_msg = None
 loaded = None     # asyncio.Event, created in setup_hook
 backup_lock = asyncio.Lock()
 synced = False   # backups stay off until the restore finished, so an empty DB can never overwrite the backup
 
-def write_db():
+def _write_text(text):
     tmp = DB_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(DB, f)
+        f.write(text)
     os.replace(tmp, DB_FILE)
 
+def write_db():
+    """Synchronous write (only used at restore time)."""
+    _write_text(json.dumps(DB))
+
 def save():
-    global dirty
-    write_db()
-    dirty = True   # the backup loop uploads it (only if BACKUP_CHANNEL_ID is set)
+    """Marks the data as changed. The disk loop writes it (in a thread, never blocking the games)
+    and the backup loop uploads it (only if the backup is available)."""
+    global dirty, disk_dirty
+    dirty = disk_dirty = True
+
+async def flush_disk():
+    global disk_dirty
+    if disk_dirty:
+        disk_dirty = False
+        try:
+            await asyncio.to_thread(_write_text, json.dumps(DB))
+        except Exception as e:
+            disk_dirty = True
+            print("Disk write failed:", repr(e))
 
 def user_data(uid):
     return DB["users"].setdefault(str(uid), {"cash": 0, "bank": 0})
@@ -262,7 +276,12 @@ async def backup_now():
 async def backup_loop():
     await backup_now()
 
+@tasks.loop(seconds=2)
+async def disk_loop():
+    await flush_disk()
+
 async def graceful_shutdown():
+    await flush_disk()
     await backup_now()
     await bot.close()
 
@@ -278,6 +297,7 @@ async def setup_hook():
     global loaded
     loaded = asyncio.Event()
     await start_web()
+    disk_loop.start()
     backup_loop.start()
     try:
         asyncio.get_running_loop().add_signal_handler(
@@ -352,7 +372,6 @@ class BoardView(discord.ui.View):
     cols, header = 5, "\u200b"
     reveal_on_cashout = True   # False = a cash out does NOT show where the bombs / diamonds were
     mines_style = False        # True = result message like the mines screenshot
-    last_click = 0.0
     game_name = "game"
 
     def __init__(self, user, bet, token=None):
@@ -360,7 +379,9 @@ class BoardView(discord.ui.View):
         self.user, self.bet, self.token = user, bet, token
         self.board = self.make_board()
         self.revealed, self.profit = set(), 0
-        self.done = self.busy = False
+        self.done = False
+        self.version = 0                  # bumps on every click, so only the newest board gets drawn
+        self.edit_lock = asyncio.Lock()   # edits go out one at a time, in order
         self.message = None
         self.tiles = [Tile(i, self.cols) for i in range(len(self.board))]
         row = len(self.tiles) // self.cols
@@ -392,33 +413,28 @@ class BoardView(discord.ui.View):
         pass
 
     async def click(self, interaction, idx):
-        # one click at a time, and a short pause between clicks, so nobody can spam many tiles at once
-        if (self.done or self.busy or idx in self.revealed
-                or time.monotonic() - self.last_click < CLICK_GAP):
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-            return
-        self.busy = True
-        try:
+        # acknowledge instantly (Discord gives only 3 seconds), then update the state with no awaits in between
+        if not interaction.response.is_done():
             await interaction.response.defer()
-            await asyncio.sleep(CLICK_DELAY)
-            if self.done:
-                return
-            kind = self.board[idx]
-            self.reveal(idx)
-            if kind == "bomb":
-                return await self.finish(interaction, True)
-            self.after(kind)
-            if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
-                # everything found: lock the bombs but keep Cashout open, the player collects it themselves
-                # (if they wait too long the game times out and pays out automatically)
-                for i, t in enumerate(self.tiles):
-                    if i not in self.revealed:
-                        t.disabled = True
+        if self.done or idx in self.revealed:
+            return
+        kind = self.board[idx]
+        self.reveal(idx)
+        if kind == "bomb":
+            return await self.finish(interaction, True)
+        self.after(kind)
+        if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
+            # everything found: lock the bombs but keep Cashout open, the player collects it themselves
+            # (if they wait too long the game times out and pays out automatically)
+            for i, t in enumerate(self.tiles):
+                if i not in self.revealed:
+                    t.disabled = True
+        self.version += 1
+        v = self.version
+        async with self.edit_lock:
+            if v != self.version or self.done:
+                return   # a newer click will draw the latest board
             await interaction.edit_original_response(content=self.header, view=self)
-        finally:
-            self.busy = False
-            self.last_click = time.monotonic()
 
     def payout(self):
         user_data(self.user.id)["cash"] += self.bet + int(self.profit)
@@ -445,6 +461,8 @@ class BoardView(discord.ui.View):
                           RED if lost else GREEN)
 
     async def finish(self, interaction, lost):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         if self.done:
             return
         self.done = True
@@ -456,10 +474,8 @@ class BoardView(discord.ui.View):
         log_game(self.user, self.game_name, self.bet, -self.bet if lost else int(self.profit))
         self.reveal_all(lost or self.reveal_on_cashout)
         kw = dict(content=self.header, embed=self.embed(lost), view=self)
-        if interaction.response.is_done():
+        async with self.edit_lock:
             await interaction.edit_original_response(**kw)
-        else:
-            await interaction.response.edit_message(**kw)
 
     async def on_timeout(self):
         if self.done:
@@ -537,11 +553,15 @@ class SizeView(discord.ui.View):
 
     def pick(self, key):
         async def cb(interaction):
+            if self.chosen:   # double click: never start two games
+                if not interaction.response.is_done():
+                    await interaction.response.defer()
+                return
             self.chosen = True
             self.stop()
-            game = SMines(self.user, self.bet, key, self.token)
-            game.message = interaction.message
             try:
+                game = SMines(self.user, self.bet, key, self.token)
+                game.message = interaction.message
                 await interaction.response.edit_message(content=game.header, embed=None, view=game)
             except Exception:
                 cancel_game(self.user, self.token, self.bet)
@@ -785,9 +805,12 @@ class BlackjackView(discord.ui.View):
         return e, file
 
     async def update(self, interaction):
+        # the state is already changed by the caller. Acknowledge at once (3s limit), then draw + upload the image
         self.refresh_buttons()
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         e, f = self.render()
-        await interaction.response.edit_message(embed=e, attachments=[f], view=self)
+        await interaction.edit_original_response(embed=e, attachments=[f], view=self)
 
     async def advance(self, interaction):
         self.active += 1
