@@ -1,4 +1,4 @@
-import discord, random, json, os, asyncio, io, signal, math, time
+import discord, random, json, os, asyncio, io, signal, math, time, base64
 from datetime import datetime, timezone
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
@@ -9,6 +9,14 @@ try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
+
+# face-card art (faces.py must sit next to this file; without it the bot falls back to the plain cards)
+try:
+    from faces import FACES_B64
+    FACES = Image.open(io.BytesIO(base64.b64decode(FACES_B64))).convert("RGB")
+except Exception as _e:
+    print("faces.py not loaded, using plain cards:", repr(_e))
+    FACES = None
 
 # ================= CONFIG =================
 TOKEN = (os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or "").strip().strip('"').strip("'")
@@ -27,8 +35,9 @@ DEALER_STANDS_ON = 13
 EMPTY = "\u200e"   # blank button label
 GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F
 
-EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏮"}
+EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏺"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
+URN_CHANCE = (3, 7)   # 3 out of 7 games have the urn 🏺
 MINES_MULT = [1.1, 1.3, 1.6, 2, 2.2, 4.6, 7.6, 10.2]
 MINES_COMPOUND = False
 SMINES_COMPOUND = False
@@ -37,16 +46,10 @@ SMINES = {   # key: (columns, rows, mines, multiplier per click)
     "4x4": (4, 4, 3, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 7, 12.3]),
     "5x4": (5, 4, 5, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 5.4, 19]),
 }
-MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]   # (was "2,9" by mistake = two separate numbers)
+MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
 # ---------- SCRATCH CARDS (a real, limited stock) ----------
-# total   = how many cards exist in the stock (shuffled once, then sold one by one, saved in the database)
-# wins    = {multiplier: how many cards in the stock have it}. Everything else in the stock is a total loss.
-#           multiplier > 1 = profit, < 1 = partial refund (0.5 = you get half the price back, 0.2 = 20% back)
-# weekly  = the stock is rebuilt every week (Monday, Israel time)
-# price   = (start, max): the price rises linearly from start to max as the stock is sold
-# symbols = the symbol of every winning multiplier (3 of them on the card = that prize), duds = filler symbols
 SCRATCH_CARDS = {
     "deadsea": {
         "name": "🏜️ ים המלח", "total": 750, "weekly": False, "price": (5_000_000, 45_000_000),
@@ -79,7 +82,8 @@ ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360   # on
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
 SLOT_BUFF = 1.065      # every slots payout (pairs, triples, jackpot) is +6.5%
-SLOT_WAIT = 5          # seconds the slots animation runs before the result
+SLOT_WAIT = 5          # seconds the slots animation runs (counted AFTER the animation is attached)
+LOAD_BUFFER = 1.5      # extra seconds so the player's client has time to load the GIF before the result appears
 SLOTS_BOOST = 0.035
 BJ_WIN_NERF = 0.09
 
@@ -410,7 +414,7 @@ def shuffled(**parts):
 
 def gm_board():
     tiles = ["map"] + ["bomb"] * 10 + ["stone"] * 4 + ["coin"] * 2 + ["bag"] + ["diamond"] * 2
-    if random.randint(1, 7) == 1:
+    if random.randint(1, URN_CHANCE[1]) <= URN_CHANCE[0]:   # 3 out of 7 games
         tiles[tiles.index("stone")] = "urn"
     random.shuffle(tiles)
     return tiles
@@ -473,8 +477,7 @@ class BoardView(discord.ui.View):
         return True
 
     async def cashout(self, interaction):
-        if not self.done and not self.revealed:
-            return await interaction.response.send_message("Open at least one tile before you cash out.", ephemeral=True)
+        # cashing out is allowed even before opening any tile (the bet is simply returned)
         await self.finish(interaction, False)
 
     def reveal(self, i):
@@ -526,6 +529,10 @@ class BoardView(discord.ui.View):
                     t.style = discord.ButtonStyle.danger
         self.cash_btn.disabled = True
 
+    def final_view(self, lost):
+        """After a cashout of a hidden-board game (mines, S$mines, mt) the board and the buttons disappear."""
+        return self if (lost or self.reveal_on_cashout) else None
+
     def embed(self, lost):
         """Same message in every board game (gm, mines, S$mines)."""
         got = self.bet + int(self.profit)
@@ -548,7 +555,7 @@ class BoardView(discord.ui.View):
             save()
         log_game(self.user, self.game_name, self.bet, -self.bet if lost else int(self.profit))
         self.reveal_all(lost or self.reveal_on_cashout)
-        kw = dict(content=self.header, embed=self.embed(lost), view=self)
+        kw = dict(content=self.header, embed=self.embed(lost), view=self.final_view(lost))
         async with self.edit_lock:
             await interaction.edit_original_response(**kw)
 
@@ -561,7 +568,7 @@ class BoardView(discord.ui.View):
         log_game(self.user, self.game_name, self.bet, int(self.profit))
         self.reveal_all(self.reveal_on_cashout)
         if self.message:
-            await self.message.edit(content=self.header, embed=self.embed(False), view=self)
+            await self.message.edit(content=self.header, embed=self.embed(False), view=self.final_view(False))
 
 class GoldMines(BoardView):
     game_name = "gm"
@@ -796,12 +803,13 @@ def hand_value(cards):
         total, aces = total - 10, aces - 1
     return total
 
-# ---------- card images (simple: one color + a big number, no shapes) ----------
+# ---------- card images: number cards = one color + a big number, J/Q/K = the real artwork pasted inside the card ----------
 SW, SH = 84, 118
 TABLE_W = 960
 MASK = Image.new("L", (SW, SH), 0)
 ImageDraw.Draw(MASK).rounded_rectangle([0, 0, SW - 1, SH - 1], radius=9, fill=255)
 SUIT_COLORS = {"♣": (34, 139, 34), "♠": (40, 40, 40), "♥": (205, 30, 30), "♦": (30, 100, 215)}
+FACE_W, FACE_H = 52, 92   # size of one piece in faces.py (rows: ♣ ♠ ♥ ♦, columns: J Q K)
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -822,9 +830,16 @@ def get_card(card):
     inner = Image.new("RGBA", (SW - 8, SH - 8), SUIT_COLORS[s] + (255,))
     m = Image.new("L", inner.size, 0)
     ImageDraw.Draw(m).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=7, fill=255)
-    im.paste(inner, (4, 4), m)
-    ImageDraw.Draw(im).text((SW // 2, SH // 2), r, font=get_font(66 if len(r) == 1 else 52),
-                            fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 120))
+    if FACES is not None and r in ("J", "Q", "K"):
+        # the piece of the real card goes inside a frame of the suit color
+        x, y = "JQK".index(r) * FACE_W, SUITS.index(s) * FACE_H
+        piece = FACES.crop((x, y, x + FACE_W, y + FACE_H)).resize((SW - 20, SH - 20), Image.LANCZOS).convert("RGBA")
+        inner.paste(piece, (6, 6))
+        im.paste(inner, (4, 4), m)
+    else:
+        im.paste(inner, (4, 4), m)
+        ImageDraw.Draw(im).text((SW // 2, SH // 2), r, font=get_font(66 if len(r) == 1 else 52),
+                                fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 120))
     im.putalpha(MASK)
     return im
 
@@ -1043,7 +1058,7 @@ async def bj(ctx, amount: str = None):
         view.message = msg
 
 # ================= SLOTS (animated GIF: 3 reels that spin and stop one by one) =================
-SLOT_ICON = 68
+SLOT_ICON = 50
 SLOT_NAMES = dict(zip(SLOTS, ["cherry", "lemon", "grape", "bell", "diamond", "seven"]))
 
 @lru_cache(maxsize=None)
@@ -1097,7 +1112,7 @@ def slot_icon(sym):
 
 def render_slots(final, win):
     """Returns (gif_bytes, png_bytes). The 3 reels spin and stop one after the other on `final`."""
-    cell, rw, gap, pad = 84, 112, 10, 18
+    cell, rw, gap, pad = 62, 84, 8, 12
     W, H = pad * 2 + rw * 3 + gap * 2, pad * 2 + cell * 3
     cycle = random.sample(SLOTS, len(SLOTS))
     n = len(cycle)
@@ -1108,7 +1123,7 @@ def render_slots(final, win):
     def frame(f, last=False):
         im = Image.new("RGB", (W, H), (60, 12, 24))
         d = ImageDraw.Draw(im)
-        d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60), width=6)
+        d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60), width=4)
         for i in range(3):
             p = min(1.0, f / stops[i])
             pos = targets[i] * (1 - (1 - p) ** 3)
@@ -1121,9 +1136,9 @@ def render_slots(final, win):
             reel.paste(shade, (0, 0), shade)
             reel.paste(shade, (0, cell * 2), shade)
             im.paste(reel.convert("RGB"), (pad + i * (rw + gap), pad))
-        d.line([(pad - 10, H // 2), (W - pad + 10, H // 2)], fill=(230, 40, 40), width=3)
+        d.line([(pad - 8, H // 2), (W - pad + 8, H // 2)], fill=(230, 40, 40), width=2)
         if last and win:
-            d.rectangle([pad - 4, pad + cell - 2, W - pad + 4, pad + cell * 2 + 2], outline=(90, 255, 120), width=5)
+            d.rectangle([pad - 3, pad + cell - 2, W - pad + 3, pad + cell * 2 + 2], outline=(90, 255, 120), width=3)
         return im
 
     frames = [frame(f) for f in range(total - 1)] + [frame(total - 1, last=True)]
@@ -1149,33 +1164,42 @@ async def slots(ctx, amount: str = None):
         top = max(final.count(s) for s in SLOTS)
         mult = (SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0) * SLOT_BUFF
         win = int(bet * mult)
+        # 1) the message is sent IMMEDIATELY (the GIF is rendered afterwards, in the background)
+        e = make_embed(ctx.author, f"🎰 **Slots**\n\nYou bet **{fmt(bet)}** {cur()}\n\n⏳ Spinning...", YELLOW)
+        try:
+            msg = await ctx.reply(embed=e, mention_author=False)
+        except Exception:
+            cancel_game(ctx.author, token, bet)
+            raise
         try:
             gif, png = await asyncio.to_thread(render_slots, final, win > 0)
         except Exception:
             cancel_game(ctx.author, token, bet)
+            try:
+                await msg.edit(embed=make_embed(ctx.author, "Something went wrong, your bet was returned.", RED))
+            except Exception:
+                pass
             raise
-        e = make_embed(ctx.author, f"🎰 **Slots**\n\nYou bet **{fmt(bet)}** {cur()}\n\n⏳ Spinning...", YELLOW)
+        # 2) the animation is attached, and only now the timer starts
         e.set_image(url="attachment://slots.gif")
-        msg = None
         try:
-            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "slots.gif"), mention_author=False)
-            await asyncio.sleep(SLOT_WAIT)
+            await msg.edit(embed=e, attachments=[discord.File(io.BytesIO(gif), "slots.gif")])
+            await asyncio.sleep(SLOT_WAIT + LOAD_BUFFER)
         except discord.HTTPException:
             pass
-        # the money moves only AFTER the animation ended
+        # 3) the money moves, the result is shown, and THEN the log is written
         pending_done(token)
         user_data(ctx.author.id)["cash"] += win
         save()
-        log_game(ctx.author, "slots", bet, win - bet)
         line = "🎰  ┃ " + " ┃ ".join(final) + " ┃  🎰"
         extra = f"{line}\n" + (f"**x{mult:g}**\n\n" if win else "\n")
         result = result_embed(ctx.author, win > 0, win - bet if win else bet, extra)
         result.set_image(url="attachment://slots_result.png")
-        if msg:
-            try:
-                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
-            except discord.HTTPException:
-                pass
+        try:
+            await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
+        except discord.HTTPException:
+            pass
+        log_game(ctx.author, "slots", bet, win - bet)
     finally:
         BUSY.discard(ctx.author.id)
 
@@ -1183,8 +1207,9 @@ async def slots(ctx, amount: str = None):
 ROUL_ORDER = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
 ROUL_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 ROUL_COOLDOWN = 10
-ROUL_WAIT = 10                     # seconds until the result is shown (the animation runs the whole time)
-ROUL_SIZE, ROUL_FRAMES, ROUL_FRAME_MS = 380, 70, 130
+ROUL_WAIT = 10                     # seconds the animation runs (counted AFTER the animation is attached)
+ROUL_SIZE, ROUL_FRAMES, ROUL_FRAME_MS = 270, 70, 130
+ROUL_USAGE = "roulette <amount | half | all> <red|black|even|odd|1-12|13-24|25-36|1-18|19-36|0-36>"
 
 def roul_color(n):
     return "green" if n == 0 else "red" if n in ROUL_RED else "black"
@@ -1193,14 +1218,23 @@ def parse_roul_pick(text):
     """Returns (label, test, payout multiplier) or None."""
     if text is None:
         return None
-    t = text.lower().strip()
+    t = text.lower().strip().replace(" ", "").replace("–", "-").replace("־", "-")
+    red = ("🔴 Red", lambda n: n in ROUL_RED, 2)
+    black = ("⚫ Black", lambda n: n != 0 and n not in ROUL_RED, 2)
+    even = ("Even", lambda n: n != 0 and n % 2 == 0, 2)
+    odd = ("Odd", lambda n: n % 2 == 1, 2)
+    d1 = ("1-12", lambda n: 1 <= n <= 12, 3)
+    d2 = ("13-24", lambda n: 13 <= n <= 24, 3)
+    d3 = ("25-36", lambda n: 25 <= n <= 36, 3)
+    h1 = ("1-18", lambda n: 1 <= n <= 18, 2)
+    h2 = ("19-36", lambda n: 19 <= n <= 36, 2)
     names = {
-        "red": ("🔴 Red", lambda n: n in ROUL_RED, 2), "r": ("🔴 Red", lambda n: n in ROUL_RED, 2), "אדום": ("🔴 Red", lambda n: n in ROUL_RED, 2),
-        "black": ("⚫ Black", lambda n: n and n not in ROUL_RED, 2), "b": ("⚫ Black", lambda n: n and n not in ROUL_RED, 2), "שחור": ("⚫ Black", lambda n: n and n not in ROUL_RED, 2),
-        "green": ("🟢 Green (0)", lambda n: n == 0, 36), "g": ("🟢 Green (0)", lambda n: n == 0, 36), "ירוק": ("🟢 Green (0)", lambda n: n == 0, 36),
-        "even": ("Even", lambda n: n and n % 2 == 0, 2), "זוגי": ("Even", lambda n: n and n % 2 == 0, 2),
-        "odd": ("Odd", lambda n: n % 2 == 1, 2), "אי-זוגי": ("Odd", lambda n: n % 2 == 1, 2),
-        "low": ("Low (1-18)", lambda n: 1 <= n <= 18, 2), "high": ("High (19-36)", lambda n: 19 <= n <= 36, 2),
+        "red": red, "r": red, "אדום": red,
+        "black": black, "b": black, "שחור": black,
+        "even": even, "זוגי": even,
+        "odd": odd, "אי-זוגי": odd, "איזוגי": odd,
+        "1-12": d1, "1st": d1, "13-24": d2, "2nd": d2, "25-36": d3, "3rd": d3,
+        "1-18": h1, "19-36": h2,
     }
     if t in names:
         return names[t]
@@ -1212,14 +1246,16 @@ def parse_roul_pick(text):
 def render_roulette(winner):
     """Returns (gif_bytes, png_bytes). The wheel spins, the ball circles the other way, slows down and drops into `winner`."""
     S = ROUL_SIZE
-    c, R = S / 2, S / 2 - 8
+    k = S / 380
+    c, R = S / 2, S / 2 - 6
     step = 360 / 37
     idx = ROUL_ORDER.index(winner)
     spin = 360 * random.choice((3, 4)) + random.uniform(0, 360)
     ball_laps = random.choice((6, 7))
     start = random.uniform(0, 360)
-    font = get_font(13)
+    font = get_font(max(8, int(13 * k)))
     cols = {"red": (192, 28, 34), "black": (24, 24, 24), "green": (0, 140, 70)}
+    br_px = max(4, int(8 * k))
 
     def frame(p, final=False):
         e = 1 - (1 - p) ** 3                        # wheel slows down
@@ -1227,8 +1263,9 @@ def render_roulette(winner):
         im = Image.new("RGB", (S, S), (14, 40, 30))
         d = ImageDraw.Draw(im)
         d.ellipse([c - R, c - R, c + R, c + R], fill=(92, 52, 22))                        # wooden rim
-        d.ellipse([c - R + 10, c - R + 10, c + R - 10, c + R - 10], fill=(200, 160, 60))  # gold ring
-        rp = R - 16
+        g = 8 * k
+        d.ellipse([c - R + g, c - R + g, c + R - g, c + R - g], fill=(200, 160, 60))      # gold ring
+        rp = R - 12 * k
         for i, n in enumerate(ROUL_ORDER):
             a0 = wheel + i * step - step / 2 - 90
             d.pieslice([c - rp, c - rp, c + rp, c + rp], a0, a0 + step, fill=cols[roul_color(n)], outline=(215, 190, 110))
@@ -1239,19 +1276,20 @@ def render_roulette(winner):
             x, y = c + rp * 0.84 * math.cos(a), c + rp * 0.84 * math.sin(a)
             d.text((x, y), str(n), font=font, fill=(255, 255, 255), anchor="mm")
         rin2 = rin * 0.72
-        d.ellipse([c - rin2, c - rin2, c + rin2, c + rin2], fill=(120, 80, 30), outline=(215, 190, 110), width=3)
-        d.ellipse([c - 14, c - 14, c + 14, c + 14], fill=(215, 190, 110))
-        for k in range(4):                                                                 # hub spokes
-            a = math.radians(wheel * 1.0 + k * 90)
-            d.line([c, c, c + rin2 * 0.9 * math.cos(a), c + rin2 * 0.9 * math.sin(a)], fill=(215, 190, 110), width=4)
+        d.ellipse([c - rin2, c - rin2, c + rin2, c + rin2], fill=(120, 80, 30), outline=(215, 190, 110), width=2)
+        hub = 10 * k
+        d.ellipse([c - hub, c - hub, c + hub, c + hub], fill=(215, 190, 110))
+        for j in range(4):                                                                 # hub spokes
+            a = math.radians(wheel * 1.0 + j * 90)
+            d.line([c, c, c + rin2 * 0.9 * math.cos(a), c + rin2 * 0.9 * math.sin(a)], fill=(215, 190, 110), width=3)
         # the ball: circles against the wheel, then falls into the winning pocket and travels with it
         ball_deg = wheel + idx * step - 90 - ball_laps * 360 * (1 - p) ** 2
         drop = min(1, max(0, (p - 0.55) / 0.35))
-        br = (R - 10) * (1 - drop) + rp * 0.95 * drop if not final else rp * 0.95
+        br = (R - 8 * k) * (1 - drop) + rp * 0.95 * drop if not final else rp * 0.95
         if final:
             ball_deg = wheel + idx * step - 90
         bx, by = c + br * math.cos(math.radians(ball_deg)), c + br * math.sin(math.radians(ball_deg))
-        d.ellipse([bx - 8, by - 8, bx + 8, by + 8], fill=(250, 250, 250), outline=(150, 150, 150), width=2)
+        d.ellipse([bx - br_px, by - br_px, bx + br_px, by + br_px], fill=(250, 250, 250), outline=(150, 150, 150), width=1)
         return im
 
     frames = [frame(i / (ROUL_FRAMES - 1)) for i in range(ROUL_FRAMES)]
@@ -1262,16 +1300,14 @@ def render_roulette(winner):
     frames[-1].save(png, "PNG")
     return gif.getvalue(), png.getvalue()
 
-@bot.command(name="roulette", aliases=["rl"], usage="roulette <amount | half | all> <red|black|green|even|odd|low|high|0-36>",
-             cooldown_after_parsing=True)
+@bot.command(name="roulette", aliases=["rl"], usage=ROUL_USAGE, cooldown_after_parsing=True)
 @commands.cooldown(1, ROUL_COOLDOWN, commands.BucketType.user)
 async def roulette(ctx, amount: str = None, pick: str = None):
-    usage = "roulette <amount | half | all> <red|black|green|even|odd|low|high|0-36>"
     choice = parse_roul_pick(pick)
     if choice is None or ctx.author.id in BUSY:
         ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "You already have a game running." if choice else f"Usage: `${usage}`", RED)
-    bet = await take_bet(ctx, amount, usage, track=True)
+        return await reply(ctx, "You already have a game running." if choice else f"Usage: `${ROUL_USAGE}`", RED)
+    bet = await take_bet(ctx, amount, ROUL_USAGE, track=True)
     if not bet:
         return ctx.command.reset_cooldown(ctx)
     token = str(ctx.message.id)
@@ -1281,33 +1317,43 @@ async def roulette(ctx, amount: str = None, pick: str = None):
         winner = random.randint(0, 36)          # European wheel: 37 pockets (0-36), every pocket 1/37
         won = bool(test(winner))
         win = bet * mult if won else 0
+        # 1) the message is sent IMMEDIATELY (the GIF is rendered afterwards, in the background)
+        e = make_embed(ctx.author, f"🎡 **Roulette**\n\nYou bet **{fmt(bet)}** {cur()} on **{label}**\n\n⏳ Spinning...", YELLOW)
+        try:
+            msg = await ctx.reply(embed=e, mention_author=False)
+        except Exception:
+            cancel_game(ctx.author, token, bet)
+            ctx.command.reset_cooldown(ctx)
+            raise
         try:
             gif, png = await asyncio.to_thread(render_roulette, winner)
         except Exception:
             cancel_game(ctx.author, token, bet)
             ctx.command.reset_cooldown(ctx)
+            try:
+                await msg.edit(embed=make_embed(ctx.author, "Something went wrong, your bet was returned.", RED))
+            except Exception:
+                pass
             raise
-        e = make_embed(ctx.author, f"🎡 **Roulette**\n\nYou bet **{fmt(bet)}** {cur()} on **{label}**\n\n⏳ Spinning...", YELLOW)
+        # 2) the animation is attached, and only now the timer starts
         e.set_image(url="attachment://roulette.gif")
-        msg = None
         try:
-            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "roulette.gif"), mention_author=False)
-            await asyncio.sleep(ROUL_WAIT)
+            await msg.edit(embed=e, attachments=[discord.File(io.BytesIO(gif), "roulette.gif")])
+            await asyncio.sleep(ROUL_WAIT + LOAD_BUFFER)
         except discord.HTTPException:
             pass
-        # the money moves (and the log is written) only AFTER the animation ended
+        # 3) the money moves, the result is shown, and THEN the log is written
         pending_done(token)
         user_data(ctx.author.id)["cash"] += win
         save()
-        log_game(ctx.author, "roulette", bet, win - bet)
         emoji = {"red": "🔴", "black": "⚫", "green": "🟢"}[roul_color(winner)]
         result = result_embed(ctx.author, won, win - bet if won else bet, f"The ball landed on {emoji} **{winner}**\nYour bet: **{label}**\n\n")
         result.set_image(url="attachment://roulette_result.png")
-        if msg:
-            try:
-                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
-            except discord.HTTPException:
-                pass
+        try:
+            await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
+        except discord.HTTPException:
+            pass
+        log_game(ctx.author, "roulette", bet, win - bet)
     finally:
         BUSY.discard(ctx.author.id)
 
@@ -1376,6 +1422,10 @@ async def ht(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
         raise
 
+def small(text):
+    """Discord 'subtext' (-#): the same words, in a smaller font."""
+    return "\n".join(f"-# {ln}" if ln.strip() else ln for ln in text.split("\n"))
+
 @bot.command(name="cf", usage="cf <amount | half | all>")
 async def cf(ctx, amount: str = None):
     bet = await take_bet(ctx, amount, "cf <amount | half | all>")
@@ -1396,7 +1446,7 @@ async def cf(ctx, amount: str = None):
         desc, color = f"Your chicken lost the fight... You lost {fmt(bet)} {c}🐓.", RED
     save()
     log_game(ctx.author, "chicken fight", bet, bet if won else -bet)
-    await reply(ctx, desc, color)
+    await reply(ctx, small(desc), color)
 
 # ================= SCRATCH CARDS =================
 def week_id():
@@ -1990,12 +2040,12 @@ async def untouch(ctx):
     await secret_toggle(ctx, "touch", False, "👆 Touch is OFF.")
 
 INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150. אפשר גם `5k`, `2.5m`, `1e5`, `5e6`)
-• `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע. פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
+• `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע (גם בלי לפתוח משבצת). פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
 • `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו בלי לחשוף את הלוח. פצצה מפסידה הכול.
 • `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שלוש פצצות, 5x4 עם חמש פצצות.
 • `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
-• `$slots` – מכונת סלוטים עם אנימציה של גלגלים שמסתובבים ונעצרים אחד אחרי השני. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן. התוצאה מתגלה אחרי כ-5 שניות.
-• `$roulette סכום בחירה` (או `$rl`) – רולטה אירופאית (37 מספרים, 0 ירוק) עם גלגל מונפש. בחירה: `red` / `black` / `green` / `even` / `odd` / `low` / `high` / מספר 0-36. צבע, זוגי, אי-זוגי, נמוך וגבוה משלמים x2, מספר או ירוק משלמים x36. התוצאה מתגלה רק אחרי 10 שניות, כשהאנימציה נגמרת. קולדאון 10 שניות.
+• `$slots` – מכונת סלוטים עם אנימציה של גלגלים שמסתובבים ונעצרים אחד אחרי השני. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן. התוצאה מתגלה כשהאנימציה נגמרת.
+• `$roulette סכום בחירה` (או `$rl`) – רולטה אירופאית (37 מספרים) עם גלגל מונפש. בחירות: מספר בודד 0-36 משלם x36. `red` / `black` / `even` / `odd` / `1-18` / `19-36` משלמים x2. `1-12` / `13-24` / `25-36` (או `1st` / `2nd` / `3rd`) משלמים x3. התוצאה מתגלה רק כשהאנימציה נגמרת. קולדאון 10 שניות.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח מתחיל ב-50%, עולה ב-1% אחרי כל ניצחון עד מקסימום 84%, וחוזר ל-50% אחרי הפסד.
 • `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.3, x1.7, x2.2, x2.9, x4.5), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
