@@ -156,12 +156,7 @@ class GameView(discord.ui.View):
             return
         self.busy = True
 
-        # loading state (3 circles) while "cooling down"
-        for t in self.tiles:
-            t.disabled = True
-        self.cash_btn.disabled = True
-        await interaction.response.edit_message(
-            content=f"{self.header}\n⚪ ⚪ ⚪", view=self)
+        await interaction.response.defer()
         await asyncio.sleep(CLICK_DELAY)
 
         kind = self.board[idx]
@@ -268,6 +263,243 @@ async def gm(ctx, amount: str = None):
     save()
     view = GameView(ctx.author, bet)
     view.message = await ctx.send(view.header, view=view)
+
+# ================= BLACKJACK =================
+YELLOW = 0xF1C40F
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+SUITS = ["♠", "♥", "♦", "♣"]
+HIDDEN_CARD = "🂠"
+# Optional: upload card emojis to your server and map them here to get real card images, e.g.
+# CARD_EMOJI["A♠"] = "<:As:123456789012345678>"
+CARD_EMOJI = {}
+ACTIVE_BJ = set()
+
+def card_value(rank):
+    if rank == "A":
+        return 11
+    if rank in ("J", "Q", "K"):
+        return 10
+    return int(rank)
+
+def hand_value(cards):
+    total = sum(card_value(r) for r, s in cards)
+    aces = sum(1 for r, s in cards if r == "A")
+    while total > 21 and aces:
+        total -= 10
+        aces -= 1
+    return total
+
+def show_card(card):
+    r, s = card
+    return CARD_EMOJI.get(r + s, f"**{r}{s}**")
+
+def show_cards(cards):
+    return ", ".join(show_card(c) for c in cards)
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=120)
+        self.user = user
+        self.deck = [(r, s) for r in RANKS for s in SUITS]
+        random.shuffle(self.deck)
+        self.hands = [{"cards": [self.deck.pop(), self.deck.pop()],
+                       "bet": bet, "bust": False}]
+        self.dealer = [self.deck.pop(), self.deck.pop()]
+        self.active = 0
+        self.done = False
+        self.net = 0
+        self.split_used = False
+        self.message = None
+        self.refresh_buttons()
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message(
+                "This is not your game!", ephemeral=True)
+            return False
+        return True
+
+    # ----- helpers -----
+    def refresh_buttons(self):
+        cash = user_data(self.user.id)["cash"]
+        h = None if self.done else self.hands[self.active]
+        two = h is not None and len(h["cards"]) == 2
+        self.hit.disabled = self.done
+        self.stand.disabled = self.done
+        self.double.disabled = not (two and cash >= h["bet"])
+        self.split.disabled = not (
+            two and not self.split_used and cash >= h["bet"]
+            and card_value(h["cards"][0][0]) == card_value(h["cards"][1][0]))
+
+    def pay(self, returned):
+        user_data(self.user.id)["cash"] += returned
+        save()
+        ACTIVE_BJ.discard(self.user.id)
+
+    def check_naturals(self):
+        p = hand_value(self.hands[0]["cards"]) == 21
+        d = hand_value(self.dealer) == 21
+        if not (p or d):
+            return False
+        bet = self.hands[0]["bet"]
+        self.done = True
+        if p and d:
+            returned = bet
+        elif p:
+            returned = int(bet * 2.5)
+        else:
+            returned = 0
+        self.net = returned - bet
+        self.pay(returned)
+        self.refresh_buttons()
+        return True
+
+    def finalize(self):
+        self.done = True
+        if any(not h["bust"] for h in self.hands):
+            while hand_value(self.dealer) < 17:
+                self.dealer.append(self.deck.pop())
+        dv = hand_value(self.dealer)
+        staked = sum(h["bet"] for h in self.hands)
+        returned = 0
+        for h in self.hands:
+            if h["bust"]:
+                continue
+            pv = hand_value(h["cards"])
+            if pv > dv or dv > 21:
+                returned += h["bet"] * 2
+            elif pv == dv:
+                returned += h["bet"]
+        self.net = returned - staked
+        self.pay(returned)
+        self.refresh_buttons()
+
+    def build_embed(self):
+        c = cur()
+        color = YELLOW
+        head = None
+        if self.done:
+            if self.net > 0:
+                color, head = GREEN, f"You Won! +{fmt(self.net)} {c}"
+            elif self.net < 0:
+                color, head = RED, f"You Lost! -{fmt(-self.net)} {c}"
+            else:
+                head = f"Push! +0 {c}"
+        lines = ["🃏 **Blackjack** 🃏", ""]
+        if head:
+            lines += [f"**{head}**", ""]
+        multi = len(self.hands) > 1
+        for i, h in enumerate(self.hands):
+            title = "Your Hand" + (f" {i + 1}" if multi else "")
+            if multi and not self.done and i == self.active:
+                title += " ◀"
+            lines += [f"**{title}**", show_cards(h["cards"]), "",
+                      f"Value: **{hand_value(h['cards'])}**"]
+        if self.done:
+            dcards, dval = show_cards(self.dealer), hand_value(self.dealer)
+        else:
+            dcards = f"{show_card(self.dealer[0])}, {HIDDEN_CARD}"
+            dval = card_value(self.dealer[0][0])
+        lines += ["**Dealer**", dcards, "", f"Value: **{dval}**"]
+        e = discord.Embed(description="\n".join(lines), color=color)
+        e.set_author(name=f"{self.user.display_name}'s Game",
+                     icon_url=self.user.display_avatar.url)
+        return e
+
+    async def update(self, interaction):
+        self.refresh_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def advance(self, interaction):
+        self.active += 1
+        if self.active >= len(self.hands):
+            self.active = len(self.hands) - 1
+            self.finalize()
+            self.stop()
+        await self.update(interaction)
+
+    # ----- buttons -----
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
+    async def hit(self, interaction, button):
+        h = self.hands[self.active]
+        h["cards"].append(self.deck.pop())
+        v = hand_value(h["cards"])
+        if v > 21:
+            h["bust"] = True
+            await self.advance(interaction)
+        elif v == 21:
+            await self.advance(interaction)
+        else:
+            await self.update(interaction)
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.success)
+    async def stand(self, interaction, button):
+        await self.advance(interaction)
+
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.danger)
+    async def double(self, interaction, button):
+        u = user_data(self.user.id)
+        h = self.hands[self.active]
+        if len(h["cards"]) != 2 or u["cash"] < h["bet"]:
+            return await interaction.response.send_message(
+                "You can't double right now.", ephemeral=True)
+        u["cash"] -= h["bet"]
+        save()
+        h["bet"] *= 2
+        h["cards"].append(self.deck.pop())
+        if hand_value(h["cards"]) > 21:
+            h["bust"] = True
+        await self.advance(interaction)
+
+    @discord.ui.button(label="Split", style=discord.ButtonStyle.secondary)
+    async def split(self, interaction, button):
+        u = user_data(self.user.id)
+        h = self.hands[self.active]
+        if self.split_used or len(h["cards"]) != 2 or u["cash"] < h["bet"]:
+            return await interaction.response.send_message(
+                "You can't split right now.", ephemeral=True)
+        u["cash"] -= h["bet"]
+        save()
+        c1, c2 = h["cards"]
+        bet = h["bet"]
+        self.hands = [
+            {"cards": [c1, self.deck.pop()], "bet": bet, "bust": False},
+            {"cards": [c2, self.deck.pop()], "bet": bet, "bust": False},
+        ]
+        self.split_used = True
+        self.active = 0
+        await self.update(interaction)
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        for h in self.hands:
+            if hand_value(h["cards"]) > 21:
+                h["bust"] = True
+        self.finalize()
+        if self.message:
+            await self.message.edit(embed=self.build_embed(), view=self)
+
+@bot.command(name="bj", aliases=["blackjack"], usage="bj <amount | half | all>")
+async def bj(ctx, amount: str = None):
+    if ctx.author.id in ACTIVE_BJ:
+        return await reply(ctx, "You already have a Blackjack game running.", RED)
+    u = user_data(ctx.author.id)
+    bet = parse_amount(amount, u["cash"])
+    if bet is None:
+        return await reply(ctx, f"Usage: `$bj <amount | half | all>` (min {MIN_BET})", RED)
+    if bet < MIN_BET:
+        return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
+    if bet > u["cash"]:
+        return await reply(ctx, "You don't have that much money.", RED)
+
+    u["cash"] -= bet
+    save()
+    ACTIVE_BJ.add(ctx.author.id)
+    view = BlackjackView(ctx.author, bet)
+    if view.check_naturals():                 # instant blackjack (player or dealer)
+        return await ctx.send(embed=view.build_embed(), view=view)
+    view.message = await ctx.send(embed=view.build_embed(), view=view)
 
 # ---------- $bal ----------
 @bot.command(name="bal", aliases=["balance"], usage="bal [@user]")
