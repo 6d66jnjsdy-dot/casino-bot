@@ -1,4 +1,4 @@
-import discord, random, json, os, asyncio, io, signal, math, time, base64
+import discord, random, json, os, asyncio, io, signal, math, time, base64, re
 from datetime import datetime, timezone
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(HERE, "data"))   # point this to a persistent volume if your host has one
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "economy.json")
-CHANNELS = {1541567870591443026, 1502311424808980690}
+# The rooms the bot works in are NOT hard-coded anymore: the owner sets them with $setchannels #a #b #c
 OWNER_ID = 1537816435370229820
 # The backup keeps everybody's money (and the scratch card stock) safe when the host wipes its disk.
 # By default the bot keeps ONE backup message in the OWNER's DMs and edits it.
@@ -46,6 +46,11 @@ SMINES = {   # key: (columns, rows, mines, multiplier per click)
     "4x4": (4, 4, 3, [1.2, 1.4, 1.5, 1.7, 2, 2.5, 2.8, 4.5, 5.7, 5.8, 6, 7, 12.3]),
     "5x4": (5, 4, 5, [1.2, 1.5, 1.8, 2, 2.3, 2.6, 2.9, 3.4, 3.6, 3.8, 3.9, 4, 4.2, 5.4, 19]),
 }
+# from the 3rd click on, the multipliers are 20% lower (2x2 is not touched)
+SMINES_NERF_FROM, SMINES_NERF = 3, 0.8
+for _k, (_c, _r, _m, _t) in list(SMINES.items()):
+    if _k != "2x2":
+        SMINES[_k] = (_c, _r, _m, [round(v * SMINES_NERF, 3) if i >= SMINES_NERF_FROM - 1 else v for i, v in enumerate(_t)])
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
@@ -82,10 +87,10 @@ CF_HIDDEN = 1   # hidden bonus: the real chance is 1% higher than what the messa
 ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360   # only cash can be robbed, the bank is safe
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
-SLOT_BUFF = 1.065      # every slots payout (pairs, triples, jackpot) is +6.5%
+SLOT_BUFF = 1.065 * 1.15   # every slots payout (pairs, triples, jackpot): the old +6.5% and another +15% on top
 SLOT_WAIT = 5          # seconds the slots animation runs (counted AFTER the animation is attached)
 LOAD_BUFFER = 1.5      # extra seconds so the player's client has time to load the GIF before the result appears
-SLOTS_BOOST = 0.035
+SLOTS_BOOST = 0.055    # was 0.035: +2% chance to win
 BJ_WIN_NERF = 0.09
 
 # ================= DATABASE =================
@@ -283,9 +288,15 @@ def cmd_key(ctx):
 @bot.check
 async def only_allowed_channels(ctx):
     await loaded.wait()
-    if ctx.channel.id not in CHANNELS:
+    is_owner = ctx.author.id == OWNER_ID
+    if is_owner and ctx.command.name == "setchannels":
+        return True                                  # the owner can always fix the channel list
+    chans = DB.get("channels") or []
+    if not chans:
+        return is_owner                              # no channels set yet: only the owner can use the bot
+    if ctx.channel.id not in chans:
         return False
-    if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id != OWNER_ID:
+    if cmd_key(ctx) in DB.get("disabled", []) and not is_owner:
         return False
     return True
 
@@ -397,15 +408,22 @@ async def on_ready():
         _t.add_done_callback(_log_tasks.discard)
     print("Logged in as", bot.user)
 
+class ReplyPingOff(commands.CommandError):
+    pass
+
 @bot.event
 async def on_command_error(ctx, err):
     if isinstance(err, NotStaff):
         return await reply(ctx, "You need Administrator permission or the staff role to use this command.", RED)
     if isinstance(err, commands.MissingPermissions):
         return await reply(ctx, "You need Administrator permission to use this command.", RED)
+    if isinstance(err, ReplyPingOff):
+        return await reply(ctx, "Turn the reply ping **ON** (@ON) so I know who you mean.", RED)
     if isinstance(err, commands.CommandOnCooldown):
         m, s = divmod(int(err.retry_after) + 1, 60)
-        return await reply(ctx, f"Try again in **{f'{m}m ' if m else ''}{s}s**.", RED)
+        t = f"{m} minutes and {s} seconds" if m else f"{s} seconds"
+        icon = "⏳" if ctx.command.name == "rob" else "⏰"
+        return await reply(ctx, f"You cannot use this command for **{t}**. {icon}", RED)
     if isinstance(err, (commands.MissingRequiredArgument, commands.BadArgument)):
         return await reply(ctx, f"Usage: `${ctx.command.usage or ctx.command.name}`", RED)
     if not isinstance(err, (commands.CommandNotFound, commands.CheckFailure)):
@@ -1153,10 +1171,8 @@ def render_slots(final, win):
     frames[-1].save(png, "PNG")
     return gif.getvalue(), png.getvalue()
 
-# ---------- pre-rendered animations: the game message is sent with the animation already attached ----------
+# ---------- pre-rendered slot animations: the game message is sent with the animation already attached ----------
 SLOT_CACHE = {}    # (sym, sym, sym) -> (gif, png)   all 216 combinations are prepared in the background
-ROUL_POOL = {n: [] for n in range(37)}   # winner -> ready animations (a new one is prepared after each use)
-ROUL_POOL_SIZE = 1
 
 async def get_slots_anim(final):
     key = tuple(final)
@@ -1165,29 +1181,9 @@ async def get_slots_anim(final):
         SLOT_CACHE[key] = await asyncio.to_thread(render_slots, list(final), win)
     return SLOT_CACHE[key]
 
-async def refill_roul(n):
-    try:
-        while len(ROUL_POOL[n]) < ROUL_POOL_SIZE:
-            ROUL_POOL[n].append(await asyncio.to_thread(render_roulette, n))
-            await asyncio.sleep(0.1)
-    except Exception as ex:
-        print("Roulette prepare failed:", repr(ex))
-
-async def get_roul_anim(winner):
-    if ROUL_POOL[winner]:
-        anim = ROUL_POOL[winner].pop(0)
-    else:
-        anim = await asyncio.to_thread(render_roulette, winner)
-    t = asyncio.create_task(refill_roul(winner))
-    _log_tasks.add(t)
-    t.add_done_callback(_log_tasks.discard)
-    return anim
-
 async def warm_animations():
     """Runs once in the background after the bot starts, so the first players don't wait for the rendering."""
     try:
-        for n in range(37):
-            await refill_roul(n)
         for a in SLOTS:
             for b in SLOTS:
                 for c in SLOTS:
@@ -1232,7 +1228,7 @@ async def slots(ctx, amount: str = None):
         user_data(ctx.author.id)["cash"] += win
         save()
         line = "🎰  ┃ " + " ┃ ".join(final) + " ┃  🎰"
-        extra = f"{line}\n" + (f"**x{mult:g}**\n\n" if win else "\n")
+        extra = f"{line}\n" + (f"**x{mult:.2f}**\n\n" if win else "\n")
         result = result_embed(ctx.author, win > 0, win - bet if win else bet, extra)
         result.set_image(url="attachment://slots_result.png")
         if msg:
@@ -1244,24 +1240,24 @@ async def slots(ctx, amount: str = None):
     finally:
         BUSY.discard(ctx.author.id)
 
-# ================= ROULETTE (animated GIF of a real European wheel) =================
-ROUL_ORDER = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
+# ================= ROULETTE (multiplayer round, no animation) =================
 ROUL_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-ROUL_COOLDOWN = 10
-ROUL_WAIT = 10                     # seconds the animation runs (counted AFTER the animation is attached)
-ROUL_SIZE, ROUL_FRAMES, ROUL_FRAME_MS = 270, 70, 130
-ROUL_USAGE = "roulette <amount | half | all> <red|black|even|odd|1-12|13-24|25-36|1-18|19-36|0-36>"
+ROUL_WAIT = 15          # seconds people can join a round
+ROUL_MAX_PICKS = 5
+ROUL_COLOR = 0x9B8CD6
+ROUL_USAGE = "roulette <amount | half | all> <option, up to 5: 0,red,6,odd,1-12>"
+ROUL_ROUNDS = {}        # channel id -> the open round
 
 def roul_color(n):
     return "green" if n == 0 else "red" if n in ROUL_RED else "black"
 
 def parse_roul_pick(text):
     """Returns (label, test, payout multiplier) or None."""
-    if text is None:
+    if not text:
         return None
     t = text.lower().strip().replace(" ", "").replace("–", "-").replace("־", "-")
-    red = ("🔴 Red", lambda n: n in ROUL_RED, 2)
-    black = ("⚫ Black", lambda n: n != 0 and n not in ROUL_RED, 2)
+    red = ("Red", lambda n: n in ROUL_RED, 2)
+    black = ("Black", lambda n: n != 0 and n not in ROUL_RED, 2)
     even = ("Even", lambda n: n != 0 and n % 2 == 0, 2)
     odd = ("Odd", lambda n: n % 2 == 1, 2)
     d1 = ("1-12", lambda n: 1 <= n <= 12, 3)
@@ -1269,125 +1265,144 @@ def parse_roul_pick(text):
     d3 = ("25-36", lambda n: 25 <= n <= 36, 3)
     h1 = ("1-18", lambda n: 1 <= n <= 18, 2)
     h2 = ("19-36", lambda n: 19 <= n <= 36, 2)
+    c1 = ("1st", lambda n: n != 0 and n % 3 == 1, 3)
+    c2 = ("2nd", lambda n: n != 0 and n % 3 == 2, 3)
+    c3 = ("3rd", lambda n: n != 0 and n % 3 == 0, 3)
     names = {
         "red": red, "r": red, "אדום": red,
         "black": black, "b": black, "שחור": black,
         "even": even, "זוגי": even,
         "odd": odd, "אי-זוגי": odd, "איזוגי": odd,
-        "1-12": d1, "1st": d1, "13-24": d2, "2nd": d2, "25-36": d3, "3rd": d3,
+        "1-12": d1, "13-24": d2, "25-36": d3,
         "1-18": h1, "19-36": h2,
+        "1st": c1, "2nd": c2, "3rd": c3,
     }
     if t in names:
         return names[t]
     if t.isdigit() and 0 <= int(t) <= 36:
         k = int(t)
-        return (f"Number {k}", lambda n: n == k, 36)
+        return (str(k), lambda n, k=k: n == k, 36)
     return None
 
-def render_roulette(winner):
-    """Returns (gif_bytes, png_bytes). The wheel spins, the ball circles the other way, slows down and drops into `winner`."""
-    S = ROUL_SIZE
-    k = S / 380
-    c, R = S / 2, S / 2 - 6
-    step = 360 / 37
-    idx = ROUL_ORDER.index(winner)
-    spin = 360 * random.choice((3, 4)) + random.uniform(0, 360)
-    ball_laps = random.choice((6, 7))
-    start = random.uniform(0, 360)
-    font = get_font(max(8, int(13 * k)))
-    cols = {"red": (192, 28, 34), "black": (24, 24, 24), "green": (0, 140, 70)}
-    br_px = max(4, int(8 * k))
+def roul_pick_list(text):
+    """'0,red,6,odd,1-12' -> list of picks (duplicates removed) or None if something is not valid."""
+    if not text:
+        return None
+    picks, seen = [], set()
+    for part in re.split(r"[,\s]+", text.strip()):
+        if not part:
+            continue
+        c = parse_roul_pick(part)
+        if c is None:
+            return None
+        if c[0] not in seen:
+            seen.add(c[0])
+            picks.append(c)
+    return picks or None
 
-    def frame(p, final=False):
-        e = 1 - (1 - p) ** 3                        # wheel slows down
-        wheel = start + spin * e                    # rotation (degrees, clockwise from the top)
-        im = Image.new("RGB", (S, S), (14, 40, 30))
-        d = ImageDraw.Draw(im)
-        d.ellipse([c - R, c - R, c + R, c + R], fill=(92, 52, 22))                        # wooden rim
-        g = 8 * k
-        d.ellipse([c - R + g, c - R + g, c + R - g, c + R - g], fill=(200, 160, 60))      # gold ring
-        rp = R - 12 * k
-        for i, n in enumerate(ROUL_ORDER):
-            a0 = wheel + i * step - step / 2 - 90
-            d.pieslice([c - rp, c - rp, c + rp, c + rp], a0, a0 + step, fill=cols[roul_color(n)], outline=(215, 190, 110))
-        rin = rp * 0.66
-        d.ellipse([c - rin, c - rin, c + rin, c + rin], fill=(46, 30, 16))                # inner disc
-        for i, n in enumerate(ROUL_ORDER):
-            a = math.radians(wheel + i * step - 90)
-            x, y = c + rp * 0.84 * math.cos(a), c + rp * 0.84 * math.sin(a)
-            d.text((x, y), str(n), font=font, fill=(255, 255, 255), anchor="mm")
-        rin2 = rin * 0.72
-        d.ellipse([c - rin2, c - rin2, c + rin2, c + rin2], fill=(120, 80, 30), outline=(215, 190, 110), width=2)
-        hub = 10 * k
-        d.ellipse([c - hub, c - hub, c + hub, c + hub], fill=(215, 190, 110))
-        for j in range(4):                                                                 # hub spokes
-            a = math.radians(wheel * 1.0 + j * 90)
-            d.line([c, c, c + rin2 * 0.9 * math.cos(a), c + rin2 * 0.9 * math.sin(a)], fill=(215, 190, 110), width=3)
-        # the ball: circles against the wheel, then falls into the winning pocket and travels with it
-        ball_deg = wheel + idx * step - 90 - ball_laps * 360 * (1 - p) ** 2
-        drop = min(1, max(0, (p - 0.55) / 0.35))
-        br = (R - 8 * k) * (1 - drop) + rp * 0.95 * drop if not final else rp * 0.95
-        if final:
-            ball_deg = wheel + idx * step - 90
-        bx, by = c + br * math.cos(math.radians(ball_deg)), c + br * math.sin(math.radians(ball_deg))
-        d.ellipse([bx - br_px, by - br_px, bx + br_px, by + br_px], fill=(250, 250, 250), outline=(150, 150, 150), width=1)
-        return im
+def roul_embed(rnd):
+    many = len(rnd["bets"]) > 1
+    lines = []
+    for b in rnd["bets"].values():
+        names = ", ".join(p[0] for p in b["picks"])
+        each = f" ({fmt(b['per'])} each)" if len(b["picks"]) > 1 else ""
+        who = f"{b['user'].mention} " if many else ""
+        lines.append(f"{who}**Bet:** {fmt(b['stake'])}{cur()} on **{names}**{each}")
+    return discord.Embed(color=ROUL_COLOR, title="🎰 Roulette Round Opened", description=(
+        f"Roulette round opened by {rnd['opener'].mention}.\n\n"
+        + "\n".join(lines) + "\n\n"
+        "Place a `$roulette <amount> <bet>` to join before it closes.\n"
+        f"Betting closes <t:{rnd['end']}:R>."))
 
-    frames = [frame(i / (ROUL_FRAMES - 1)) for i in range(ROUL_FRAMES)]
-    frames[-1] = frame(1.0, final=True)
-    gif, png = io.BytesIO(), io.BytesIO()
-    pal = [f.quantize(colors=64, method=Image.MEDIANCUT) for f in frames]
-    pal[0].save(gif, "GIF", save_all=True, append_images=pal[1:], duration=[ROUL_FRAME_MS] * (len(pal) - 1) + [6000], loop=0, optimize=False)
-    frames[-1].save(png, "PNG")
-    return gif.getvalue(), png.getvalue()
-
-@bot.command(name="roulette", aliases=["rl"], usage=ROUL_USAGE, cooldown_after_parsing=True)
-@commands.cooldown(1, ROUL_COOLDOWN, commands.BucketType.user)
-async def roulette(ctx, amount: str = None, pick: str = None):
-    choice = parse_roul_pick(pick)
-    if choice is None or ctx.author.id in BUSY:
-        ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "You already have a game running." if choice else f"Usage: `${ROUL_USAGE}`", RED)
-    bet = await take_bet(ctx, amount, ROUL_USAGE, track=True)
-    if not bet:
-        return ctx.command.reset_cooldown(ctx)
-    token = str(ctx.message.id)
-    BUSY.add(ctx.author.id)
+async def close_round(cid, rnd):
     try:
-        label, test, mult = choice
+        await asyncio.sleep(max(0, rnd["end"] - time.time()))
+        if ROUL_ROUNDS.get(cid) is rnd:
+            ROUL_ROUNDS.pop(cid, None)          # from now on a new round can be opened
         winner = random.randint(0, 36)          # European wheel: 37 pockets (0-36), every pocket 1/37
-        won = bool(test(winner))
-        win = bet * mult if won else 0
-        # the animation is ready (pre-rendered), so the message is sent WITH it, straight away
-        try:
-            gif, png = await get_roul_anim(winner)
-        except Exception:
-            cancel_game(ctx.author, token, bet)
-            ctx.command.reset_cooldown(ctx)
-            raise
-        e = make_embed(ctx.author, f"🎡 **Roulette**\n\nYou bet **{fmt(bet)}** {cur()} on **{label}**\n\n⏳ Spinning...", YELLOW)
-        e.set_image(url="attachment://roulette.gif")
-        msg = None
-        try:
-            msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "roulette.gif"), mention_author=False)
-            await asyncio.sleep(ROUL_WAIT + LOAD_BUFFER)
-        except discord.HTTPException:
-            pass
-        # 3) the money moves, the result is shown, and THEN the log is written
-        pending_done(token)
-        user_data(ctx.author.id)["cash"] += win
-        save()
         emoji = {"red": "🔴", "black": "⚫", "green": "🟢"}[roul_color(winner)]
-        result = result_embed(ctx.author, won, win - bet if won else bet, f"The ball landed on {emoji} **{winner}**\nYour bet: **{label}**\n\n")
-        result.set_image(url="attachment://roulette_result.png")
-        if msg:
+        lines = []
+        for b in rnd["bets"].values():
+            hits = [(l, m) for l, t, m in b["picks"] if t(winner)]
+            win = sum(b["per"] * m for _, m in hits)
+            net = win - b["stake"]
+            pending_done(b["token"])
+            user_data(b["user"].id)["cash"] += win
+            log_game(b["user"], "roulette", b["stake"], net)
+            hit_txt = f" (hit: {', '.join(l for l, _ in hits)})" if hits else ""
+            if net > 0:
+                lines.append(f"🟢 {b['user'].mention} won **+{fmt(net)}** {cur()}{hit_txt}")
+            elif net < 0:
+                lines.append(f"🔴 {b['user'].mention} lost **{fmt(-net)}** {cur()}{hit_txt}")
+            else:
+                lines.append(f"🟡 {b['user'].mention} got the bet back{hit_txt}")
+        save()
+        e = discord.Embed(color=ROUL_COLOR, title="🎰 Roulette Round Closed", description=(
+            f"The ball landed on {emoji} **{winner}**\n\n" + "\n".join(lines)))
+        none = discord.AllowedMentions.none()
+        try:
+            await rnd["msg"].edit(embed=e, allowed_mentions=none)
+        except Exception:
+            await rnd["channel"].send(embed=e, allowed_mentions=none)
+    except Exception as ex:
+        print("Roulette round failed:", repr(ex))
+
+@bot.command(name="roulette", aliases=["rl"], usage=ROUL_USAGE)
+async def roulette(ctx, amount: str = None, *, picks: str = None):
+    choices = roul_pick_list(picks)
+    if choices is None:
+        return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
+    if len(choices) > ROUL_MAX_PICKS:
+        return await reply(ctx, f"You can choose up to {ROUL_MAX_PICKS} options in one bet.", RED)
+    cid = ctx.channel.id
+    rnd = ROUL_ROUNDS.get(cid)
+    if rnd and ctx.author.id in rnd["bets"]:
+        return await reply(ctx, "You already placed a bet in this round.", RED)
+    u = user_data(ctx.author.id)
+    total = parse_amount(amount, u["cash"])
+    if total is None:
+        return await reply(ctx, f"Usage: `${ROUL_USAGE}` (min {MIN_BET})", RED)
+    if total < MIN_BET:
+        return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
+    if total > u["cash"]:
+        return await reply(ctx, "You don't have that much money.", RED)
+    per = total // len(choices)                 # the amount is split equally between the options
+    stake = per * len(choices)
+    if per < 1:
+        return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
+    # no awaits from here until the bet is registered: nobody can open two rounds at once
+    rnd = ROUL_ROUNDS.get(cid)
+    token = str(ctx.message.id)
+    u["cash"] -= stake
+    DB.setdefault("pending", {})[token] = {"uid": str(ctx.author.id), "bet": stake}
+    save()
+    bet = {"user": ctx.author, "per": per, "stake": stake, "picks": choices, "token": token}
+    if rnd is None:
+        rnd = {"opener": ctx.author, "bets": {ctx.author.id: bet}, "end": int(time.time()) + ROUL_WAIT,
+               "msg": None, "channel": ctx.channel}
+        ROUL_ROUNDS[cid] = rnd
+        try:
+            rnd["msg"] = await ctx.reply(embed=roul_embed(rnd), mention_author=False,
+                                         allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            ROUL_ROUNDS.pop(cid, None)
+            for b in rnd["bets"].values():
+                cancel_game(b["user"], b["token"], b["stake"])
+            raise
+        t = asyncio.create_task(close_round(cid, rnd))
+        _log_tasks.add(t)
+        t.add_done_callback(_log_tasks.discard)
+    else:
+        rnd["bets"][ctx.author.id] = bet
+        try:
+            await ctx.message.add_reaction("✅")
+        except Exception:
+            pass
+        if rnd["msg"]:
             try:
-                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "roulette_result.png")])
-            except discord.HTTPException:
+                await rnd["msg"].edit(embed=roul_embed(rnd), allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
                 pass
-        log_game(ctx.author, "roulette", bet, win - bet)
-    finally:
-        BUSY.discard(ctx.author.id)
 
 # ================= HEADS OR TAIL / CHICKEN FIGHT =================
 class CoinFlip(discord.ui.View):
@@ -1465,9 +1480,9 @@ async def cf(ctx, amount: str = None):
     if won:
         u["cash"] += bet * 2
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n"
-                f"**Your chicken's strength (chance of winning): {strength}%\n"
-                f"You now have {fmt(u['cash'])} {c}**")
+        desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n\n"
+                f"**Your chicken's strength (chance of winning): {strength}%**\n"
+                f"**You now have {fmt(u['cash'])} {c}**")
         color = GREEN
     else:
         u["chicken"] = CF_MIN
@@ -1834,9 +1849,33 @@ async def cards(ctx):
     await reply(ctx, f"**🎟️ Scratch cards**\n\n{stock_lines()}\n\nPlay: `$scratch`", BLUE)
 
 # ================= ECONOMY =================
-@bot.command(name="bal", aliases=["balance"], usage="bal [@user]")
-async def bal(ctx, member: discord.Member = None):
-    member = member or ctx.author
+async def resolve_target(ctx, arg):
+    """`a` (or nothing) + a REPLY to a player with the mention ping ON = that player.
+    Anything else is a normal @mention / id / name. Returns None if there is nobody to point at."""
+    if arg is None or arg.lower() == "a":
+        ref = ctx.message.reference
+        if ref is None:
+            return None
+        msg = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+        if msg is None:
+            try:
+                msg = await ctx.channel.fetch_message(ref.message_id)
+            except Exception:
+                return None
+        author = msg.author
+        if not any(m.id == author.id for m in ctx.message.mentions):   # ping OFF: the reply doesn't tag the player
+            raise ReplyPingOff()
+        return ctx.guild.get_member(author.id) or await ctx.guild.fetch_member(author.id)
+    return await commands.MemberConverter().convert(ctx, arg)
+
+@bot.command(name="bal", aliases=["balance"], usage="bal [@user | a (reply)]")
+async def bal(ctx, target: str = None):
+    if target is None:
+        member = ctx.author
+    else:
+        member = await resolve_target(ctx, target)
+        if member is None:
+            return await reply(ctx, "Usage: `$bal [@user]` — or reply to a player (ping ON) and type `$bal a`", RED)
     u, c = user_data(member.id), cur()
     await ctx.reply(embed=make_embed(member, (
         "Use the `top` command to view your rank.\n\n"
@@ -1882,8 +1921,11 @@ async def crime(ctx):
 async def work(ctx):
     await earn(ctx, "You worked hard and got {}!")
 
-@bot.command(name="pay", usage="pay @user <amount | half | all>")
-async def pay(ctx, member: discord.Member, amount: str):
+@bot.command(name="pay", usage="pay @user <amount | half | all>  (or reply + ping ON: pay a <amount>)")
+async def pay(ctx, target: str = None, amount: str = None):
+    member = await resolve_target(ctx, target)
+    if member is None or amount is None:
+        return await reply(ctx, "Usage: `$pay @user <amount | half | all>` — or reply to a player (ping ON) and type `$pay a <amount>`", RED)
     if member.bot or member.id == ctx.author.id:
         return await reply(ctx, "You can't pay this user.", RED)
     u = user_data(ctx.author.id)
@@ -1898,14 +1940,22 @@ async def pay(ctx, member: discord.Member, amount: str):
     log_money(ctx.author, f"💸 **pay** — paid **{fmt(amt)}** {cur()} to {member.name} (id {member.id})", BLUE)
     await reply(ctx, f"You paid {fmt(amt)} {cur()} to {member.name}.", GREEN)
 
-@bot.command(name="rob", usage="rob @user", cooldown_after_parsing=True)
+@bot.command(name="rob", usage="rob @user  (or reply + ping ON: rob a)", cooldown_after_parsing=True)
 @commands.cooldown(1, ROB_COOLDOWN, commands.BucketType.user)
-async def rob(ctx, member: discord.Member):
+async def rob(ctx, target: str = None):
+    try:
+        member = await resolve_target(ctx, target)
+    except Exception:
+        ctx.command.reset_cooldown(ctx)
+        raise
+    if member is None:
+        ctx.command.reset_cooldown(ctx)
+        return await reply(ctx, "Usage: `$rob @user` — or reply to a player (ping ON) and type `$rob a`", RED)
     if member.bot or member.id == ctx.author.id:
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "You can't rob this user.", RED)
-    me, target = user_data(ctx.author.id), user_data(member.id)
-    loot = {k: int(target[k] * ROB_PERCENT) for k in ROB_FROM}   # cash only: money in the bank can't be robbed
+    me, tgt = user_data(ctx.author.id), user_data(member.id)
+    loot = {k: int(tgt[k] * ROB_PERCENT) for k in ROB_FROM}   # cash only: money in the bank can't be robbed
     if not sum(loot.values()):   # nothing outside the bank: the robbery still happens, and it fails (cooldown starts)
         return await reply(ctx, f"You tried to rob a poor person and lost 0 {cur()}.", RED)
     if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:
@@ -1915,7 +1965,7 @@ async def rob(ctx, member: discord.Member):
         log_game(ctx.author, "rob (got caught)", 0, -lost)
         return await reply(ctx, "You got caught and lost all your money!", RED)
     for k, v in loot.items():
-        target[k] -= v
+        tgt[k] -= v
     me["cash"] += sum(loot.values())
     save()
     log_game(ctx.author, f"rob {member.name} (id {member.id})", 0, sum(loot.values()))
@@ -2109,6 +2159,7 @@ def is_staff(ctx):
 
 admin_only = commands.check(admin_or_owner)
 staff_only = commands.check(is_staff)
+owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)
 
 @bot.command(name="staff-role", usage="staff-role @role")
 @admin_only
@@ -2134,29 +2185,62 @@ async def setgamelogs(ctx, channel: discord.TextChannel = None):
     await reply(ctx, f"Game logs will now be sent to {channel.mention}.", GREEN)
     log_event(ctx.author, "✅ This channel is now the game log (wins, losses and money changes).", BLUE)
 
-async def change_money(ctx, where, member, amount, sign):
-    where = where.lower()
-    u = user_data(member.id)
-    amount = parse_amount(amount, u.get(where, 0) if sign < 0 else 0)
-    if where not in ("bank", "cash") or amount is None or amount <= 0:
-        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
-    amount = min(amount, u[where]) if sign < 0 else amount
-    u[where] += sign * amount
-    save()
-    log_event(ctx.author, f"💰 **{'addmoney' if sign > 0 else 'removemoney'}** — {'added' if sign > 0 else 'removed'} "
-                          f"**{fmt(amount)}** {cur()} {'to' if sign > 0 else 'from'} {member.name}'s {where} (id {member.id})", BLUE)
-    await reply(ctx, f"{'Added' if sign > 0 else 'Removed'} {fmt(amount)} {cur()} "
-                     f"{'to' if sign > 0 else 'from'} {member.name}'s {where}.", GREEN)
+async def parse_money_args(ctx, args):
+    """Takes bank/cash/all, @user and an amount in ANY order. Returns (where, member, amount)."""
+    where = member = amount = None
+    for a in args:
+        low = a.lower()
+        if where is None and low in ("bank", "cash", "all"):
+            where = low
+        elif member is None and (re.fullmatch(r"<@!?\d+>", a) or (a.isdigit() and len(a) >= 15)):
+            member = await commands.MemberConverter().convert(ctx, a)
+        elif amount is None and parse_amount(a, 0) is not None:
+            amount = a
+        elif member is None:
+            member = await commands.MemberConverter().convert(ctx, a)
+        else:
+            raise commands.BadArgument()
+    return where, member, amount
+
+def add_cap_error(ctx, amt):
+    """The owner can limit how much staff can add with $setaddmoney. The owner himself is never limited."""
+    cap = DB.get("add_max")
+    if ctx.author.id != OWNER_ID and cap and amt > cap:
+        return f"You can add at most **{fmt(cap)}** {cur()} per command."
+    return None
 
 @bot.command(name="addmoney", usage="addmoney <bank|cash> @user <amount>")
 @staff_only
-async def addmoney(ctx, where: str, member: discord.Member, amount: str):
-    await change_money(ctx, where, member, amount, 1)
+async def addmoney(ctx, *args: str):
+    where, member, amount = await parse_money_args(ctx, args)
+    amt = parse_amount(amount, 0)
+    if where not in ("bank", "cash") or member is None or amt is None or amt <= 0:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    err = add_cap_error(ctx, amt)
+    if err:
+        return await reply(ctx, err, RED)
+    user_data(member.id)[where] += amt
+    save()
+    log_event(ctx.author, f"💰 **addmoney** — added **{fmt(amt)}** {cur()} to {member.name}'s {where} (id {member.id})", BLUE)
+    await reply(ctx, f"Added {fmt(amt)} {cur()} to {member.name}'s {where}.", GREEN)
 
-@bot.command(name="removemoney", usage="removemoney <bank|cash> @user <amount>")
+@bot.command(name="resetmoney", usage="resetmoney <bank|cash|all> @user [amount]")
 @staff_only
-async def removemoney(ctx, where: str, member: discord.Member, amount: str):
-    await change_money(ctx, where, member, amount, -1)
+async def resetmoney(ctx, *args: str):
+    """Sets the player's cash / bank to 0 (or to the amount, if you write one)."""
+    where, member, amount = await parse_money_args(ctx, args)
+    amt = 0 if amount is None else parse_amount(amount, 0)
+    if where not in ("bank", "cash", "all") or member is None or amt is None or amt < 0:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    u = user_data(member.id)
+    if where == "all":
+        u["cash"] = u["bank"] = 0
+    else:
+        u[where] = amt
+    save()
+    log_event(ctx.author, f"💰 **resetmoney** — {member.name}'s {where} " + ("reset to 0" if where == "all" else f"set to **{fmt(amt)}**") +
+              f" (id {member.id})", BLUE)
+    await reply(ctx, f"{member.name}'s {where} " + ("was reset to 0." if where == "all" else f"was set to {fmt(amt)} {cur()}."), GREEN)
 
 @bot.command(name="addmoneyrole", usage="addmoneyrole <bank|cash> @role <amount>")
 @staff_only
@@ -2165,6 +2249,9 @@ async def addmoneyrole(ctx, where: str, role: discord.Role, amount: str):
     amt = parse_amount(amount, 0)
     if where not in ("bank", "cash") or amt is None or amt <= 0:
         return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    err = add_cap_error(ctx, amt)
+    if err:
+        return await reply(ctx, err, RED)
     if not ctx.guild.chunked:
         await ctx.guild.chunk()
     members = [m for m in role.members if not m.bot]
@@ -2185,9 +2272,7 @@ async def currency(ctx, symbol: str = None):
     save()
     await reply(ctx, f"Currency changed to {symbol}", GREEN)
 
-# ================= OWNER: DISABLE / UNDISABLE =================
-owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)
-
+# ================= OWNER =================
 def resolve_key(name):
     name = name.lower().lstrip("$")
     if name in ("s$mines", "smines"):
@@ -2225,6 +2310,90 @@ async def enable(ctx, name: str):
     save()
     await reply(ctx, "All commands are enabled." if key == "all" else f"`{key}` is enabled again.", GREEN)
 
+@bot.command(name="setchannels", aliases=["setchannel"], usage="setchannels #channel1 #channel2 ... | clear")
+@owner_only
+async def setchannels(ctx, *args: str):
+    """The rooms the bot works in (as many as you want). Owner only."""
+    if not args:
+        ids = DB.get("channels") or []
+        return await reply(ctx, "Bot channels: " + (" ".join(f"<#{i}>" for i in ids) or "none (only the owner can use the bot)")
+                           + "\nSet them with `$setchannels #a #b #c`", BLUE)
+    if len(args) == 1 and args[0].lower() in ("clear", "none", "off"):
+        DB["channels"] = []
+        save()
+        return await reply(ctx, "The channel list was cleared. Only the owner can use the bot now.", GREEN)
+    conv, ids = commands.TextChannelConverter(), []
+    for a in args:
+        try:
+            ids.append((await conv.convert(ctx, a)).id)
+        except commands.BadArgument:
+            return await reply(ctx, f"I can't find the channel `{a}`.", RED)
+    DB["channels"] = list(dict.fromkeys(ids))
+    save()
+    await reply(ctx, "The bot now works only in: " + " ".join(f"<#{i}>" for i in DB["channels"]), GREEN)
+
+@bot.command(name="setaddmoney", usage="setaddmoney <max | off>")
+@owner_only
+async def setaddmoney(ctx, amount: str = None):
+    """The most that staff (not you) can add with one $addmoney / $addmoneyrole."""
+    cap = DB.get("add_max")
+    if amount is None:
+        return await reply(ctx, f"Add-money limit: {fmt(cap) + ' ' + cur() if cap else 'no limit'}\nSet it with `$setaddmoney <max>` (or `off`)", BLUE)
+    if amount.lower() in ("off", "none", "no"):
+        DB.pop("add_max", None)
+        save()
+        return await reply(ctx, "The add-money limit was removed.", GREEN)
+    amt = parse_amount(amount, 0)
+    if amt is None or amt <= 0:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    DB["add_max"] = amt
+    save()
+    await reply(ctx, f"Staff can now add at most {fmt(amt)} {cur()} per command.", GREEN)
+
+class ConfirmReset(discord.ui.View):
+    def __init__(self, user):
+        super().__init__(timeout=30)
+        self.user, self.message = user, None
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("Only the owner can do this.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Yes, reset everyone", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction, button):
+        n = 0
+        for d in DB["users"].values():
+            if d.get("cash") or d.get("bank"):
+                n += 1
+            d["cash"] = d["bank"] = 0
+        save()
+        self.stop()
+        await interaction.response.edit_message(
+            embed=make_embed(self.user, f"✅ The economy was reset: cash and bank of {n} players are now 0.", GREEN), view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction, button):
+        self.stop()
+        await interaction.response.edit_message(embed=make_embed(self.user, "Cancelled.", BLUE), view=None)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(embed=make_embed(self.user, "Timed out, nothing was reset.", BLUE), view=None)
+            except Exception:
+                pass
+
+@bot.command(name="reset-economy", aliases=["reset-economey", "reseteconomy"], usage="reset-economy")
+@owner_only
+async def reset_economy(ctx):
+    """Sets the cash and the bank of EVERY player (the whole $top) to 0. Owner only, with a confirmation button."""
+    view = ConfirmReset(ctx.author)
+    view.message = await ctx.reply(embed=make_embed(
+        ctx.author, "⚠️ This sets the **cash and bank of every player** to 0. It can't be undone.", RED),
+        view=view, mention_author=False)
+
 async def secret_toggle(ctx, key, on, text):
     if on:
         DB[key] = True
@@ -2260,47 +2429,50 @@ async def touch(ctx):
 async def untouch(ctx):
     await secret_toggle(ctx, "touch", False, "👆 Touch is OFF.")
 
-INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150. אפשר גם `5k`, `2.5m`, `1e5`, `5e6`)
-• `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע (גם בלי לפתוח משבצת). פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
-• `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו בלי לחשוף את הלוח. פצצה מפסידה הכול.
+INFO_GAMES = """**🎮 משחקים** (הימור: סכום / `half` / `all`, מינימום 150. אפשר גם `5k`, `2.5m`, `1e5`, `5e6`)
+• `$gm` – לוח של 20 משבצות עם אוצרות ופצצות. חושפים משבצות ואוספים רווח, ואפשר לצאת עם Cashout בכל רגע. פצצה מפסידה את ההימור, ומפה חושפת עוד משבצות בטוחות.
+• `$mines` – לוח 3x3 עם פצצה אחת. כל יהלום מגדיל את הרווח, ו-Cashout מוציא אותו בלי לחשוף את הלוח.
 • `S$mines` – כמו mines, אבל בוחרים גודל לוח: 2x2 עם פצצה אחת, 4x4 עם שלוש פצצות, 5x4 עם חמש פצצות.
 • `$bj` – בלאק ג'ק מול הדילר עם Hit, Stand, Double ו-Split.
-• `$slots` – מכונת סלוטים עם אנימציה של גלגלים שמסתובבים ונעצרים אחד אחרי השני. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן. התוצאה מתגלה כשהאנימציה נגמרת.
-• `$roulette סכום בחירה` (או `$rl`) – רולטה אירופאית (37 מספרים) עם גלגל מונפש. בחירות: מספר בודד 0-36 משלם x36. `red` / `black` / `even` / `odd` / `1-18` / `19-36` משלמים x2. `1-12` / `13-24` / `25-36` (או `1st` / `2nd` / `3rd`) משלמים x3. התוצאה מתגלה רק כשהאנימציה נגמרת. קולדאון 10 שניות.
-• `$hl` (או `$high-low`) – גבוה או נמוך. מקבלים מספר בין 1 ל-100 ומנחשים אם המספר הבא יהיה Higher, Same או Lower. המכפיל משתנה לפי הסיכוי (ככל שהניחוש פחות סביר הוא משלם יותר), ו-Same משלם x25.
+• `$slots` – מכונת סלוטים עם אנימציה. שלושה סמלים זהים זה ניצחון גדול, שניים זהים זה ניצחון קטן.
+• `$roulette סכום בחירות` (או `$rl`) – רולטה אירופאית לכמה שחקנים. הראשון שמהמר פותח סבב, וכולם מצטרפים ב-15 השניות הבאות עם אותה פקודה (הטיימר מוצג בהודעה). אפשר עד 5 בחירות מופרדות בפסיק, והסכום מתחלק ביניהן שווה בשווה, למשל `$roulette all 0,red,6,odd,1-12`. מספר בודד 0-36 משלם x36. `red` / `black` / `even` / `odd` / `1-18` / `19-36` משלמים x2. `1-12` / `13-24` / `25-36` וגם העמודות `1st` / `2nd` / `3rd` משלמים x3.
+• `$hl` (או `$high-low`) – גבוה או נמוך. מנחשים אם המספר הבא (1-100) יהיה Higher, Same או Lower. ככל שהניחוש פחות סביר הוא משלם יותר, ו-Same משלם x25.
 • `$ht` – עץ או פלי. בוחרים Head או Tail בכפתור.
 • `$cf` – קרב תרנגולות. הסיכוי לנצח מתחיל ב-50%, עולה ב-1% אחרי כל ניצחון עד מקסימום 84%, וחוזר ל-50% אחרי הפסד.
-• `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה, כל שורה מעלה את המכפיל (x1.3, x1.7, x2.2, x2.9, x4.5), ובשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
-• `$scratch [סכום]` – כרטיסי גירוד אמיתיים ממלאי מוגבל (ים המלח, יום העצמאות, פלאפל בפיתה, ליגת העל). בוחרים כרטיס בכפתור. אפשר לבחור סכום (`$scratch 5m`), והתשלום נלקח מהמזומן ואז מהבנק. בלי סכום, המחיר עולה ככל שנמכרים יותר כרטיסים, ופלאפל וליגת העל מתאפסים כל שבוע. `$cards` מציג את המלאי.
+• `$mt` – מגדל כסף. 5 שורות של 3 משבצות ובכל שורה פצצה אחת. מטפסים מלמטה למעלה וכל שורה מעלה את המכפיל. בשורה החמישית יש Cashout אוטומטי. אפשר גם `$moneytower`.
+• `$scratch [סכום]` – כרטיסי גירוד ממלאי מוגבל (ים המלח, יום העצמאות, פלאפל בפיתה, ליגת העל). התשלום מהמזומן ואז מהבנק. `$cards` מציג את המלאי."""
 
-**💰 כלכלה**
+INFO_REST = """**💰 כלכלה**
 • `$bal [@user]` – כסף בחוץ ובבנק.
-• `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו (למשל `$with 1e5`).
+• `$dep` / `$with` – הפקדה לבנק ומשיכה ממנו.
 • `$work` / `$crime` – הרווחה מהירה, פעם בשתי דקות.
-• `$rob @user` – שוד. קולדאון 6 דקות ושודדים 80% מהמזומן של הקורבן בלבד – הכסף שבבנק מוגן ולא ניתן לשדוד אותו. למי שיש כסף יש 45% להיתפס ולהתאפס. שוד של מישהו בלי מזומן תמיד נכשל.
+• `$rob @user` – שוד. קולדאון 6 דקות ושודדים 80% מהמזומן של הקורבן בלבד (הבנק מוגן). למי שיש כסף יש 45% להיתפס ולהתאפס.
 • `$pay @user סכום` – העברת כסף לשחקן אחר.
-• `$top` / `$lb` – טבלת העשירים עם כפתורי Bank, Total, Cash ודפים.
-• `$shop` – חנות רולים. קונים רול בכפתור, התשלום רק מהכסף שבבנק, וכל רול אפשר לקנות פעם אחת בלבד.
+• **ריפליי:** אפשר לעשות ריפליי לשחקן (עם תיוג ON) ולכתוב `$rob a` / `$pay a סכום` / `$bal a` במקום לתייג.
+• `$top` / `$lb` – טבלת העשירים.
+• `$shop` – חנות רולים. התשלום רק מהבנק, וכל רול נקנה פעם אחת.
 
 **🛠 צוות** (אדמין או רול צוות)
-• `$addmoney` / `$removemoney bank|cash @user סכום` – הוספה או הורדה של כסף.
+• `$addmoney bank|cash @user סכום` – הוספת כסף (מוגבל לפי `$setaddmoney`).
+• `$resetmoney bank|cash|all @user [סכום]` – איפוס כסף של שחקן (ל-0, או לסכום שכתבת).
 • `$addmoneyrole bank|cash @role סכום` – הוספת כסף לכל חברי הרול.
 • `$set-currency אימוג'י` – שינוי סמל המטבע.
 
 **⚙️ אדמין**
 • `$staff-role @role` – קובע איזה רול נחשב צוות.
-• `$setgamelogs #channel` – קובע את חדר הלוגים: ניצחונות, הפסדים והוספת או הורדת כסף.
+• `$setgamelogs #channel` – חדר הלוגים.
 • `$info` – ההודעה הזאת.
 
 **👑 בעלים**
-• `$disable פקודה` – חוסם פקודה, והבוט לא מגיב עליה בכלל.
-• `$undisable פקודה | all` – משחרר חסימה.
-
-הבוט עובד רק בחדרים המיועדים."""
+• `$setchannels #a #b #c` – החדרים שבהם הבוט עובד (כמה שרוצים).
+• `$setaddmoney מקסימום` – כמה צוות יכול להוסיף בפקודה אחת (`off` מבטל).
+• `$reset-economy` – מאפס את הכסף (מזומן ובנק) של כל השחקנים, עם כפתור אישור.
+• `$disable פקודה` / `$undisable פקודה | all` – חסימה ושחרור של פקודה."""
 
 @bot.command(name="info")
 @commands.has_permissions(administrator=True)
 async def info(ctx):
-    await ctx.reply(embed=make_embed(ctx.author, INFO, BLUE, "מדריך הבוט"), mention_author=False)
+    await ctx.reply(embed=make_embed(ctx.author, INFO_GAMES, BLUE, "מדריך הבוט"), mention_author=False)
+    await ctx.send(embed=discord.Embed(description=INFO_REST, color=BLUE))
 
 bot.run(TOKEN)
