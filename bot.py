@@ -534,8 +534,9 @@ class BoardView(discord.ui.View):
         self.cash_btn.disabled = True
 
     def final_view(self, lost):
-        """After a cashout of a hidden-board game (mines, S$mines, mt) the board and the buttons disappear."""
-        return self if (lost or self.reveal_on_cashout) else None
+        """When the game ends, hidden-board games (mines, S$mines, mt) remove the board and the buttons
+        (both after a loss and after a cashout). Only games that reveal the board (gm) keep the view."""
+        return self if self.reveal_on_cashout else None
 
     def embed(self, lost):
         """Same message in every board game (gm, mines, S$mines)."""
