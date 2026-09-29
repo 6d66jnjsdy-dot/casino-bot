@@ -78,6 +78,7 @@ SCRATCH_CARDS = {
 }
 
 CF_MIN, CF_MAX = 50, 84
+CF_HIDDEN = 1   # hidden bonus: the real chance is 1% higher than what the message shows
 ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360   # only cash can be robbed, the bank is safe
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
@@ -1460,13 +1461,13 @@ async def cf(ctx, amount: str = None):
         return
     u, c = user_data(ctx.author.id), cur()
     strength = max(CF_MIN, min(CF_MAX, u.get("chicken", CF_MIN)))
-    won = random.randint(1, 100) <= strength
+    won = random.randint(1, 100) <= strength + CF_HIDDEN   # the shown % is 1 lower than the real chance
     if won:
         u["cash"] += bet * 2
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n\n"
-                f"Your chicken's strength (chance of winning): {strength}%\n"
-                f"You now have {fmt(u['cash'])} {c}")
+        desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n"
+                f"**Your chicken's strength (chance of winning): {strength}%\n"
+                f"You now have {fmt(u['cash'])} {c}**")
         color = GREEN
     else:
         u["chicken"] = CF_MIN
@@ -1533,9 +1534,15 @@ class HigherLower(discord.ui.View):
         BUSY.discard(self.user.id)
         self.stop()
         cash = user_data(self.user.id)["cash"]
-        line = f"+ You Won {fmt(net)}!" if net > 0 else f"- You Lost {fmt(self.bet)}!"
-        extra = f"You chose **{choice.capitalize()}**\n```diff\n{line}\n```\nYou now have {fmt(cash)} {cur()}.\n\n"
-        await interaction.response.edit_message(embed=self.embed(second, extra, GREEN if won else RED), view=None)
+        head = f"You won {fmt(net)} {cur()}!" if net > 0 else f"You lost {fmt(self.bet)} {cur()}."
+        e = discord.Embed(color=GREEN if won else RED, description=(
+            f"🎲 Game Over 🎲\n\n"
+            f"**{head}**\n"
+            f"**Your Choice:** `{choice}`\n\n"
+            f"1️⃣: `{self.first}`\n"
+            f"2️⃣: `{second}`\n\n"
+            f"**Balance:** `{fmt(cash)} {cur()}`"))
+        await interaction.response.edit_message(embed=e, view=None)
 
     @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
     async def higher(self, interaction, button):
