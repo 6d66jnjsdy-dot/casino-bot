@@ -67,34 +67,6 @@ MT_SAFE = "💲"
 MULTI_MAX = 5
 MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch")
 
-# ---------- SCRATCH CARDS (a real, limited stock) ----------
-SCRATCH_CARDS = {
-    "deadsea": {
-        "name": "🏜️ ים המלח", "total": 750, "weekly": False, "price": (5_000_000, 45_000_000),
-        "wins": {15: 1, 1.7: 20, 1.3: 50, 1.2: 50, 0.5: 80, 0.2: 150},
-        "symbols": {15: "💎", 1.7: "🐪", 1.3: "⛰️", 1.2: "🧂", 0.5: "🌵", 0.2: "🌊"},
-        "duds": ["🪨", "☀️"],
-    },
-    "independence": {
-        "name": "🇮🇱 יום העצמאות", "total": 250, "weekly": False, "price": (20_000_000, 100_000_000),
-        "wins": {28.5: 1, 1.6: 20, 0.5: 20},
-        "symbols": {28.5: "🇮🇱", 1.6: "🎆", 0.5: "🍖"},
-        "duds": ["🥁", "🔥", "🎈", "🎇"],
-    },
-    "falafel": {
-        "name": "🧆 פלאפל בפיתה", "total": 375, "weekly": True, "price": (5_000_000, 650_000_000),
-        "wins": {50: 1, 1.7: 75, 0.6: 20},
-        "symbols": {50: "🧆", 1.7: "🥙", 0.6: "🥒"},
-        "duds": ["🌶️", "🍅", "🧂", "🥕"],
-    },
-    "league": {
-        "name": "⚽ ליגת העל", "total": 5, "weekly": True, "price": (1_000_000, 5_000_000),
-        "wins": {85: 1},
-        "symbols": {85: "🏆"},
-        "duds": ["📣", "🧤", "🥅", "🟨", "⚽"],
-    },
-}
-
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1   # the real chance is strength + 1; the message now shows the REAL chance (strength + CF_HIDDEN)
 ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360   # only cash can be robbed, the bank is safe
@@ -296,13 +268,13 @@ def cancel_game(user, token, bet):
         return_card(*rec["scratch"])
     pending_done(token)
     BUSY.discard(user.id)
-    user_data(user.id)["cash"] += bet
+    user_data(user.id)["bank" if rec.get("bank") else "cash"] += bet
     save()
 
 def refund_pending():
     pend = DB.get("pending") or {}
     for rec in pend.values():
-        user_data(rec["uid"])["cash"] += rec["bet"]
+        user_data(rec["uid"])["bank" if rec.get("bank") else "cash"] += rec["bet"]
         if rec.get("scratch"):
             return_card(*rec["scratch"])   # the unscratched card goes back into the stock
     if pend:
@@ -1684,91 +1656,187 @@ async def hl(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
         raise
 
-# ================= SCRATCH CARDS =================
-def week_id():
-    try:
-        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
-    except Exception:
-        now = datetime.now(timezone.utc)
-    y, w, _ = now.isocalendar()
-    return f"{y}-W{w}"
+# ================= SCRATCH CARDS ($sc) =================
+# pictures live in scratch_art.py (must sit next to this file)
+try:
+    from scratch_art import ART as SC_ART
+except Exception as _e:
+    print("scratch_art.py not loaded, scratch cards disabled:", repr(_e))
+    SC_ART = {}
 
-def build_stock(key):
-    c = SCRATCH_CARDS[key]
-    pool = [m for m, n in c["wins"].items() for _ in range(n)]
-    pool += [0] * (c["total"] - len(pool))   # everything else = total loss
-    random.shuffle(pool)
-    return {"left": pool, "sold": 0, "week": week_id()}
+SC_WIDTH = 560
+SC_PAY_TO = "bank"     # where the winnings go ("bank" or "cash"). The purchase is ALWAYS taken from the bank.
 
-def get_stock(key):
-    c = SCRATCH_CARDS[key]
-    scratch = DB.setdefault("scratch", {})
-    st = scratch.get(key)
-    if st is None or (c["weekly"] and st.get("week") != week_id()):
-        st = scratch[key] = build_stock(key)
+# spots = (x, y, radius) on the ORIGINAL picture ("orig" = width, height of the picture used)
+SC_CARDS = {
+    "queen": {
+        "name": "מלכת הלבבות", "emoji": "♥️", "min": 2_500_000, "total": 350, "cols": 5,
+        "wins": {2.3: 50, 1.7: 25, 1.5: 50, 0.5: 25, 25: 1},
+        "orig": (800, 950), "spots": [(412, 612, 102), (622, 612, 102), (195, 835, 102), (405, 835, 102), (620, 835, 102)],
+    },
+    "casino": {
+        "name": "קזינו גלגל הרולטה", "emoji": "🎰", "min": 25_000_000, "total": 200, "cols": 4,
+        "wins": {3.5: 5, 1.3: 50, 5: 10, 45: 1},
+        "orig": (1289, 1542),
+        "spots": [(x, y, 67) for y in (1138, 1340) for x in (1068, 898, 733, 567, 396, 228)],
+    },
+    "safe": {
+        "name": "כספת", "emoji": "🔐", "min": 5_000_000, "total": 350, "cols": 3,
+        "wins": {1.2: 100, 1.5: 50, 2: 25, 30: 1},
+        "orig": (1289, 1526),
+        "spots": [(x, y, 68) for y in (1035, 1340) for x in (935, 665, 395)],
+    },
+    "club": {
+        "name": "הקלף", "emoji": "♣️", "min": 50_000_000, "total": 50, "cols": 4,
+        "wins": {2: 5, 7: 2, 60: 1},
+        "orig": (1289, 1580), "spots": [(640, 640, 120), (440, 930, 120), (840, 930, 120), (640, 1140, 85)],
+    },
+}
+SC_DECOYS = [0.3, 0.5, 0.8, 1.1, 1.3, 1.5, 1.7, 2, 2.3, 3, 3.5, 4, 5, 7, 10, 15, 25]
+
+def sc_short(n):
+    return f"{n / 1_000_000:g}M"
+
+# ---------- the real, limited stock ----------
+def sc_stock(key):
+    c = SC_CARDS[key]
+    store = DB.setdefault("sc_stock", {})
+    st = store.get(key)
+    if st is None:
+        pool = [m for m, n in c["wins"].items() for _ in range(n)]
+        pool += [0] * (c["total"] - len(pool))      # everything else = total loss
+        random.shuffle(pool)
+        st = store[key] = {"left": pool, "sold": 0}
         save()
     return st
 
-def card_price(key):
-    c, st = SCRATCH_CARDS[key], get_stock(key)
-    lo, hi = c["price"]
-    return int(lo + (hi - lo) * min(st["sold"], c["total"] - 1) / max(1, c["total"] - 1))
-
 def return_card(key, mult):
-    st, c = DB.get("scratch", {}).get(key), SCRATCH_CARDS.get(key)
-    if not st or not c or (c["weekly"] and st.get("week") != week_id()):
+    """An unscratched card goes back into the stock (used by cancel_game / refund_pending)."""
+    st, c = DB.get("sc_stock", {}).get(key), SC_CARDS.get(key)
+    if not st or not c or len(st["left"]) >= c["total"]:
         return
     st["left"].insert(random.randint(0, len(st["left"])), mult)
     st["sold"] = max(0, st["sold"] - 1)
 
-def stock_lines(amount=None):
-    lines = []
-    for key, c in SCRATCH_CARDS.items():
-        st = get_stock(key)
-        left = len(st["left"])
-        price = amount or card_price(key)
-        lines.append(f"**{c['name']}**{' 🔁 weekly' if c['weekly'] else ''}\n"
-                     f"Price: **{fmt(price)}** {cur()} • Left: **{left}/{c['total']}**"
-                     + (" • ❌ SOLD OUT" if not left else "") + f" • Top prize: **x{max(c['wins']):g}**")
-    return "\n\n".join(lines)
+def sc_labels(n, mult):
+    """Winning card: exactly 3 equal multipliers. Losing card: no multiplier appears more than twice."""
+    decoys = [d for d in SC_DECOYS if d != mult]
+    out, counts = ([mult] * 3 if mult else []), {}
+    while len(out) < n:
+        d = random.choice(decoys)
+        if counts.get(d, 0) < 2:
+            counts[d] = counts.get(d, 0) + 1
+            out.append(d)
+    random.shuffle(out)
+    return out
 
-def scratch_board(card, mult):
-    sym = card["symbols"].get(mult)
-    others = [s for s in list(card["symbols"].values()) + card["duds"] if s != sym]
-    pool = others * 2
-    random.shuffle(pool)
-    cells = ([sym] * 3 if sym else []) + pool[:9 - (3 if sym else 0)]
-    random.shuffle(cells)
-    return cells
+# ---------- pictures ----------
+# --- render start ---
+@lru_cache(maxsize=None)
+def sc_base(key):
+    c = SC_CARDS[key]
+    im = Image.open(io.BytesIO(base64.b64decode(SC_ART[key]))).convert("RGB")
+    return im.resize((SC_WIDTH, round(SC_WIDTH * c["orig"][1] / c["orig"][0])), Image.LANCZOS)
+
+@lru_cache(maxsize=None)
+def sc_disc(r):
+    S = r * 2 + 2
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    for i in range(r, 0, -1):
+        g = int(125 + 105 * (1 - i / r) ** 0.8)
+        d.ellipse([r + 1 - i, r + 1 - i, r + 1 + i, r + 1 + i], fill=(g, g, g + 8, 255))
+    rng = random.Random(r)
+    for _ in range(16):
+        a, b = rng.uniform(-0.6, 0.6) * r, rng.uniform(-0.6, 0.6) * r
+        L = rng.uniform(0.15, 0.4) * r
+        d.line([(r + a, r + b), (r + a + L, r + b - L * 0.5)], fill=(245, 245, 250, 150), width=2)
+    d.ellipse([1, 1, S - 2, S - 2], outline=(70, 70, 80, 255), width=3)
+    return im
+
+def sc_render(key, labels, revealed, final=False, mult=0):
+    c = SC_CARDS[key]
+    base = sc_base(key).copy().convert("RGBA")
+    k = base.width / c["orig"][0]
+    d = ImageDraw.Draw(base)
+    for i, (x, y, r) in enumerate(c["spots"]):
+        cx, cy, rr = int(x * k), int(y * k), int(r * k)
+        if i in revealed:
+            win = bool(final and mult and labels[i] == mult)
+            d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=(18, 18, 26, 235),
+                      outline=(90, 255, 120, 255) if win else (235, 190, 60, 255), width=5 if win else 3)
+            text = f"x{labels[i]:g}"
+            fs = int(rr * (0.7 if len(text) <= 3 else 0.55))
+            d.text((cx, cy), text, font=get_font(fs), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 255),
+                   fill=(90, 255, 120, 255) if win else (255, 255, 255, 255))
+        else:
+            base.alpha_composite(sc_disc(rr), (cx - rr - 1, cy - rr - 1))
+            d.text((cx, cy), str(i + 1), font=get_font(int(rr * 0.9)), fill=(60, 60, 72, 255), anchor="mm")
+    buf = io.BytesIO()
+    base.convert("RGB").save(buf, "JPEG", quality=88)
+    buf.seek(0)
+    return buf
+
+@lru_cache(maxsize=1)
+def sc_banner():
+    tw, th = 220, 250
+    im = Image.new("RGB", (tw * 4 + 6, th), (24, 24, 28))
+    for i, key in enumerate(SC_CARDS):
+        b = sc_base(key)
+        t = b.resize((tw, round(b.height * tw / b.width)), Image.LANCZOS).crop((0, 0, tw, th))
+        im.paste(t, (i * (tw + 2), 0))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=88)
+    return buf.getvalue()
+# --- render end ---
+
+# ---------- the game ----------
+class SpotButton(discord.ui.Button):
+    def __init__(self, idx, row):
+        super().__init__(style=discord.ButtonStyle.secondary, label=str(idx + 1), row=row)
+        self.idx = idx
+
+    async def callback(self, interaction):
+        await self.view.click(interaction, self.idx)
 
 class ScratchView(OwnedView):
+    touch = True
+
     def __init__(self, user, bet, key, mult, token=None):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.user, self.bet, self.key, self.mult, self.token = user, bet, key, mult, token
-        self.card = SCRATCH_CARDS[key]
-        self.board = scratch_board(self.card, mult)
-        self.revealed, self.done, self.message = set(), False, None
+        self.card = SC_CARDS[key]
+        self.n = len(self.card["spots"])
+        self.labels = sc_labels(self.n, mult)
+        self.revealed, self.done, self.message, self.render_n = set(), False, None, 0
         self.version, self.edit_lock = 0, asyncio.Lock()
-        self.tiles = [Tile(i, 3) for i in range(9)]
-        for t in self.tiles:
-            t.emoji = "🎟️"
-        self.all_btn = discord.ui.Button(style=discord.ButtonStyle.success, label="Scratch all", row=3)
+        cols = self.card["cols"]
+        self.spot_btns = [SpotButton(i, i // cols) for i in range(self.n)]
+        self.all_btn = discord.ui.Button(style=discord.ButtonStyle.success, label="גרד הכל", row=math.ceil(self.n / cols))
         self.all_btn.callback = self.settle
-        for b in (*self.tiles, self.all_btn):
+        for b in (*self.spot_btns, self.all_btn):
             self.add_item(b)
 
-    def info(self):
+    def image(self, final=False):
+        self.render_n += 1
+        name = f"sc{self.render_n}.jpg"
+        return discord.File(sc_render(self.key, self.labels, self.revealed, final, self.mult), name), name
+
+    def embed(self, name):
         c = self.card
-        prizes = "\n".join(
-            f"{s} ×3 → **x{m:g}**" + (" (partial refund)" if m < 1 else "")
-            for m, s in sorted(c["symbols"].items(), reverse=True))
-        return discord.Embed(color=YELLOW, title=f"🎟️ {c['name']}", description=(
-            f"You paid **{fmt(self.bet)}** {cur()}\n\nScratch and find **3 matching** symbols!\n\n{prizes}"))
+        prizes = " • ".join(f"x{m:g}" for m in sorted(c["wins"], reverse=True))
+        e = discord.Embed(color=YELLOW, title=f"🎟️ {c['name']}", description=(
+            f"שילמת **{fmt(self.bet)}** {cur()} מהבנק\n\n"
+            f"גרדו ומצאו **3 מכפילים זהים** כדי לזכות!\n"
+            f"מכפילים אפשריים: {prizes}\n\nנגרדו {len(self.revealed)}/{self.n}"))
+        e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
+        e.set_image(url=f"attachment://{name}")
+        return e
 
     def reveal(self, i):
-        t = self.tiles[i]
         self.revealed.add(i)
-        t.emoji, t.disabled, t.style = self.board[i], True, discord.ButtonStyle.primary
+        b = self.spot_btns[i]
+        b.label, b.disabled, b.style = f"x{self.labels[i]:g}", True, discord.ButtonStyle.primary
 
     async def click(self, interaction, idx):
         if not interaction.response.is_done():
@@ -1776,134 +1844,163 @@ class ScratchView(OwnedView):
         if self.done or idx in self.revealed:
             return
         self.reveal(idx)
-        if len(self.revealed) == 9:
+        if len(self.revealed) == self.n:
             return await self.settle(interaction)
         self.version += 1
         v = self.version
         async with self.edit_lock:
             if v != self.version or self.done:
                 return
-            await interaction.edit_original_response(view=self)
+            f, name = self.image()
+            await interaction.edit_original_response(embed=self.embed(name), attachments=[f], view=self)
 
     def finalize(self):
         self.done = True
-        for i in range(9):
+        for i in range(self.n):
             if i not in self.revealed:
                 self.reveal(i)
-        name, mult = self.card["name"], self.mult
-        sym = self.card["symbols"].get(mult)
-        if sym:
-            for i, s in enumerate(self.board):
-                if s == sym:
-                    self.tiles[i].style = discord.ButtonStyle.success if mult >= 1 else discord.ButtonStyle.danger
-            extra = f"**{name}**\n3 × {sym} → **x{mult:g}**\n\n"
-        else:
-            extra = f"**{name}**\nNo match this time.\n\n"
+        mult = self.mult
+        if mult:
+            for i, l in enumerate(self.labels):
+                if l == mult:
+                    self.spot_btns[i].style = discord.ButtonStyle.success if mult >= 1 else discord.ButtonStyle.danger
         returned = round(self.bet * mult)
         if returned > self.bet:                          # $multi bonus on a win (0 when off)
             returned += multi_extra("scratch", returned - self.bet)
         pending_done(self.token)
-        user_data(self.user.id)["cash"] += returned
+        u = user_data(self.user.id)
+        u[SC_PAY_TO] += returned
         save()
         net = returned - self.bet
-        log_game(self.user, f"scratch {name}", self.bet, net)
+        log_game(self.user, f"scratch {self.card['name']}", self.bet, net)
         self.all_btn.disabled = True
+        f, name = self.image(final=True)
         if net > 0:
-            return result_embed(self.user, True, net, extra)
-        if net < 0:
-            if returned:
-                extra += f"You got back {fmt(returned)} {cur()}.\n"
-            return result_embed(self.user, False, -net, extra)
-        return make_embed(self.user, f"{extra}```\nPush: your bet of {fmt(self.bet)} was returned\n```\n"
-                                     f"You now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
+            line, color = f"+ זכית ב-{fmt(net)}!", GREEN
+        elif net < 0:
+            line = f"- הפסדת {fmt(-net)}!" + (f" (קיבלת בחזרה {fmt(returned)})" if returned else "")
+            color = RED
+        else:
+            line, color = "הימור הוחזר", YELLOW
+        found = f"3 × x{mult:g}" if mult else "אין התאמה הפעם"
+        e = discord.Embed(color=color, title=f"🎟️ {self.card['name']}", description=(
+            f"{found}\n```diff\n{line}\n```\nיתרה בבנק: {fmt(u['bank'])} {cur()}"))
+        e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
+        e.set_image(url=f"attachment://{name}")
+        return e, f
 
     async def settle(self, interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
         if self.done:
             return
-        e = self.finalize()
+        e, f = self.finalize()
+        self.stop()
         async with self.edit_lock:
-            await interaction.edit_original_response(embed=e, view=self)
+            await interaction.edit_original_response(embed=e, attachments=[f], view=self)
 
     async def on_timeout(self):
         if self.done:
             return
-        e = self.finalize()
+        e, f = self.finalize()
         if self.message:
-            await self.message.edit(embed=e, view=self)
+            try:
+                await self.message.edit(embed=e, attachments=[f], view=self)
+            except Exception:
+                pass
 
-def spend(u, price):
-    if u["cash"] + u["bank"] < price:
-        return False
-    from_cash = min(u["cash"], price)
-    u["cash"] -= from_cash
-    u["bank"] -= price - from_cash
-    return True
+# ---------- the menu: "בחירת כרטיס גירוד" -> amount window ----------
+class AmountModal(discord.ui.Modal):
+    def __init__(self, menu, key):
+        c = SC_CARDS[key]
+        super().__init__(title=f"{c['name']} - כמה כסף?"[:45])
+        self.menu, self.key = menu, key
+        self.amount = discord.ui.TextInput(label=f"סכום מהבנק (מינימום {sc_short(c['min'])})"[:45],
+                                           placeholder="למשל: 5m או 2500000 או half או all", max_length=20)
+        self.add_item(self.amount)
 
-class ScratchMenu(discord.ui.View):
-    def __init__(self, user, amount=None):
+    async def on_submit(self, interaction):
+        menu, key, c, user = self.menu, self.key, SC_CARDS[self.key], self.menu.user
+        say = lambda t: interaction.response.send_message(t, ephemeral=True)
+        # no awaits between the checks and the purchase: two players can never get the same card
+        if menu.chosen:
+            return await say("כבר בחרת כרטיס.")
+        if user.id in BUSY:
+            return await say(BUSY_MSG)
+        st = sc_stock(key)
+        if not st["left"]:
+            return await say("הכרטיס הזה אזל מהמלאי ❌")
+        u = user_data(user.id)
+        price = parse_amount(self.amount.value.strip(), u["bank"])
+        if price is None or price <= 0:
+            return await say("סכום לא תקין. למשל: `5m`, `2500000`, `half` או `all`")
+        if price < c["min"]:
+            return await say(f"המינימום לכרטיס הזה הוא **{fmt(c['min'])}** {cur()}.")
+        if price > u["bank"]:
+            return await say(f"אין לך מספיק כסף **בבנק**. יש לך {fmt(u['bank'])} {cur()} (`$dep` להפקדה).")
+        u["bank"] -= price
+        menu.chosen = True
+        menu.stop()
+        mult = st["left"].pop()
+        for _ in range(luck_attempts(user.id) - 1):   # luck: take the best of a few cards from the stock
+            if st["left"]:
+                j = random.randrange(len(st["left"]))
+                if st["left"][j] > mult:
+                    st["left"][j], mult = mult, st["left"][j]
+        st["sold"] += 1
+        token = f"scr{interaction.id}"
+        DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": price, "scratch": [key, mult], "bank": True}
+        BUSY.add(user.id)
+        save()
+        try:
+            view = ScratchView(user, price, key, mult, token)
+            view.message = interaction.message or menu.message
+            f, name = view.image()
+            await interaction.response.edit_message(embed=view.embed(name), attachments=[f], view=view)
+        except Exception:
+            cancel_game(user, token, price)
+            raise
+
+class ScratchSelect(discord.ui.Select):
+    def __init__(self):
+        opts = []
+        for key, c in SC_CARDS.items():
+            left = len(sc_stock(key)["left"])
+            desc = f"מינימום {sc_short(c['min'])} • נותרו {left}/{c['total']}" if left else "אזל המלאי ❌"
+            opts.append(discord.SelectOption(label=c["name"], value=key, emoji=c["emoji"], description=desc))
+        super().__init__(placeholder="בחירת כרטיס גירוד", options=opts)
+
+    async def callback(self, interaction):
+        menu, key = self.view, self.values[0]
+        if menu.chosen:
+            return await interaction.response.defer()
+        if interaction.user.id in BUSY:
+            return await interaction.response.send_message(BUSY_MSG, ephemeral=True)
+        if not sc_stock(key)["left"]:
+            return await interaction.response.send_message("הכרטיס הזה אזל מהמלאי ❌", ephemeral=True)
+        await interaction.response.send_modal(AmountModal(menu, key))
+        try:
+            await interaction.message.edit(view=menu)   # clears the selection so the same card can be picked again
+        except Exception:
+            pass
+
+class ScratchMenu(OwnedView):
+    touch = True
+
+    def __init__(self, user):
         super().__init__(timeout=120)
-        self.user, self.amount, self.message, self.chosen = user, amount, None, False
-        for key, c in SCRATCH_CARDS.items():
-            left = len(get_stock(key)["left"])
-            b = discord.ui.Button(style=discord.ButtonStyle.primary if left else discord.ButtonStyle.secondary,
-                                  label=f"{c['name']} • {fmt(self.price(key))}"[:80], disabled=not left)
-            b.callback = self.pick(key)
-            self.add_item(b)
-
-    def price(self, key):
-        return self.amount or card_price(key)
+        self.user, self.message, self.chosen = user, None, False
+        self.add_item(ScratchSelect())
 
     def embed(self):
-        tip = "" if self.amount else "\n💡 Choose your own price: `$scratch 5m` (also `half` / `all`)"
-        return discord.Embed(color=YELLOW, title="🎟️ Scratch Cards",
-                             description=f"{stock_lines(self.amount)}\n\nPick a card below to buy it and scratch!\n"
-                                         f"Paid from your cash first, then from your bank.{tip}")
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("This is not your menu!", ephemeral=True)
-            return False
-        return True
-
-    def pick(self, key):
-        async def cb(interaction):
-            if self.chosen:
-                if not interaction.response.is_done():
-                    await interaction.response.defer()
-                return
-            # no awaits between the checks and the purchase: two players can never get the same card
-            if self.user.id in BUSY:
-                return await interaction.response.send_message(BUSY_MSG, ephemeral=True)
-            st = get_stock(key)
-            if not st["left"]:
-                return await interaction.response.send_message("This card is sold out.", ephemeral=True)
-            price, u = self.price(key), user_data(self.user.id)
-            if not spend(u, price):
-                return await interaction.response.send_message(
-                    f"You need **{fmt(price)}** {cur()} (cash + bank) for this card.", ephemeral=True)
-            self.chosen = True
-            self.stop()
-            mult = st["left"].pop()
-            for _ in range(luck_attempts(self.user.id) - 1):   # luck: take the best of a few cards from the stock
-                if st["left"]:
-                    j = random.randrange(len(st["left"]))
-                    if st["left"][j] > mult:
-                        st["left"][j], mult = mult, st["left"][j]
-            st["sold"] += 1
-            token = f"scr{interaction.id}"
-            DB.setdefault("pending", {})[token] = {"uid": str(self.user.id), "bet": price, "scratch": [key, mult]}
-            BUSY.add(self.user.id)
-            save()
-            try:
-                view = ScratchView(self.user, price, key, mult, token)
-                view.message = interaction.message
-                await interaction.response.edit_message(embed=view.info(), view=view)
-            except Exception:
-                cancel_game(self.user, token, price)
-                raise
-        return cb
+        lines = []
+        for key, c in SC_CARDS.items():
+            left = len(sc_stock(key)["left"])
+            lines.append(f"{c['emoji']} **{c['name']}** — מינימום {sc_short(c['min'])} • " + (f"נותרו {left}/{c['total']}" if left else "אזל ❌"))
+        e = discord.Embed(color=YELLOW, title="🎟️ כרטיסי גירוד", description=(
+            "\n".join(lines) + "\n\nבחרו כרטיס מהרשימה, ואז הקלידו כמה כסף לשלם.\nהתשלום יורד **מהבנק בלבד**."))
+        e.set_image(url="attachment://sc_menu.jpg")
+        return e
 
     async def on_timeout(self):
         if self.chosen or not self.message:
@@ -1915,22 +2012,23 @@ class ScratchMenu(discord.ui.View):
         except Exception:
             pass
 
-@bot.command(name="scratch", aliases=["sc"], usage="scratch [amount | half | all]")
-async def scratch(ctx, amount: str = None):
+@bot.command(name="scratch", aliases=["sc"], usage="sc")
+async def scratch(ctx, sub: str = None):
+    if sub and sub.lower() in ("restart", "reset"):       # owner only: every card is back in stock
+        if ctx.author.id != OWNER_ID:
+            return
+        DB["sc_stock"] = {}
+        for k in SC_CARDS:
+            sc_stock(k)
+        save()
+        return await reply(ctx, "🎟️ כל כרטיסי הגירוד אופסו: כל הכרטיסים חזרו למלאי.", GREEN)
     if ctx.author.id in BUSY:
         return await reply(ctx, BUSY_MSG, RED)
-    amt = None
-    if amount is not None:
-        u = user_data(ctx.author.id)
-        amt = parse_amount(amount, u["cash"] + u["bank"])
-        if amt is None or amt < MIN_BET:
-            return await reply(ctx, f"Usage: `$scratch [amount | half | all]` (min {MIN_BET})", RED)
-    view = ScratchMenu(ctx.author, amt)
-    view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
-
-@bot.command(name="cards")
-async def cards(ctx):
-    await reply(ctx, f"**🎟️ Scratch cards**\n\n{stock_lines()}\n\nPlay: `$scratch`", BLUE)
+    if not SC_ART:
+        return await reply(ctx, "scratch_art.py is missing next to the bot file.", RED)
+    view = ScratchMenu(ctx.author)
+    view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(sc_banner()), "sc_menu.jpg"),
+                                   view=view, mention_author=False)
 
 # ================= ECONOMY =================
 async def resolve_target(ctx, arg):
@@ -2241,16 +2339,6 @@ def is_staff(ctx):
 admin_only = commands.check(admin_or_owner)
 staff_only = commands.check(is_staff)
 owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)
-
-# (moved here from the scratch cards section: staff_only must exist before it is used as a decorator)
-@bot.command(name="resetscratch", aliases=["resetcards", "refreshscratch"], usage="resetscratch")
-@staff_only
-async def resetscratch(ctx):
-    DB["scratch"] = {}
-    for key in SCRATCH_CARDS:
-        get_stock(key)
-    save()
-    await reply(ctx, "🎟️ The scratch cards were renewed: every card is back in stock.", GREEN)
 
 @bot.command(name="staff-role", usage="staff-role @role")
 @admin_only
@@ -2619,8 +2707,8 @@ INFO_SECTIONS = [
         "דוגמה: `$roulette all 0,red,6,odd`",
         "בחירות: מספר 0-36, `red`, `black`, `even`, `odd`, `1-18`, `19-36`, `1-12`, `13-24`, `25-36`, `1st`, `2nd`, `3rd`"]),
     ("🎟️ כרטיסי גירוד", [
-        "`$scratch [סכום]` (או `$sc`) – קונים כרטיס וגורדים",
-        "`$cards` – מלאי הכרטיסים שנשארו"]),
+        "`$sc` – בוחרים כרטיס מהרשימה, מקלידים סכום (מהבנק בלבד) וגורדים",
+        "מלכת הלבבות • קזינו גלגל הרולטה • כספת • הקלף"]),
     ("💰 כלכלה", [
         "`$bal [@user]` – מזומן ובנק",
         "`$dep` / `$with` – הפקדה לבנק ומשיכה",
@@ -2640,7 +2728,6 @@ AINFO_SECTIONS = [
         "`$addmoney <bank|cash> @user <סכום>` – הוספת כסף",
         "`$addmoneyrole <bank|cash> @role <סכום>` – כסף לכל חברי הרול",
         "`$resetmoney <bank|cash|all> @user [סכום]` – איפוס כסף של שחקן",
-        "`$resetscratch` – מחזיר את כל כרטיסי הגירוד למלאי",
         "`$set-currency <אימוג'י>` – שינוי סמל המטבע"]),
     ("⚙️ אדמין", [
         "`$staff-role @role` – קובע איזה רול נחשב צוות",
@@ -2649,6 +2736,7 @@ AINFO_SECTIONS = [
         "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
         "`$multi <משחק|all> <1-5|off> [זמן]` – מכפיל לרווח נטו בכל ניצחון (זמן: 10m, 2h, 1d)",
         "`$luck <1-10>x [זמן]` – מזל רק לבעלים (`$luck off` מבטל)",
+        "`$sc restart` – מחזיר את כל כרטיסי הגירוד למלאי",
         "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
         "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
     ("🧩 פקודות עם !", [
