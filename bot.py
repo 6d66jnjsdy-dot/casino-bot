@@ -233,16 +233,21 @@ def log_event(user, text, color):
 def log_game(user, game, bet, net):
     cash = user_data(user.id)["cash"]
     if net > 0:
-        text, color = f"🟢 **{game}** — won **+{fmt(net)}**" + (f" (bet {fmt(bet)})" if bet else ""), GREEN
+        icon, result, color = "🟢", f"ניצחון **+{fmt(net)}**", GREEN
     elif net < 0:
-        text, color = f"🔴 **{game}** — lost **{fmt(-net)}**", RED
+        icon, result, color = "🔴", f"הפסד **-{fmt(-net)}**", RED
     else:
-        text, color = f"🟡 **{game}** — push (bet {fmt(bet)} returned)", YELLOW
-    log_event(user, f"{text}\nBalance: {fmt(cash)} {cur()}", color)
+        icon, result, color = "🟡", "תיקו – ההימור הוחזר", YELLOW
+    lines = [f"{icon} **{game}**"]
+    if bet:
+        lines.append(f"הימור: **{fmt(bet)}** {cur()}")
+    lines.append(f"תוצאה: {result} {cur()}" if net else f"תוצאה: {result}")
+    lines.append(f"יתרה במזומן: **{fmt(cash)}** {cur()}")
+    log_event(user, "\n".join(lines), color)
 
 def log_money(user, text, color=BLUE):
     u = user_data(user.id)
-    log_event(user, f"{text}\nCash: {fmt(u['cash'])} | Bank: {fmt(u['bank'])} {cur()}", color)
+    log_event(user, f"{text}\nמזומן: **{fmt(u['cash'])}** • בנק: **{fmt(u['bank'])}** {cur()}", color)
 
 # ---------- owner tools ($predict / $touch), not shown in $info ----------
 def board_text(view):
@@ -381,6 +386,10 @@ async def setup_hook():
     disk_loop.start()
     backup_loop.start()
     bot.add_view(ShopView())   # shop buttons keep working after a restart
+    try:
+        await bot.load_extension("extras")   # extras.py: !set-role-member, !clear, anti-bot protection
+    except Exception as ex:
+        print("extras.py failed to load:", repr(ex))
     try:
         asyncio.get_running_loop().add_signal_handler(
             signal.SIGTERM, lambda: asyncio.create_task(graceful_shutdown()))
@@ -2345,53 +2354,76 @@ for _n, _k, _on, _t in (
         ("untouch", "touch", False, "👆 Touch is OFF.")):
     bot.command(name=_n)(owner_only(secret_cmd(_k, _on, _t)))
 
-INFO = """**🎮 משחקים** (הימור: סכום / `half` / `all`, אפשר גם `5k`, `2.5m`, `1e5`)
-• `$gm` – לוח עם אוצרות ופצצות, חושפים ואפשר Cashout בכל רגע.
-• `$mines` – לוח עם פצצה אחת, כל יהלום מגדיל את הרווח.
-• `S$mines` – כמו mines, עם בחירת גודל לוח.
-• `$mt` (או `$moneytower`) – מגדל כסף, מטפסים שורה אחרי שורה.
-• `$bj` – בלאק ג'ק.
-• `$slots` – מכונת סלוטים.
-• `$roulette סכום בחירות` (או `$rl`) – רולטה. אפשר לבחור 1, 2 או 4 בחירות מופרדות בפסיק והסכום מתחלק ביניהן, למשל `$roulette all 0,red,6,odd`. בחירות: מספר 0-36, `red`, `black`, `even`, `odd`, `1-18`, `19-36`, `1-12`, `13-24`, `25-36`, `1st`, `2nd`, `3rd`.
-• `$hl` – גבוה או נמוך.
-• `$ht` – עץ או פלי.
-• `$cf` – קרב תרנגולות.
-• `$scratch [סכום]` (או `$sc all`) – כרטיסי גירוד. `$cards` מציג את המלאי.
+def info_embed(user, title, description, sections):
+    e = discord.Embed(title=title, description=description, color=BLUE)
+    e.set_author(name=user.name, icon_url=user.display_avatar.url)
+    for name, lines in sections:
+        e.add_field(name=name, value="\n".join(lines), inline=False)
+    return e
 
-**💰 כלכלה**
-• `$bal [@user]` – כסף בחוץ ובבנק.
-• `$dep` / `$with` – הפקדה לבנק ומשיכה.
-• `$work` / `$crime` – הרווחה מהירה.
-• `$rob @user` – שוד מזומן של שחקן אחר.
-• `$pay @user סכום` – העברת כסף.
-• ריפליי לשחקן עם תיוג ON: `$rob a` / `$pay a סכום` / `$bal a`.
-• `$top` / `$lb` – טבלת העשירים.
-• `$shop` – חנות רולים."""
+INFO_SECTIONS = [
+    ("🎮 משחקי לוח", [
+        "`$gm` – חושפים אוצרות ופצצות, ואפשר לצאת עם Cashout בכל רגע",
+        "`$mines` – פצצה אחת, כל יהלום מעלה את הרווח",
+        "`S$mines` – כמו mines עם בחירת גודל לוח",
+        "`$mt` – מגדל כסף, מטפסים שורה אחרי שורה"]),
+    ("🃏 קלפים ומזל", [
+        "`$bj` – בלאק ג'ק",
+        "`$slots` – מכונת סלוטים",
+        "`$hl` – גבוה או נמוך",
+        "`$ht` – עץ או פלי",
+        "`$cf` – קרב תרנגולות"]),
+    ("🎡 רולטה", [
+        "`$roulette <סכום> <בחירות>` (או `$rl`)",
+        "אפשר 1, 2 או 4 בחירות מופרדות בפסיק, והסכום מתחלק ביניהן",
+        "דוגמה: `$roulette all 0,red,6,odd`",
+        "בחירות: מספר 0-36, `red`, `black`, `even`, `odd`, `1-18`, `19-36`, `1-12`, `13-24`, `25-36`, `1st`, `2nd`, `3rd`"]),
+    ("🎟️ כרטיסי גירוד", [
+        "`$scratch [סכום]` (או `$sc`) – קונים כרטיס וגורדים",
+        "`$cards` – מלאי הכרטיסים שנשארו"]),
+    ("💰 כלכלה", [
+        "`$bal [@user]` – מזומן ובנק",
+        "`$dep` / `$with` – הפקדה לבנק ומשיכה",
+        "`$work` / `$crime` – הרווחה מהירה",
+        "`$rob @user` – שוד מזומן של שחקן אחר",
+        "`$pay @user <סכום>` – העברת כסף",
+        "`$top` / `$lb` – טבלת העשירים",
+        "`$shop` – חנות רולים"]),
+    ("💡 טיפים", [
+        "סכום: מספר, `half`, `all`, או `5k` / `2.5m` / `1b`",
+        "אפשר גם ריפליי לשחקן עם תיוג **ON** ואז `$rob a` / `$pay a <סכום>` / `$bal a`"]),
+]
 
-AINFO = """**🛠 צוות** (אדמין או רול צוות)
-• `$addmoney bank|cash @user סכום` – הוספת כסף (מוגבל לפי `$setaddmoney`).
-• `$resetmoney bank|cash|all @user [סכום]` – איפוס כסף של שחקן.
-• `$addmoneyrole bank|cash @role סכום` – הוספת כסף לכל חברי הרול.
-• `$resetscratch` – מחדש את כל כרטיסי הגירוד.
-• `$set-currency אימוג'י` – שינוי סמל המטבע.
-
-**⚙️ אדמין**
-• `$staff-role @role` – קובע איזה רול נחשב צוות.
-• `$setgamelogs #channel` – חדר הלוגים.
-
-**👑 בעלים**
-• `$setchannels #a #b #c` – החדרים שבהם הבוט עובד (`clear` מחזיר לכל החדרים).
-• `$setaddmoney מקסימום` – כמה צוות יכול להוסיף בפקודה אחת (`off` מבטל).
-• `$reset-economy` – מאפס את הכסף של כל השחקנים, עם כפתור אישור.
-• `$disable פקודה` / `$undisable פקודה | all` – חסימה ושחרור של פקודה."""
+AINFO_SECTIONS = [
+    ("🛠 צוות (אדמין או רול צוות)", [
+        "`$addmoney <bank|cash> @user <סכום>` – הוספת כסף",
+        "`$addmoneyrole <bank|cash> @role <סכום>` – כסף לכל חברי הרול",
+        "`$resetmoney <bank|cash|all> @user [סכום]` – איפוס כסף של שחקן",
+        "`$resetscratch` – מחזיר את כל כרטיסי הגירוד למלאי",
+        "`$set-currency <אימוג'י>` – שינוי סמל המטבע"]),
+    ("⚙️ אדמין", [
+        "`$staff-role @role` – קובע איזה רול נחשב צוות",
+        "`$setgamelogs #channel` – חדר הלוגים"]),
+    ("👑 בעלים", [
+        "`$setchannels #a #b #c` – החדרים שבהם הבוט עובד (`clear` = כל החדרים)",
+        "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
+        "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
+        "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
+    ("🧩 פקודות עם !", [
+        "`!set-role-member` – פאנל עם כפתור לקבלת רול (אדמין, בחדר שהוגדר)",
+        "`!clear <כמות>` – מוחק עד 350 הודעות (רק למי שיש את רול המחיקה)",
+        "🛡️ הגנה: מי שמוסיף בוט לשרת מועף, והבוט מועף איתו"]),
+]
 
 @bot.command(name="info")
 async def info(ctx):
-    await ctx.reply(embed=make_embed(ctx.author, INFO, BLUE, "מדריך הבוט"), mention_author=False)
+    await ctx.reply(embed=info_embed(ctx.author, "📖 מדריך הבוט", "הפקודות פועלות עם `$` בתחילת ההודעה.", INFO_SECTIONS),
+                    mention_author=False)
 
 @bot.command(name="ainfo")
 @staff_only
 async def ainfo(ctx):
-    await ctx.reply(embed=make_embed(ctx.author, AINFO, BLUE, "מדריך צוות"), mention_author=False)
+    await ctx.reply(embed=info_embed(ctx.author, "🛠 מדריך צוות", "פקודות ניהול.", AINFO_SECTIONS),
+                    mention_author=False)
 
 bot.run(TOKEN)
