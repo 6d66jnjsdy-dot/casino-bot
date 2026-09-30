@@ -188,10 +188,59 @@ class BusySet:
 
 BUSY = BusySet()
 
+# ---------- time + luck helpers ----------
+LUCK_MAX = 10
+
+def parse_duration(text):
+    """'10m', '2h', '1d', '1h30m', '45s' -> seconds (None if invalid)."""
+    if not text:
+        return None
+    t = text.lower().replace(" ", "")
+    parts = re.findall(r"(\d+(?:\.\d+)?)([smhd])", t)
+    if not parts or "".join(f"{n}{u}" for n, u in parts) != t:
+        return None
+    secs = sum(float(n) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[u] for n, u in parts)
+    return int(secs) if secs > 0 else None
+
+def fmt_left(until):
+    if not until:
+        return "no time limit"
+    left = max(0, int(until - time.time()))
+    d, r = divmod(left, 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+    parts = [f"{v}{u}" for v, u in ((d, "d"), (h, "h"), (m, "m"), (s, "s")) if v]
+    return (" ".join(parts) or "0s") + " left"
+
+def luck_attempts(uid):
+    """How many tries the game gets to reach a good result. 1 = no luck. Only the owner can have luck.
+    x2.5 = 2 tries, plus a 50% chance for a 3rd."""
+    if uid != OWNER_ID:
+        return 1
+    cfg = DB.get("luck")
+    if not cfg:
+        return 1
+    until = cfg.get("until")
+    if until and time.time() >= until:
+        DB.pop("luck", None)
+        save()
+        return 1
+    v = cfg.get("value", 1)
+    if v <= 1:
+        return 1
+    n = int(v)
+    return n + (1 if random.random() < v - n else 0)
+
 # ---------- $multi helper ----------
 def multi_extra(game, net):
     """Extra money to add on top of a WIN (net = the normal profit). 0 when there is no multi or no profit."""
     m = DB.get("multi", {}).get(game)
+    until = DB.get("multi_until", {}).get(game)
+    if m and until and time.time() >= until:      # the timed multi is over
+        DB["multi"].pop(game, None)
+        DB["multi_until"].pop(game, None)
+        save()
+        return 0
     if not m or net <= 0 or m <= 1:
         return 0
     return int(net * (m - 1))
@@ -569,11 +618,28 @@ class BoardView(OwnedView):
     def after(self, kind):
         pass
 
+    def luck_pool(self, idx):
+        return [i for i in range(len(self.board)) if i not in self.revealed and i != idx]
+
+    def luck_fix(self, idx):
+        """Luck: a bomb can be swapped with a safe tile (one try per luck attempt)."""
+        if self.board[idx] != "bomb":
+            return
+        pool = self.luck_pool(idx)
+        for _ in range(luck_attempts(self.user.id) - 1):
+            if not pool:
+                return
+            j = random.choice(pool)
+            if self.board[j] != "bomb":
+                self.board[idx], self.board[j] = self.board[j], "bomb"
+                return
+
     async def click(self, interaction, idx):
         if not interaction.response.is_done():
             await interaction.response.defer()
         if self.done or idx in self.revealed:
             return
+        self.luck_fix(idx)
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
@@ -714,6 +780,10 @@ class MoneyTower(BoardView):
         for i, t in enumerate(self.tiles):
             t.disabled = i // 3 != 4
 
+    def luck_pool(self, idx):
+        row = idx // 3
+        return [i for i in range(row * 3, row * 3 + 3) if i != idx and i not in self.revealed]
+
     def make_board(self):
         board = []
         for _ in range(5):
@@ -747,6 +817,7 @@ class MoneyTower(BoardView):
         row = idx // 3
         if self.done or idx in self.revealed or row != 4 - self.climbed:
             return
+        self.luck_fix(idx)
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
@@ -1002,6 +1073,14 @@ class BlackjackView(discord.ui.View):
                     self.dealer_play()
                     if not self.player_wins():
                         break
+            for _ in range(luck_attempts(self.user.id) - 1):   # luck: the dealer gets a new hand when the player isn't winning
+                if self.player_wins():
+                    break
+                up = self.dealer[0]
+                self.deck.extend(self.dealer[1:])
+                random.shuffle(self.deck)
+                self.dealer = [up, self.deck.pop()]
+                self.dealer_play()
         dv, returned = hand_value(self.dealer), 0
         for h in self.hands:
             pv = hand_value(h["cards"])
@@ -1233,6 +1312,10 @@ async def slots(ctx, amount: str = None):
         final = [random.choice(SLOTS) for _ in range(3)]
         if len(set(final)) == 3 and random.random() < SLOTS_BOOST / (120 / 216):
             final[1] = final[0]
+        for _ in range(luck_attempts(ctx.author.id) - 1):   # luck: re-spin until there is a win
+            if max(final.count(s) for s in SLOTS) >= 2:
+                break
+            final = [random.choice(SLOTS) for _ in range(3)]
         top = max(final.count(s) for s in SLOTS)
         mult = (SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0) * SLOT_BUFF
         win = int(bet * mult)
@@ -1339,6 +1422,10 @@ async def run_roulette(msg, bet):
     try:
         await asyncio.sleep(max(0, bet["end"] - time.time()))
         winner = random.randint(0, 36)          # European wheel: 37 pockets (0-36), every pocket 1/37
+        for _ in range(luck_attempts(bet["user"].id) - 1):   # luck: the wheel is spun again until a pick hits
+            if any(t(winner) for _, t, _ in bet["picks"]):
+                break
+            winner = random.randint(0, 36)
         emoji = {"red": "🔴", "black": "⚫", "green": "🟢"}[roul_color(winner)]
         user = bet["user"]
         hits = [(l, m) for l, t, m in bet["picks"] if t(winner)]
@@ -1429,8 +1516,8 @@ class CoinFlip(OwnedView):
         if self.settled:
             return await interaction.response.defer()
         self.settled = True
-        land = random.choice(("Head", "Tail"))
-        won = pick == land
+        won = any(random.choice(("Head", "Tail")) == pick for _ in range(luck_attempts(self.user.id)))   # luck = more tries
+        land = pick if won else ("Tail" if pick == "Head" else "Head")
         extra = multi_extra("ht", self.bet) if won else 0   # $multi bonus on a win (0 when off)
         pending_done(self.token)
         if won:
@@ -1477,7 +1564,7 @@ async def cf(ctx, amount: str = None):
         return
     u, c = user_data(ctx.author.id), cur()
     strength = max(CF_MIN, min(CF_MAX, u.get("chicken", CF_MIN)))
-    won = random.randint(1, 100) <= strength + CF_HIDDEN   # the real chance = strength + CF_HIDDEN
+    won = any(random.randint(1, 100) <= strength + CF_HIDDEN for _ in range(luck_attempts(ctx.author.id)))   # the real chance = strength + CF_HIDDEN (luck = more tries)
     profit = bet
     if won:
         profit = bet + multi_extra("cf", bet)               # $multi bonus on a win (0 when off)
@@ -1534,9 +1621,17 @@ class HigherLower(OwnedView):
         if self.settled:
             return await interaction.response.defer()
         self.settled = True
+
+        def hit(s):
+            return (s > self.first and choice == "higher") or (s < self.first and choice == "lower") \
+                or (s == self.first and choice == "same")
+
         second = random.randint(HL_MIN, HL_MAX)
-        won = (second > self.first and choice == "higher") or (second < self.first and choice == "lower") \
-            or (second == self.first and choice == "same")
+        for _ in range(luck_attempts(self.user.id) - 1):   # luck: the second number is drawn again until it fits
+            if hit(second):
+                break
+            second = random.randint(HL_MIN, HL_MAX)
+        won = hit(second)
         win = int(self.bet * self.mults[choice]) if won else 0
         if win > self.bet:                               # $multi bonus on a win (0 when off)
             win += multi_extra("hl", win - self.bet)
@@ -1791,6 +1886,11 @@ class ScratchMenu(discord.ui.View):
             self.chosen = True
             self.stop()
             mult = st["left"].pop()
+            for _ in range(luck_attempts(self.user.id) - 1):   # luck: take the best of a few cards from the stock
+                if st["left"]:
+                    j = random.randrange(len(st["left"]))
+                    if st["left"][j] > mult:
+                        st["left"][j], mult = mult, st["left"][j]
             st["sold"] += 1
             token = f"scr{interaction.id}"
             DB.setdefault("pending", {})[token] = {"uid": str(self.user.id), "bet": price, "scratch": [key, mult]}
@@ -2315,18 +2415,24 @@ async def setaddmoney(ctx, amount: str = None):
     save()
     await reply(ctx, f"Staff can now add at most {fmt(amt)} {cur()} per command.", GREEN)
 
-@bot.command(name="multi", usage="multi <game | all> <amount | off>")
+@bot.command(name="multi", usage="multi <game | all> <amount | off> [time: 10m, 2h, 1d]")
 @owner_only
-async def multi(ctx, game: str = None, amount: str = None):
-    """Owner only. Multiplies the NET profit of every WIN in the chosen game (amount 1-5). `$multi gm 3`, `$multi all 2`, `$multi bj off`."""
+async def multi(ctx, game: str = None, amount: str = None, duration: str = None):
+    """Owner only. Multiplies the NET profit of every WIN in the chosen game (1-5), optionally for a limited time.
+    `$multi gm 3`, `$multi gm 3 1h`, `$multi all 2 10m`, `$multi bj off`."""
     cfg = DB.setdefault("multi", {})
+    until = DB.setdefault("multi_until", {})
+    for k in [k for k, t in until.items() if t and time.time() >= t]:   # drop expired ones
+        cfg.pop(k, None)
+        until.pop(k, None)
     games = ", ".join(f"`{g}`" for g in MULTI_GAMES)
     if game is None:
-        active = "\n".join(f"• `{k}` → **x{v:g}**" for k, v in cfg.items()) or "No active multipliers."
+        active = "\n".join(f"• `{k}` → **x{v:g}** ({fmt_left(until.get(k))})" for k, v in cfg.items()) or "No active multipliers."
         return await reply(ctx, f"**🔥 Multi (owner)**\n{active}\n\nUsage: `${ctx.command.usage}` (amount 1-{MULTI_MAX})\nGames: {games}", BLUE)
     g = game.lower().lstrip("$")
     if g in ("off", "reset", "clear") and amount is None:
         cfg.clear()
+        until.clear()
         save()
         return await reply(ctx, "All multipliers were removed.", GREEN)
     if g == "all":
@@ -2342,21 +2448,81 @@ async def multi(ctx, game: str = None, amount: str = None):
         value = None
     else:
         try:
-            value = float(amount.lower().lstrip("x"))
+            value = float(amount.lower().strip("x"))
         except ValueError:
             return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
         if not (1 <= value <= MULTI_MAX):
             return await reply(ctx, f"The multiplier must be between 1 and {MULTI_MAX}.", RED)
+    secs = None
+    if duration is not None:
+        secs = parse_duration(duration)
+        if secs is None:
+            return await reply(ctx, f"Invalid time. Examples: `30s`, `10m`, `2h`, `1d`, `1h30m`\nUsage: `${ctx.command.usage}`", RED)
+    end_at = int(time.time() + secs) if secs else None
     for k in keys:
         if value is None or value == 1:
             cfg.pop(k, None)
+            until.pop(k, None)
         else:
             cfg[k] = value
+            if end_at:
+                until[k] = end_at
+            else:
+                until.pop(k, None)
     save()
     names = "all games" if g == "all" else f"`{keys[0]}`"
     if value is None or value == 1:
         return await reply(ctx, f"Multi removed from {names}.", GREEN)
-    await reply(ctx, f"🔥 Multi **x{value:g}** is now active on {names}. Every win pays x{value:g} of the normal profit.", GREEN)
+    await reply(ctx, f"🔥 Multi **x{value:g}** is now active on {names} ({fmt_left(end_at)}). "
+                     f"Every win pays x{value:g} of the normal profit.", GREEN)
+
+async def secret_say(ctx, text):
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    try:
+        await ctx.author.send(text)
+    except Exception:
+        await reply(ctx, text, BLUE)
+
+@bot.command(name="luck", usage="luck <2.5x | off> [time: 10m, 2h, 1d]")
+@owner_only
+async def luck(ctx, amount: str = None, duration: str = None):
+    """Owner only and secret (the command message is deleted, the answer comes in DM). Luck only affects the owner's own games:
+    x2 = every game gets 2 tries to end well, x2.5 = 2 tries + a 50% chance for a 3rd."""
+    cfg = DB.get("luck")
+    if cfg and cfg.get("until") and time.time() >= cfg["until"]:
+        DB.pop("luck", None)
+        cfg = None
+        save()
+    if amount is None:
+        if not cfg:
+            return await secret_say(ctx, f"🍀 Luck is OFF.\nUsage: `${ctx.command.usage}` (1-{LUCK_MAX})")
+        return await secret_say(ctx, f"🍀 Luck is **x{cfg['value']:g}** ({fmt_left(cfg.get('until'))}).")
+    if amount.lower() in ("off", "none", "no", "reset"):
+        DB.pop("luck", None)
+        save()
+        return await secret_say(ctx, "🍀 Luck is OFF.")
+    try:
+        value = float(amount.lower().strip("x"))
+    except ValueError:
+        return await secret_say(ctx, f"Usage: `${ctx.command.usage}`")
+    if not (1 <= value <= LUCK_MAX):
+        return await secret_say(ctx, f"Luck must be between 1 and {LUCK_MAX}.")
+    secs = None
+    if duration is not None:
+        secs = parse_duration(duration)
+        if secs is None:
+            return await secret_say(ctx, "Invalid time. Examples: `30s`, `10m`, `2h`, `1d`, `1h30m`")
+    if value == 1:
+        DB.pop("luck", None)
+        save()
+        return await secret_say(ctx, "🍀 Luck is OFF.")
+    end_at = int(time.time() + secs) if secs else None
+    DB["luck"] = {"value": value, "until": end_at}
+    save()
+    await secret_say(ctx, f"🍀 Luck **x{value:g}** is ON ({fmt_left(end_at)}). It only works for you.")
 
 class ConfirmReset(discord.ui.View):
     def __init__(self, user):
@@ -2481,7 +2647,8 @@ AINFO_SECTIONS = [
         "`$setgamelogs #channel` – חדר הלוגים"]),
     ("👑 בעלים", [
         "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
-        "`$multi <משחק|all> <1-5|off>` – מכפיל לרווח נטו בכל ניצחון במשחק",
+        "`$multi <משחק|all> <1-5|off> [זמן]` – מכפיל לרווח נטו בכל ניצחון (זמן: 10m, 2h, 1d)",
+        "`$luck <1-10>x [זמן]` – מזל רק לבעלים (`$luck off` מבטל)",
         "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
         "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
     ("🧩 פקודות עם !", [
