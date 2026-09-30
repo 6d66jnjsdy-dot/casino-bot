@@ -32,6 +32,8 @@ ALLOWED_CHANNELS = {
     1554657850067001405,
     1554651913994117170,
     1554650281663537172,
+    1554844436632969347,
+    1554845002637508738,
 }
 OWNER_ID = 1537816435370229820
 # The backup keeps everybody's money (and the scratch card stock) safe when the host wipes its disk.
@@ -42,6 +44,7 @@ EARN_MIN, EARN_MAX = 6500, 16000
 DEALER_STANDS_ON = 13
 EMPTY = "\u200e"   # blank button label
 GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F
+BUSY_MSG = "You already have an active game! Finish it first."
 
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏺"}
 MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
@@ -59,6 +62,10 @@ for _k, (_c, _r, _m, _t) in list(SMINES.items()):
         SMINES[_k] = (_c, _r, _m, [round(v * SMINES_NERF, 3) if i >= SMINES_NERF_FROM - 1 else v for i, v in enumerate(_t)])
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
+
+# ---------- $multi (owner only): multiplies the NET profit of a game ----------
+MULTI_MAX = 5
+MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch")
 
 # ---------- SCRATCH CARDS (a real, limited stock) ----------
 SCRATCH_CARDS = {
@@ -161,6 +168,34 @@ def parse_amount(text, available):
     except (ValueError, OverflowError):
         return None
 
+# ---------- "active game" lock: one game at a time per player ----------
+class BusySet:
+    def __init__(self):
+        self.d = {}
+
+    def add(self, uid):
+        self.d[uid] = time.monotonic()
+
+    def discard(self, uid):
+        self.d.pop(uid, None)
+
+    def __contains__(self, uid):
+        t = self.d.get(uid)
+        if t is not None and time.monotonic() - t > 600:
+            del self.d[uid]
+            return False
+        return t is not None
+
+BUSY = BusySet()
+
+# ---------- $multi helper ----------
+def multi_extra(game, net):
+    """Extra money to add on top of a WIN (net = the normal profit). 0 when there is no multi or no profit."""
+    m = DB.get("multi", {}).get(game)
+    if not m or net <= 0 or m <= 1:
+        return 0
+    return int(net * (m - 1))
+
 # ================= EMBEDS =================
 def make_embed(user, desc, color, title=None):
     e = discord.Embed(description=desc, color=color, title=title)
@@ -177,6 +212,9 @@ def result_embed(user, won, amt, extra=""):
                       GREEN if won else RED, "Result")
 
 async def take_bet(ctx, amount, usage, track=False):
+    # one game at a time: this covers every game that uses take_bet
+    if ctx.author.id in BUSY:
+        return await reply(ctx, BUSY_MSG, RED)
     u = user_data(ctx.author.id)
     bet = parse_amount(amount, u["cash"])
     if bet is None:
@@ -188,12 +226,16 @@ async def take_bet(ctx, amount, usage, track=False):
     u["cash"] -= bet
     if track:
         DB.setdefault("pending", {})[str(ctx.message.id)] = {"uid": str(ctx.author.id), "bet": bet}
+        BUSY.add(ctx.author.id)
     save()
     return bet
 
 def pending_done(token):
+    # a finished game frees the player (every game ends by calling this)
     if token:
-        DB.get("pending", {}).pop(token, None)
+        rec = DB.get("pending", {}).pop(token, None)
+        if rec:
+            BUSY.discard(int(rec["uid"]))
 
 def pending_bump(token, amount):
     if token and token in DB.get("pending", {}):
@@ -204,6 +246,7 @@ def cancel_game(user, token, bet):
     if rec.get("scratch"):
         return_card(*rec["scratch"])
     pending_done(token)
+    BUSY.discard(user.id)
     user_data(user.id)["cash"] += bet
     save()
 
@@ -486,6 +529,7 @@ class BoardView(OwnedView):
     cols, header = 5, "\u200b"
     reveal_on_cashout = True
     game_name = "game"
+    multi_key = None
     cash_row = None
 
     def __init__(self, user, bet, token=None):
@@ -547,7 +591,9 @@ class BoardView(OwnedView):
             await interaction.edit_original_response(content=self.header, view=self)
 
     def payout(self):
-        user_data(self.user.id)["cash"] += self.bet + int(self.profit)
+        base = int(self.profit)
+        self.profit = base + multi_extra(self.multi_key, base)   # $multi bonus (0 when off)
+        user_data(self.user.id)["cash"] += self.bet + self.profit
         save()
 
     def reveal_all(self, show):
@@ -603,6 +649,7 @@ class BoardView(OwnedView):
 
 class GoldMines(BoardView):
     game_name = "gm"
+    multi_key = "gm"
     @property
     def header(self):
         return f"**{self.user.name}'s Game**"
@@ -623,6 +670,7 @@ class Mines(BoardView):
     cols = 3
     reveal_on_cashout = False
     game_name = "mines"
+    multi_key = "mines"
 
     def make_board(self):
         return take(self.user.id, "mines")
@@ -633,6 +681,7 @@ class Mines(BoardView):
 
 class SMines(BoardView):
     reveal_on_cashout = False
+    multi_key = "s$mines"
 
     def __init__(self, user, bet, key, token=None):
         self.key = key
@@ -652,6 +701,7 @@ class MoneyTower(BoardView):
     cash_row = 4
     reveal_on_cashout = False
     game_name = "money tower"
+    multi_key = "mt"
     safe_icon = MT_SAFE
 
     @property
@@ -800,24 +850,6 @@ async def mt(ctx, amount: str = None):
 # ================= BLACKJACK =================
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 SUITS = ["♣", "♠", "♥", "♦"]
-class BusySet:
-    def __init__(self):
-        self.d = {}
-
-    def add(self, uid):
-        self.d[uid] = time.monotonic()
-
-    def discard(self, uid):
-        self.d.pop(uid, None)
-
-    def __contains__(self, uid):
-        t = self.d.get(uid)
-        if t is not None and time.monotonic() - t > 600:
-            del self.d[uid]
-            return False
-        return t is not None
-
-BUSY = BusySet()
 
 def card_value(rank):
     return 11 if rank == "A" else 10 if rank in "JQK" else int(rank)
@@ -933,6 +965,7 @@ class BlackjackView(discord.ui.View):
                                    and card_value(h["cards"][0][0]) == card_value(h["cards"][1][0]))
 
     def pay(self, returned, staked):
+        returned += multi_extra("bj", returned - staked)   # $multi bonus on a win (0 when off)
         self.done, self.net = True, returned - staked
         pending_done(self.token)
         user_data(self.user.id)["cash"] += returned
@@ -1062,8 +1095,6 @@ class BlackjackView(discord.ui.View):
 
 @bot.command(name="bj", aliases=["blackjack"], usage="bj <amount | half | all>")
 async def bj(ctx, amount: str = None):
-    if ctx.author.id in BUSY:
-        return await reply(ctx, "You already have a Blackjack game running.", RED)
     bet = await take_bet(ctx, amount, "bj <amount | half | all>", track=True)
     if not bet:
         return
@@ -1193,8 +1224,6 @@ async def warm_animations():
 
 @bot.command(name="slots", aliases=["slot"], usage="slots <amount | half | all>")
 async def slots(ctx, amount: str = None):
-    if ctx.author.id in BUSY:
-        return await reply(ctx, "You already have a game running.", RED)
     bet = await take_bet(ctx, amount, "slots <amount | half | all>", track=True)
     if not bet:
         return
@@ -1207,6 +1236,9 @@ async def slots(ctx, amount: str = None):
         top = max(final.count(s) for s in SLOTS)
         mult = (SLOT_PAY[final[0]] if top == 3 else 1.5 if top == 2 else 0) * SLOT_BUFF
         win = int(bet * mult)
+        if win > bet:                                   # $multi bonus on a win (0 when off)
+            win += multi_extra("slots", win - bet)
+            mult = win / bet
         # the animation is ready (pre-rendered), so the message is sent WITH it, straight away
         try:
             gif, png = await get_slots_anim(final)
@@ -1312,6 +1344,9 @@ async def run_roulette(msg, bet):
         hits = [(l, m) for l, t, m in bet["picks"] if t(winner)]
         win = sum(bet["per"] * m for _, m in hits)
         net = win - bet["stake"]
+        if net > 0:                                     # $multi bonus on a win (0 when off)
+            win += multi_extra("roulette", net)
+            net = win - bet["stake"]
         pending_done(bet["token"])
         user_data(user.id)["cash"] += win
         save()
@@ -1334,9 +1369,12 @@ async def run_roulette(msg, bet):
             await msg.channel.send(embed=e, allowed_mentions=none)
     except Exception as ex:
         print("Roulette failed:", repr(ex))
+        BUSY.discard(bet["user"].id)
 
 @bot.command(name="roulette", aliases=["rl"], usage=ROUL_USAGE)
 async def roulette(ctx, amount: str = None, *, picks: str = None):
+    if ctx.author.id in BUSY:
+        return await reply(ctx, BUSY_MSG, RED)
     choices = roul_pick_list(picks)
     if choices is None:
         return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
@@ -1357,6 +1395,7 @@ async def roulette(ctx, amount: str = None, *, picks: str = None):
     token = str(ctx.message.id)
     u["cash"] -= stake
     DB.setdefault("pending", {})[token] = {"uid": str(ctx.author.id), "bet": stake}
+    BUSY.add(ctx.author.id)
     save()
     bet = {"user": ctx.author, "per": per, "stake": stake, "picks": choices, "token": token,
            "end": int(time.time()) + ROUL_WAIT}
@@ -1392,15 +1431,16 @@ class CoinFlip(OwnedView):
         self.settled = True
         land = random.choice(("Head", "Tail"))
         won = pick == land
+        extra = multi_extra("ht", self.bet) if won else 0   # $multi bonus on a win (0 when off)
         pending_done(self.token)
         if won:
-            user_data(self.user.id)["cash"] += self.bet * 2
+            user_data(self.user.id)["cash"] += self.bet * 2 + extra
         save()
-        log_game(self.user, "heads or tail", self.bet, self.bet if won else -self.bet)
+        log_game(self.user, "heads or tail", self.bet, self.bet + extra if won else -self.bet)
         BUSY.discard(self.user.id)
         self.stop()
         await interaction.response.edit_message(
-            embed=result_embed(self.user, won, self.bet, f"You chose **{pick}**, the coin landed on **{land}**.\n"), view=None)
+            embed=result_embed(self.user, won, self.bet + extra, f"You chose **{pick}**, the coin landed on **{land}**.\n"), view=None)
 
     @discord.ui.button(label="Head", style=discord.ButtonStyle.primary)
     async def head(self, interaction, button):
@@ -1417,8 +1457,6 @@ class CoinFlip(OwnedView):
 
 @bot.command(name="ht", usage="ht <amount | half | all>")
 async def ht(ctx, amount: str = None):
-    if ctx.author.id in BUSY:
-        return await reply(ctx, "You already have a game running.", RED)
     bet = await take_bet(ctx, amount, "ht <amount | half | all>", track=True)
     if not bet:
         return
@@ -1440,11 +1478,13 @@ async def cf(ctx, amount: str = None):
     u, c = user_data(ctx.author.id), cur()
     strength = max(CF_MIN, min(CF_MAX, u.get("chicken", CF_MIN)))
     won = random.randint(1, 100) <= strength + CF_HIDDEN   # the real chance = strength + CF_HIDDEN
+    profit = bet
     if won:
-        u["cash"] += bet * 2
+        profit = bet + multi_extra("cf", bet)               # $multi bonus on a win (0 when off)
+        u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
         # the % shown is the REAL chance of the next fight
-        desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n\n"
+        desc = (f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
                 f"**Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%**\n"
                 f"**You now have {fmt(u['cash'])} {c}**")
         color = GREEN
@@ -1452,7 +1492,7 @@ async def cf(ctx, amount: str = None):
         u["chicken"] = CF_MIN
         desc, color = f"Your chicken lost the fight... You lost {fmt(bet)} {c}🐓.", RED
     save()
-    log_game(ctx.author, "chicken fight", bet, bet if won else -bet)
+    log_game(ctx.author, "chicken fight", bet, profit if won else -bet)
     await reply(ctx, desc, color)
 
 # ================= HIGHER OR LOWER ($hl / $high-low) =================
@@ -1498,6 +1538,8 @@ class HigherLower(OwnedView):
         won = (second > self.first and choice == "higher") or (second < self.first and choice == "lower") \
             or (second == self.first and choice == "same")
         win = int(self.bet * self.mults[choice]) if won else 0
+        if win > self.bet:                               # $multi bonus on a win (0 when off)
+            win += multi_extra("hl", win - self.bet)
         pending_done(self.token)
         user_data(self.user.id)["cash"] += win
         save()
@@ -1535,8 +1577,6 @@ class HigherLower(OwnedView):
 
 @bot.command(name="hl", aliases=["high-low", "highlow"], usage="hl <amount | half | all>")
 async def hl(ctx, amount: str = None):
-    if ctx.author.id in BUSY:
-        return await reply(ctx, "You already have a game running.", RED)
     bet = await take_bet(ctx, amount, "hl <amount | half | all>", track=True)
     if not bet:
         return
@@ -1665,6 +1705,8 @@ class ScratchView(OwnedView):
         else:
             extra = f"**{name}**\nNo match this time.\n\n"
         returned = round(self.bet * mult)
+        if returned > self.bet:                          # $multi bonus on a win (0 when off)
+            returned += multi_extra("scratch", returned - self.bet)
         pending_done(self.token)
         user_data(self.user.id)["cash"] += returned
         save()
@@ -1737,6 +1779,8 @@ class ScratchMenu(discord.ui.View):
                     await interaction.response.defer()
                 return
             # no awaits between the checks and the purchase: two players can never get the same card
+            if self.user.id in BUSY:
+                return await interaction.response.send_message(BUSY_MSG, ephemeral=True)
             st = get_stock(key)
             if not st["left"]:
                 return await interaction.response.send_message("This card is sold out.", ephemeral=True)
@@ -1750,6 +1794,7 @@ class ScratchMenu(discord.ui.View):
             st["sold"] += 1
             token = f"scr{interaction.id}"
             DB.setdefault("pending", {})[token] = {"uid": str(self.user.id), "bet": price, "scratch": [key, mult]}
+            BUSY.add(self.user.id)
             save()
             try:
                 view = ScratchView(self.user, price, key, mult, token)
@@ -1772,6 +1817,8 @@ class ScratchMenu(discord.ui.View):
 
 @bot.command(name="scratch", aliases=["sc"], usage="scratch [amount | half | all]")
 async def scratch(ctx, amount: str = None):
+    if ctx.author.id in BUSY:
+        return await reply(ctx, BUSY_MSG, RED)
     amt = None
     if amount is not None:
         u = user_data(ctx.author.id)
@@ -2268,6 +2315,49 @@ async def setaddmoney(ctx, amount: str = None):
     save()
     await reply(ctx, f"Staff can now add at most {fmt(amt)} {cur()} per command.", GREEN)
 
+@bot.command(name="multi", usage="multi <game | all> <amount | off>")
+@owner_only
+async def multi(ctx, game: str = None, amount: str = None):
+    """Owner only. Multiplies the NET profit of every WIN in the chosen game (amount 1-5). `$multi gm 3`, `$multi all 2`, `$multi bj off`."""
+    cfg = DB.setdefault("multi", {})
+    games = ", ".join(f"`{g}`" for g in MULTI_GAMES)
+    if game is None:
+        active = "\n".join(f"• `{k}` → **x{v:g}**" for k, v in cfg.items()) or "No active multipliers."
+        return await reply(ctx, f"**🔥 Multi (owner)**\n{active}\n\nUsage: `${ctx.command.usage}` (amount 1-{MULTI_MAX})\nGames: {games}", BLUE)
+    g = game.lower().lstrip("$")
+    if g in ("off", "reset", "clear") and amount is None:
+        cfg.clear()
+        save()
+        return await reply(ctx, "All multipliers were removed.", GREEN)
+    if g == "all":
+        keys = list(MULTI_GAMES)
+    else:
+        key = resolve_key(g)
+        if key not in MULTI_GAMES:
+            return await reply(ctx, f"Unknown game. Games: {games}", RED)
+        keys = [key]
+    if amount is None:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    if amount.lower() in ("off", "none", "no"):
+        value = None
+    else:
+        try:
+            value = float(amount.lower().lstrip("x"))
+        except ValueError:
+            return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+        if not (1 <= value <= MULTI_MAX):
+            return await reply(ctx, f"The multiplier must be between 1 and {MULTI_MAX}.", RED)
+    for k in keys:
+        if value is None or value == 1:
+            cfg.pop(k, None)
+        else:
+            cfg[k] = value
+    save()
+    names = "all games" if g == "all" else f"`{keys[0]}`"
+    if value is None or value == 1:
+        return await reply(ctx, f"Multi removed from {names}.", GREEN)
+    await reply(ctx, f"🔥 Multi **x{value:g}** is now active on {names}. Every win pays x{value:g} of the normal profit.", GREEN)
+
 class ConfirmReset(discord.ui.View):
     def __init__(self, user):
         super().__init__(timeout=30)
@@ -2375,6 +2465,7 @@ INFO_SECTIONS = [
         "`$shop` – חנות רולים"]),
     ("💡 טיפים", [
         "סכום: מספר, `half`, `all`, או `5k` / `2.5m` / `1b`",
+        "אפשר לשחק רק משחק אחד בכל פעם – צריך לסיים אותו קודם",
         "אפשר גם ריפליי לשחקן עם תיוג **ON** ואז `$rob a` / `$pay a <סכום>` / `$bal a`"]),
 ]
 
@@ -2390,6 +2481,7 @@ AINFO_SECTIONS = [
         "`$setgamelogs #channel` – חדר הלוגים"]),
     ("👑 בעלים", [
         "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
+        "`$multi <משחק|all> <1-5|off>` – מכפיל לרווח נטו בכל ניצחון במשחק",
         "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
         "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
     ("🧩 פקודות עם !", [
