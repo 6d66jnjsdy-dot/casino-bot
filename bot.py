@@ -31,6 +31,7 @@ ALLOWED_CHANNELS = {
     1554652227963060364,
     1554657850067001405,
     1554651913994117170,
+    1554650281663537172,
 }
 OWNER_ID = 1537816435370229820
 # The backup keeps everybody's money (and the scratch card stock) safe when the host wipes its disk.
