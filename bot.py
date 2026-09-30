@@ -1767,15 +1767,6 @@ async def scratch(ctx, amount: str = None):
     view = ScratchMenu(ctx.author, amt)
     view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
 
-@bot.command(name="resetscratch", aliases=["resetcards", "refreshscratch"], usage="resetscratch")
-@staff_only
-async def resetscratch(ctx):
-    DB["scratch"] = {}
-    for key in SCRATCH_CARDS:
-        get_stock(key)
-    save()
-    await reply(ctx, "🎟️ The scratch cards were renewed: every card is back in stock.", GREEN)
-
 @bot.command(name="cards")
 async def cards(ctx):
     await reply(ctx, f"**🎟️ Scratch cards**\n\n{stock_lines()}\n\nPlay: `$scratch`", BLUE)
@@ -2089,6 +2080,16 @@ def is_staff(ctx):
 admin_only = commands.check(admin_or_owner)
 staff_only = commands.check(is_staff)
 owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)
+
+# (moved here from the scratch cards section: staff_only must exist before it is used as a decorator)
+@bot.command(name="resetscratch", aliases=["resetcards", "refreshscratch"], usage="resetscratch")
+@staff_only
+async def resetscratch(ctx):
+    DB["scratch"] = {}
+    for key in SCRATCH_CARDS:
+        get_stock(key)
+    save()
+    await reply(ctx, "🎟️ The scratch cards were renewed: every card is back in stock.", GREEN)
 
 @bot.command(name="staff-role", usage="staff-role @role")
 @admin_only
