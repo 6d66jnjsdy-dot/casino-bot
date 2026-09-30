@@ -24,7 +24,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(HERE, "data"))   # point this to a persistent volume if your host has one
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, "economy.json")
-# The rooms the bot works in are NOT hard-coded anymore: the owner sets them with $setchannels #a #b #c
+# The bot works ONLY in these rooms
+ALLOWED_CHANNELS = {
+    1554650314546618480,
+    1541567870591443026,
+    1554652227963060364,
+    1554657850067001405,
+    1554651913994117170,
+}
 OWNER_ID = 1537816435370229820
 # The backup keeps everybody's money (and the scratch card stock) safe when the host wipes its disk.
 # By default the bot keeps ONE backup message in the OWNER's DMs and edits it.
@@ -81,7 +88,7 @@ SCRATCH_CARDS = {
 }
 
 CF_MIN, CF_MAX = 50, 84
-CF_HIDDEN = 1   # hidden bonus: the real chance is 1% higher than what the message shows
+CF_HIDDEN = 1   # the real chance is strength + 1; the message now shows the REAL chance (strength + CF_HIDDEN)
 ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360   # only cash can be robbed, the bank is safe
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
@@ -287,13 +294,9 @@ def cmd_key(ctx):
 @bot.check
 async def only_allowed_channels(ctx):
     await loaded.wait()
-    is_owner = ctx.author.id == OWNER_ID
-    if is_owner and ctx.command.name == "setchannels":
-        return True                                  # the owner can always fix the channel list
-    chans = DB.get("channels") or []
-    if chans and ctx.channel.id not in chans:        # no channels set yet = the bot works everywhere
+    if ctx.channel.id not in ALLOWED_CHANNELS:
         return False
-    if cmd_key(ctx) in DB.get("disabled", []) and not is_owner:
+    if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id != OWNER_ID:
         return False
     return True
 
@@ -1435,13 +1438,14 @@ async def cf(ctx, amount: str = None):
         return
     u, c = user_data(ctx.author.id), cur()
     strength = max(CF_MIN, min(CF_MAX, u.get("chicken", CF_MIN)))
-    won = random.randint(1, 100) <= strength + CF_HIDDEN   # the shown % is 1 lower than the real chance
+    won = random.randint(1, 100) <= strength + CF_HIDDEN   # the real chance = strength + CF_HIDDEN
     if won:
         u["cash"] += bet * 2
         u["chicken"] = strength = min(CF_MAX, strength + 1)
+        # the % shown is the REAL chance of the next fight; the two info lines are small text (-#)
         desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n\n"
-                f"**Your chicken's strength (chance of winning): {strength}%**\n"
-                f"**You now have {fmt(u['cash'])} {c}**")
+                f"-# Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%\n"
+                f"-# You now have {fmt(u['cash'])} {c}")
         color = GREEN
     else:
         u["chicken"] = CF_MIN
@@ -1994,12 +1998,12 @@ SHOP_THUMBNAIL = None   # put an image link here for the picture on the right; N
 
 # (name, emoji, role id, price in the BANK) - cheapest at the top, most expensive at the bottom
 SHOP_ITEMS = [
-    ("Casino professional", "🏅", 1554242301927104643, 185_000_000),
-    ("Casino Summer",       "🏝️", 1554242805071876116, 285_000_000),
-    ("Casino Star",         "🌟", 1554241846165766225, 375_000_000),
-    ("Casino Elite",        "🗽", 1554239763006099487, 500_000_000),
-    ("Casino Emperor",      "⚜️", 1554240949213724854, 575_000_000),
-    ("Casino VIP",          "💎", 1554242535369482371, 650_000_000),
+    ("Casino Joker",   "🃏", 1554242301927104643, 175_000_000),
+    ("Casino Master",  "💎", 1554242805071876116, 225_000_000),
+    ("Casino Dealer",  "🤵", 1554241846165766225, 350_000_000),
+    ("Casino Legend",  "🗽", 1554239763006099487, 425_000_000),
+    ("Casino Royalty", "🌟", 1554240949213724854, 500_000_000),
+    ("Casino Emperor", "👑", 1554242535369482371, 675_000_000),
 ]
 
 async def shop_say(interaction, text):
@@ -2246,27 +2250,6 @@ async def enable(ctx, name: str):
     save()
     await reply(ctx, "All commands are enabled." if key == "all" else f"`{key}` is enabled again.", GREEN)
 
-@bot.command(name="setchannels", aliases=["setchannel"], usage="setchannels #channel1 #channel2 ... | clear")
-@owner_only
-async def setchannels(ctx, *args: str):
-    if not args:
-        ids = DB.get("channels") or []
-        return await reply(ctx, "Bot channels: " + (" ".join(f"<#{i}>" for i in ids) or "none (the bot works in every channel)")
-                           + "\nSet them with `$setchannels #a #b #c`", BLUE)
-    if len(args) == 1 and args[0].lower() in ("clear", "none", "off"):
-        DB["channels"] = []
-        save()
-        return await reply(ctx, "The channel list was cleared. The bot now works in every channel.", GREEN)
-    conv, ids = commands.TextChannelConverter(), []
-    for a in args:
-        try:
-            ids.append((await conv.convert(ctx, a)).id)
-        except commands.BadArgument:
-            return await reply(ctx, f"I can't find the channel `{a}`.", RED)
-    DB["channels"] = list(dict.fromkeys(ids))
-    save()
-    await reply(ctx, "The bot now works only in: " + " ".join(f"<#{i}>" for i in DB["channels"]), GREEN)
-
 @bot.command(name="setaddmoney", usage="setaddmoney <max | off>")
 @owner_only
 async def setaddmoney(ctx, amount: str = None):
@@ -2405,7 +2388,6 @@ AINFO_SECTIONS = [
         "`$staff-role @role` – קובע איזה רול נחשב צוות",
         "`$setgamelogs #channel` – חדר הלוגים"]),
     ("👑 בעלים", [
-        "`$setchannels #a #b #c` – החדרים שבהם הבוט עובד (`clear` = כל החדרים)",
         "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
         "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
         "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
