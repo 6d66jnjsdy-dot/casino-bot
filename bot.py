@@ -1442,10 +1442,10 @@ async def cf(ctx, amount: str = None):
     if won:
         u["cash"] += bet * 2
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        # the % shown is the REAL chance of the next fight; the two info lines are small text (-#)
+        # the % shown is the REAL chance of the next fight
         desc = (f"Your chicken won the fight, you won {fmt(bet)} {c}🐓!\n\n"
-                f"-# Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%\n"
-                f"-# You now have {fmt(u['cash'])} {c}")
+                f"**Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%**\n"
+                f"**You now have {fmt(u['cash'])} {c}**")
         color = GREEN
     else:
         u["chicken"] = CF_MIN
