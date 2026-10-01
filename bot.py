@@ -2101,7 +2101,16 @@ def sc_banner():
         cx, ty = x + cw / 2, base_y + ch + 16
         d.text((cx, ty), he(c["name"]), font=get_font(27), fill=(255, 224, 130, 255), anchor="mt",
                stroke_width=1, stroke_fill=(0, 0, 0, 255))
-        d.text((cx, ty + 36), f"min {sc_short(c['min'])}", font=get_font(22), fill=(235, 235, 240, 255), anchor="mt")
+
+        # "סכום התחלתי <מספר>": the number is drawn separately so it never gets flipped (e.g. 2.5M)
+        f22 = get_font(22)
+        label, num = he("סכום התחלתי"), sc_short(c["min"])
+        w_label, w_num, sp = d.textlength(label, font=f22), d.textlength(num, font=f22), 8
+        lx = cx - (w_label + sp + w_num) / 2
+        col_txt = (235, 235, 240, 255)
+        d.text((lx, ty + 36), num, font=f22, fill=col_txt, anchor="lt")                      # the number on the left
+        d.text((lx + w_num + sp, ty + 36), label, font=f22, fill=col_txt, anchor="lt")       # the Hebrew text on the right
+
         ratio = left / c["total"]
         col = (110, 255, 140, 255) if ratio > 0.5 else (255, 190, 70, 255) if ratio > 0.2 else (255, 100, 100, 255)
         d.text((cx, ty + 66), f"{left}/{c['total']}", font=get_font(22), fill=col, anchor="mt")
@@ -2320,7 +2329,7 @@ class ScratchMenu(OwnedView):
             stock = f"נותרו **{left}/{c['total']}**" if left else "אזל המלאי ❌"
             lines.append(f"{c['emoji']} **{c['name']}**\n"
                          f"╰ מינימום `{sc_short(c['min'])}` • פרס ראשי `x{max(c['wins']):g}` • {stock}")
-        e = discord.Embed(color=0x2B6B3F, title="🎟️ ✦ כרטיסי גירוד ✦ 🎟️", description=(
+        e = discord.Embed(color=0xD4AF37, title="🎟️ ✦ כרטיסי גירוד ✦ 🎟️", description=(
             "\n\n".join(lines) +
             f"\n\n💳 **יתרה בבנק:** {fmt(bank)} {cur()}\n"
             "👇 בחרו חפיסה מהתפריט והקלידו כמה לשלם"))
