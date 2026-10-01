@@ -4,13 +4,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 from discord.ext import commands, tasks
 from aiohttp import web
 
-try:
-    from faces import FACES_B64
-    FACES = Image.open(io.BytesIO(base64.b64decode(FACES_B64))).convert("RGB")
-except Exception as _e:
-    print("faces.py not loaded, using plain cards:", repr(_e))
-    FACES = None
-
 # ================= CONFIG =================
 TOKEN = (os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or "").strip().strip('"').strip("'")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -912,12 +905,7 @@ def hand_value(cards):
         total, aces = total - 10, aces - 1
     return total
 
-SW, SH = 68, 120
 TABLE_W = 960
-MASK = Image.new("L", (SW, SH), 0)
-ImageDraw.Draw(MASK).rounded_rectangle([0, 0, SW - 1, SH - 1], radius=6, fill=255)
-SUIT_COLORS = {"♣": (34, 139, 34), "♠": (40, 40, 40), "♥": (205, 30, 30), "♦": (30, 100, 215)}
-FACE_W, FACE_H = 52, 92
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -931,37 +919,149 @@ def get_font(size):
     except TypeError:
         return ImageFont.load_default()
 
+# ---------- real playing cards, drawn in code (no images) ----------
+SW, SH = 96, 134          # final card size in pixels
+_CK = 4                   # supersampling (drawn big, scaled down = smooth edges)
+_CRED = (200, 24, 40, 255)
+_CBLACK = (24, 24, 30, 255)
+_CGOLD = (236, 184, 48, 255)
+_CGOLD_D = (150, 105, 15, 255)
+_CSKIN = (250, 218, 178, 255)
+_CINK = (40, 30, 30, 255)
+SUIT_COLOR = {"♣": _CBLACK, "♠": _CBLACK, "♥": _CRED, "♦": _CRED}
+
+def _ccircle(cx, cy, r, n=48):
+    return [(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
+
+def _cnorm(polys):
+    pts = [p for poly in polys for p in poly]
+    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    cx, cy, s = (x0 + x1) / 2, (y0 + y1) / 2, 2 / max(x1 - x0, y1 - y0)
+    return [[((x - cx) * s, (y - cy) * s) for x, y in poly] for poly in polys]
+
+def _cheart():
+    pts = []
+    for i in range(160):
+        t = 2 * math.pi * i / 160
+        pts.append((16 * math.sin(t) ** 3,
+                    -(13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t))))
+    return pts
+
+SUIT_POLYS = {
+    "♥": _cnorm([_cheart()]),
+    "♦": _cnorm([[(0, -1), (0.66, 0), (0, 1), (-0.66, 0)]]),
+    "♠": _cnorm([[(x, -y) for x, y in _cheart()], [(-1.8, 5), (1.8, 5), (5.5, 16), (-5.5, 16)]]),
+    "♣": _cnorm([_ccircle(0, -6, 5.6), _ccircle(-6.3, 3, 5.6), _ccircle(6.3, 3, 5.6), _ccircle(0, 0.5, 3.4),
+                 [(-1.8, 2), (1.8, 2), (5.5, 14), (-5.5, 14)]]),
+}
+
+def draw_suit(d, suit, cx, cy, s, flip=False):
+    color = SUIT_COLOR[suit]
+    for poly in SUIT_POLYS[suit]:
+        d.polygon([(cx + x * s, cy + (-y if flip else y) * s) for x, y in poly], fill=color)
+
+_PT = 1 / 3
+CARD_PIPS = {   # (column 0 / .5 / 1, row 0..1)
+    "2": [(.5, 0), (.5, 1)],
+    "3": [(.5, 0), (.5, .5), (.5, 1)],
+    "4": [(0, 0), (1, 0), (0, 1), (1, 1)],
+    "5": [(0, 0), (1, 0), (.5, .5), (0, 1), (1, 1)],
+    "6": [(0, 0), (1, 0), (0, .5), (1, .5), (0, 1), (1, 1)],
+    "7": [(0, 0), (1, 0), (.5, .25), (0, .5), (1, .5), (0, 1), (1, 1)],
+    "8": [(0, 0), (1, 0), (.5, .25), (0, .5), (1, .5), (.5, .75), (0, 1), (1, 1)],
+    "9": [(0, 0), (1, 0), (0, _PT), (1, _PT), (.5, .5), (0, 2 * _PT), (1, 2 * _PT), (0, 1), (1, 1)],
+    "10": [(0, 0), (1, 0), (.5, 1 / 6), (0, _PT), (1, _PT), (0, 2 * _PT), (1, 2 * _PT), (.5, 5 / 6), (0, 1), (1, 1)],
+}
+
+def _face_layer(rank, suit, W, H):
+    """Court card: framed panel with a figure in the top half, mirrored (rotated 180) into the bottom half."""
+    K = _CK
+    col = SUIT_COLOR[suit]
+    lay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(lay)
+    px0, px1, py0, py1 = .25 * W, .75 * W, .10 * H, .90 * H
+    d.rounded_rectangle([px0, py0, px1, py1], radius=4 * K, fill=(255, 247, 224, 255), outline=_CGOLD_D, width=2 * K)
+    d.line([(px0, H / 2), (px1, H / 2)], fill=(225, 200, 150, 255), width=K)
+    w = 2 * K
+    d.polygon([(.27 * W, .5 * H), (.33 * W, .37 * H), (.67 * W, .37 * H), (.73 * W, .5 * H)], fill=col, outline=_CINK)
+    d.polygon([(.42 * W, .37 * H), (.5 * W, .45 * H), (.58 * W, .37 * H)], fill=_CGOLD, outline=_CGOLD_D)
+    for bx in (.36, .64):
+        d.ellipse([bx * W - 2 * K, .455 * H - 2 * K, bx * W + 2 * K, .455 * H + 2 * K], fill=_CGOLD)
+    hair = (120, 70, 25, 255) if rank != "K" else (170, 170, 175, 255)
+    if rank == "Q":
+        hair = (205, 150, 40, 255)
+        d.ellipse([.34 * W, .22 * H, .66 * W, .42 * H], fill=hair, outline=_CINK, width=K)
+    elif rank == "J":
+        d.ellipse([.36 * W, .2 * H, .64 * W, .36 * H], fill=hair, outline=_CINK, width=K)
+    d.ellipse([.405 * W, .225 * H, .595 * W, .375 * H], fill=_CSKIN, outline=_CINK, width=w // 2)
+    for ex in (.46, .54):
+        d.ellipse([ex * W - K, .29 * H - K, ex * W + K, .29 * H + K], fill=_CINK)
+    d.arc([.46 * W, .3 * H, .54 * W, .35 * H], 20, 160, fill=(150, 50, 50, 255), width=K)
+    if rank == "K":
+        d.polygon([(.4 * W, .335 * H), (.43 * W, .375 * H), (.5 * W, .385 * H), (.57 * W, .375 * H), (.6 * W, .335 * H),
+                   (.56 * W, .36 * H), (.5 * W, .37 * H), (.44 * W, .36 * H)], fill=hair, outline=_CINK)
+        d.polygon([(.395 * W, .245 * H), (.38 * W, .15 * H), (.44 * W, .2 * H), (.5 * W, .13 * H), (.56 * W, .2 * H),
+                   (.62 * W, .15 * H), (.605 * W, .245 * H)], fill=_CGOLD, outline=_CGOLD_D)
+        for jx in (.4, .5, .6):
+            d.ellipse([jx * W - 1.5 * K, .22 * H - 1.5 * K, jx * W + 1.5 * K, .22 * H + 1.5 * K], fill=_CRED)
+    elif rank == "Q":
+        d.polygon([(.41 * W, .245 * H), (.4 * W, .17 * H), (.455 * W, .21 * H), (.5 * W, .15 * H), (.545 * W, .21 * H),
+                   (.6 * W, .17 * H), (.59 * W, .245 * H)], fill=_CGOLD, outline=_CGOLD_D)
+        d.ellipse([.5 * W - 1.5 * K, .2 * H - 1.5 * K, .5 * W + 1.5 * K, .2 * H + 1.5 * K], fill=col)
+    else:
+        d.pieslice([.38 * W, .15 * H, .62 * W, .31 * H], 180, 360, fill=col, outline=_CINK)
+        d.rectangle([.38 * W, .23 * H, .62 * W, .25 * H], fill=_CGOLD, outline=_CGOLD_D)
+        d.polygon([(.6 * W, .2 * H), (.74 * W, .12 * H), (.68 * W, .24 * H)], fill=(235, 235, 240, 255), outline=_CINK)
+    draw_suit(d, suit, .33 * W, .2 * H, .05 * H)
+    return Image.alpha_composite(lay, lay.rotate(180))
+
 @lru_cache(maxsize=None)
 def get_card(card):
     r, s = card
-    if FACES is not None:
-        x, y = RANKS.index(r) * FACE_W, SUITS.index(s) * FACE_H
-        im = FACES.crop((x, y, x + FACE_W, y + FACE_H)).resize((SW, SH), Image.LANCZOS).convert("RGBA")
-        ImageDraw.Draw(im).rectangle([0, 0, SW - 1, SH - 1], outline=(170, 170, 170, 255), width=1)
-        im.putalpha(MASK)
-        return im
-    im = Image.new("RGBA", (SW, SH), (255, 255, 255, 255))
-    inner = Image.new("RGBA", (SW - 8, SH - 8), SUIT_COLORS[s] + (255,))
-    m = Image.new("L", inner.size, 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=7, fill=255)
-    im.paste(inner, (4, 4), m)
-    ImageDraw.Draw(im).text((SW // 2, SH // 2), r, font=get_font(66 if len(r) == 1 else 52),
-                            fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 120))
-    im.putalpha(MASK)
-    return im
+    K = _CK
+    W, H = SW * K, SH * K
+    col = SUIT_COLOR[s]
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=9 * K, fill=(255, 255, 255, 255), outline=(170, 170, 176, 255), width=K)
+    d.rounded_rectangle([5 * K, 5 * K, W - 1 - 5 * K, H - 1 - 5 * K], radius=6 * K, outline=(235, 235, 238, 255), width=K)
+    if r in ("J", "Q", "K"):
+        im = Image.alpha_composite(im, _face_layer(r, s, W, H))
+        d = ImageDraw.Draw(im)
+    elif r == "A":
+        draw_suit(d, s, W / 2, H / 2, .21 * H)
+    else:
+        for cx, cy in CARD_PIPS[r]:
+            draw_suit(d, s, (.33 + .34 * cx) * W, (.2 + .6 * cy) * H, .075 * H, flip=cy > .5)
+    idx = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    di = ImageDraw.Draw(idx)
+    di.text((.14 * W, .1 * H), r, font=get_font(int(H * (.13 if len(r) == 2 else .165))), fill=col, anchor="mm")
+    draw_suit(di, s, .14 * W, .205 * H, .042 * H)
+    im = Image.alpha_composite(Image.alpha_composite(im, idx), idx.rotate(180))
+    return im.resize((SW, SH), Image.LANCZOS)
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=1)
 def get_back():
-    im = Image.new("RGBA", (SW, SH), (250, 250, 250, 255))
-    inner = Image.new("RGBA", (SW - 10, SH - 10), (170, 30, 50, 255))
-    d = ImageDraw.Draw(inner)
-    for k in range(-SH, SW, 12):
-        d.line([(k, 0), (k + SH, SH)], fill=(205, 75, 90, 255), width=2)
-    m = Image.new("L", inner.size, 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=5, fill=255)
-    im.paste(inner, (5, 5), m)
-    im.putalpha(MASK)
-    return im
+    K = _CK
+    W, H = SW * K, SH * K
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=9 * K, fill=(255, 255, 255, 255), outline=(170, 170, 176, 255), width=K)
+    m = 7 * K
+    inner = Image.new("RGBA", (W - 2 * m, H - 2 * m), (150, 24, 44, 255))
+    di = ImageDraw.Draw(inner)
+    step = 12 * K
+    for k in range(-inner.height, inner.width + inner.height, step):
+        di.line([(k, 0), (k + inner.height, inner.height)], fill=(215, 90, 105, 255), width=K)
+        di.line([(k, inner.height), (k + inner.height, 0)], fill=(215, 90, 105, 255), width=K)
+    cx, cy = inner.width / 2, inner.height / 2
+    di.ellipse([cx - 16 * K, cy - 16 * K, cx + 16 * K, cy + 16 * K], fill=(150, 24, 44, 255), outline=_CGOLD, width=2 * K)
+    di.polygon([(cx, cy - 10 * K), (cx + 7 * K, cy), (cx, cy + 10 * K), (cx - 7 * K, cy)], fill=_CGOLD)
+    mask = Image.new("L", inner.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=5 * K, fill=255)
+    im.paste(inner, (m, m), mask)
+    return im.resize((SW, SH), Image.LANCZOS)
 
 def render_table(dealer, hands, hide_dealer):
     rows = [("YOUR HAND" + (f" {i + 1}" if len(hands) > 1 else ""), list(h)) for i, h in enumerate(hands)]
