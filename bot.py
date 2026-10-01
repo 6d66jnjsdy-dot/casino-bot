@@ -65,7 +65,7 @@ MT_SAFE = "💲"
 
 # ---------- $multi (owner only): multiplies the NET profit of a game ----------
 MULTI_MAX = 5
-MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch")
+MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch", "crash")
 
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1   # the real chance is strength + 1; the message now shows the REAL chance (strength + CF_HIDDEN)
@@ -185,10 +185,9 @@ def fmt_left(until):
     return (" ".join(parts) or "0s") + " left"
 
 def luck_attempts(uid):
-    """How many tries the game gets to reach a good result. 1 = no luck. Only the owner can have luck.
+    """How many tries the game gets to reach a good result. 1 = no luck.
+    Luck works for EVERY player (only the owner can turn it on/off with $luck / $unluck).
     x2.5 = 2 tries, plus a 50% chance for a 3rd."""
-    if uid != OWNER_ID:
-        return 1
     cfg = DB.get("luck")
     if not cfg:
         return 1
@@ -305,21 +304,21 @@ def log_event(user, text, color):
 def log_game(user, game, bet, net):
     cash = user_data(user.id)["cash"]
     if net > 0:
-        icon, result, color = "🟢", f"ניצחון **+{fmt(net)}**", GREEN
+        icon, result, color = "🟢", f"Win **+{fmt(net)}**", GREEN
     elif net < 0:
-        icon, result, color = "🔴", f"הפסד **-{fmt(-net)}**", RED
+        icon, result, color = "🔴", f"Loss **-{fmt(-net)}**", RED
     else:
-        icon, result, color = "🟡", "תיקו – ההימור הוחזר", YELLOW
+        icon, result, color = "🟡", "Push - bet returned", YELLOW
     lines = [f"{icon} **{game}**"]
     if bet:
-        lines.append(f"הימור: **{fmt(bet)}** {cur()}")
-    lines.append(f"תוצאה: {result} {cur()}" if net else f"תוצאה: {result}")
-    lines.append(f"יתרה במזומן: **{fmt(cash)}** {cur()}")
+        lines.append(f"Bet: **{fmt(bet)}** {cur()}")
+    lines.append(f"Result: {result} {cur()}" if net else f"Result: {result}")
+    lines.append(f"Cash balance: **{fmt(cash)}** {cur()}")
     log_event(user, "\n".join(lines), color)
 
 def log_money(user, text, color=BLUE):
     u = user_data(user.id)
-    log_event(user, f"{text}\nמזומן: **{fmt(u['cash'])}** • בנק: **{fmt(u['bank'])}** {cur()}", color)
+    log_event(user, f"{text}\nCash: **{fmt(u['cash'])}** • Bank: **{fmt(u['bank'])}** {cur()}", color)
 
 # ---------- owner tools ($predict / $touch), not shown in $info ----------
 def board_text(view):
@@ -1656,6 +1655,253 @@ async def hl(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
         raise
 
+# ================= CRASH ($crash) =================
+# A real-time game: the multiplier climbs and can crash at any moment. The message is edited with a NEW picture
+# every tick (no GIF, nothing pre-rendered, the game starts the second the command is sent). Cashout uses the
+# real server time of the click, so the player gets the true multiplier of that moment.
+CRASH_RATE = 0.1        # m(t) = e^(0.1 * t)  ->  x2 after ~7s, x5 after ~16s, x10 after ~23s
+CRASH_TICK = 1.0        # seconds between picture updates (Discord allows ~5 edits per 5s per channel)
+CRASH_EDGE = 0.04       # 4% house edge: P(crash >= x) = 0.96 / x   (4% of games crash instantly at x1.00)
+CRASH_CAP = 100.0       # highest possible crash point
+CRASH_AUTO_MIN = 1.01
+CRASH_USAGE = "crash <amount | half | all> [auto-cashout, e.g. 2.5x]"
+CR_W, CR_H, CR_S = 640, 300, 2   # picture size, and the supersampling factor (drawn 2x bigger, then shrunk = smooth lines)
+
+def crash_mult(t):
+    return math.exp(CRASH_RATE * t)
+
+def crash_time(m):
+    return math.log(m) / CRASH_RATE
+
+def crash_point(uid):
+    """The point where the round crashes. Luck = the best of several rolls."""
+    best = 1.0
+    for _ in range(max(1, luck_attempts(uid))):
+        r = random.random()
+        p = math.floor(100 * (1 - CRASH_EDGE) / (1 - r)) / 100
+        best = max(best, min(CRASH_CAP, p))
+    return best
+
+@lru_cache(maxsize=1)
+def crash_bg():
+    W, H = CR_W * CR_S, CR_H * CR_S
+    im = Image.new("RGB", (W, H))
+    d = ImageDraw.Draw(im)
+    for y in range(H):          # the same dark casino red as the slots machine
+        k = y / H
+        d.line([(0, y), (W, y)], fill=(int(74 - 34 * k), int(14 - 6 * k), int(30 - 12 * k)))
+    return im
+
+@lru_cache(maxsize=1)
+def crash_rocket():
+    im = Image.new("RGBA", (200, 88), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.polygon([(6, 44), (48, 28), (48, 60)], fill=(255, 140, 30, 255))          # flame
+    d.polygon([(22, 44), (48, 34), (48, 54)], fill=(255, 235, 120, 255))
+    d.polygon([(58, 26), (42, 2), (92, 26)], fill=(200, 35, 50, 255))            # fins
+    d.polygon([(58, 62), (42, 86), (92, 62)], fill=(200, 35, 50, 255))
+    d.rounded_rectangle([44, 24, 152, 64], radius=18, fill=(238, 238, 244, 255), outline=(150, 150, 165, 255), width=3)
+    d.polygon([(150, 24), (194, 44), (150, 64)], fill=(220, 40, 50, 255))        # nose
+    d.ellipse([100, 33, 124, 55], fill=(90, 200, 255, 255), outline=(40, 110, 170, 255), width=3)   # window
+    return im.resize((150, 66), Image.LANCZOS)
+
+def crash_boom(d, cx, cy, r):
+    pts = []
+    for i in range(24):
+        a = math.pi * 2 * i / 24
+        rr = r if i % 2 == 0 else r * 0.45
+        pts.append((cx + math.cos(a) * rr, cy + math.sin(a) * rr))
+    d.polygon(pts, fill=(255, 150, 30, 255))
+    d.polygon([(cx + (x - cx) * 0.55, cy + (y - cy) * 0.55) for x, y in pts], fill=(255, 235, 110, 255))
+
+def crash_step(span, target=4):
+    raw = span / target
+    for s in (0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100):
+        if s >= raw:
+            return s
+    return 100
+
+def render_crash(t, state, m):
+    """One picture of the graph. state: 'run' (rocket flying), 'crash' (explosion) or 'cash' (cashed out)."""
+    S = CR_S
+    W, H = CR_W * S, CR_H * S
+    im = crash_bg().copy().convert("RGBA")
+    d = ImageDraw.Draw(im)
+    L, R, T, B = 78 * S, W - 26 * S, 26 * S, H - 40 * S
+    tmax, mmax = max(8.0, t * 1.15), max(2.0, m * 1.2)
+    grid, label = (112, 40, 56, 255), (205, 170, 175, 255)
+    ystep, k = crash_step(mmax - 1), 0
+    while 1 + k * ystep <= mmax:                       # horizontal lines = multipliers
+        val = 1 + k * ystep
+        py = B - (val - 1) / (mmax - 1) * (B - T)
+        d.line([(L, py), (R, py)], fill=grid, width=S)
+        d.text((L - 8 * S, py), f"x{val:g}", font=get_font(14 * S), fill=label, anchor="rm")
+        k += 1
+    xstep, x = crash_step(tmax, 5), 0.0
+    while x <= tmax:                                   # vertical lines = seconds
+        px = L + x / tmax * (R - L)
+        d.line([(px, T), (px, B)], fill=grid, width=S)
+        d.text((px, B + 8 * S), f"{x:g}s", font=get_font(14 * S), fill=label, anchor="mt")
+        x += xstep
+    col = {"run": (235, 190, 60), "crash": (230, 60, 60), "cash": (90, 255, 120)}[state]
+    N = 70
+    pts = []
+    for i in range(N + 1):
+        tt = t * i / N
+        pts.append((L + tt / tmax * (R - L), B - (crash_mult(tt) - 1) / (mmax - 1) * (B - T)))
+    ov = Image.new("RGBA", im.size, (0, 0, 0, 0))      # soft fill under the curve
+    ImageDraw.Draw(ov).polygon(pts + [(pts[-1][0], B), (pts[0][0], B)], fill=col + (60,))
+    im.alpha_composite(ov)
+    d = ImageDraw.Draw(im)
+    d.line(pts, fill=col + (255,), width=5 * S, joint="curve")
+    ex, ey = pts[-1]
+    if state == "run":                                 # the rocket points along the curve
+        (x1, y1), (x2, y2) = pts[-2], pts[-1]
+        ang = math.degrees(math.atan2(-(y2 - y1), x2 - x1)) if (x1, y1) != (x2, y2) else 10
+        rk = crash_rocket().rotate(ang, expand=True, resample=Image.BICUBIC)
+        im.paste(rk, (int(ex - rk.width / 2), int(ey - rk.height / 2)), rk)
+    elif state == "crash":
+        crash_boom(d, ex, ey, 40 * S)
+    else:
+        d.ellipse([ex - 9 * S, ey - 9 * S, ex + 9 * S, ey + 9 * S], fill=(90, 255, 120, 255), outline=(255, 255, 255, 255), width=3 * S)
+    big = {"run": (255, 255, 255), "crash": (255, 90, 90), "cash": (110, 255, 140)}[state]
+    d.text((W / 2, H * 0.38), f"x{m:.2f}", font=get_font(70 * S), fill=big + (255,), anchor="mm",
+           stroke_width=4 * S, stroke_fill=(0, 0, 0, 255))
+    if state != "run":
+        d.text((W / 2, H * 0.38 + 62 * S), "CRASHED" if state == "crash" else "CASHED OUT", font=get_font(26 * S),
+               fill=big + (255,), anchor="mm", stroke_width=2 * S, stroke_fill=(0, 0, 0, 255))
+    d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60, 255), width=4 * S)
+    buf = io.BytesIO()
+    im.convert("RGB").resize((CR_W, CR_H), Image.LANCZOS).save(buf, "JPEG", quality=88)
+    return buf.getvalue()
+
+class CrashView(OwnedView):
+    def __init__(self, user, bet, token, crash, auto=None):
+        super().__init__(timeout=180)
+        self.user, self.bet, self.token, self.crash, self.auto = user, bet, token, crash, auto
+        self.message = self.t0 = None
+        self.done, self.render_n = False, 0
+        self.edit_lock = asyncio.Lock()
+
+    async def frame(self, t, state, m):
+        self.render_n += 1
+        name = f"crash{self.render_n}.jpg"
+        data = await asyncio.to_thread(render_crash, t, state, m)
+        return discord.File(io.BytesIO(data), name), name
+
+    def embed_run(self, m, name):
+        lines = [f"**Bet:** `{fmt(self.bet)}` {cur()}",
+                 f"**Multiplier:** `x{m:.2f}`",
+                 f"**Cashout now:** `{fmt(int(self.bet * m))}` {cur()}"]
+        if self.auto:
+            lines.append(f"**Auto cashout:** `x{self.auto:g}`")
+        e = make_embed(self.user, "\n".join(lines), YELLOW, "🚀 Crash")
+        e.set_image(url=f"attachment://{name}")
+        return e
+
+    async def settle(self, kind, m):
+        # everything up to the first await is synchronous: the round can only be settled once
+        if self.done:
+            return
+        self.done = True
+        pending_done(self.token)
+        returned = int(self.bet * m) if kind == "cash" else 0
+        if returned > self.bet:                                    # $multi bonus on a win (0 when off)
+            returned += multi_extra("crash", returned - self.bet)
+        user_data(self.user.id)["cash"] += returned
+        save()
+        net = returned - self.bet
+        log_game(self.user, f"crash (cashed out x{m:.2f})" if kind == "cash" else f"crash (crashed at x{self.crash:.2f})", self.bet, net)
+        BUSY.discard(self.user.id)
+        self.stop()
+        shown = m if kind == "cash" else self.crash
+        t = crash_time(shown) if shown > 1 else 0.0
+        extra = f"✅ You cashed out at **x{m:.2f}**\n" if kind == "cash" else f"💥 Crashed at **x{self.crash:.2f}**\n"
+        if net == 0:
+            e = make_embed(self.user, f"{extra}Your bet was returned.\nYou now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
+        else:
+            e = result_embed(self.user, net > 0, abs(net), extra)
+        f, name = await self.frame(t, kind, shown)
+        e.set_image(url=f"attachment://{name}")
+        async with self.edit_lock:
+            try:
+                await self.message.edit(embed=e, attachments=[f], view=None)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Cashout", style=discord.ButtonStyle.success)
+    async def cashout(self, interaction, button):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if self.done or self.t0 is None:
+            return
+        m = math.floor(crash_mult(time.monotonic() - self.t0) * 100) / 100   # the real multiplier at the moment of the click
+        if m >= self.crash:
+            await self.settle("crash", self.crash)      # the rocket was already gone
+        else:
+            await self.settle("cash", max(1.0, m))
+
+    async def run(self):
+        try:
+            tc = crash_time(self.crash)
+            ta = crash_time(self.auto) if self.auto else math.inf
+            nxt = CRASH_TICK
+            while not self.done:
+                target = min(nxt, tc, ta)                # wake up exactly at the crash / auto-cashout moment
+                await asyncio.sleep(max(0.0, self.t0 + target - time.monotonic()))
+                if self.done:
+                    return
+                t = time.monotonic() - self.t0
+                if t >= tc - 0.005:
+                    return await self.settle("crash", self.crash)
+                if t >= ta - 0.005:
+                    return await self.settle("cash", self.auto)
+                m = crash_mult(t)
+                f, name = await self.frame(t, "run", m)
+                async with self.edit_lock:
+                    if self.done:
+                        return
+                    try:
+                        await self.message.edit(embed=self.embed_run(m, name), attachments=[f])
+                    except discord.HTTPException:
+                        pass
+                el = time.monotonic() - self.t0
+                nxt = max(nxt + CRASH_TICK, el + 0.3)    # if Discord is slow, skip frames instead of falling behind
+        except Exception as ex:
+            print("Crash failed:", repr(ex))
+            if not self.done:
+                self.done = True
+                cancel_game(self.user, self.token, self.bet)
+                try:
+                    await self.message.edit(embed=make_embed(self.user, "Something went wrong, your bet was returned.", RED), attachments=[], view=None)
+                except Exception:
+                    pass
+
+@bot.command(name="crash", usage=CRASH_USAGE)
+async def crash_cmd(ctx, amount: str = None, auto: str = None):
+    auto_m = None
+    if auto is not None:                                   # check the auto-cashout BEFORE taking the money
+        try:
+            auto_m = float(auto.lower().strip("x"))
+        except ValueError:
+            return await reply(ctx, f"Usage: `${CRASH_USAGE}`", RED)
+        if not (CRASH_AUTO_MIN <= auto_m <= CRASH_CAP):
+            return await reply(ctx, f"The auto-cashout must be between x{CRASH_AUTO_MIN:g} and x{CRASH_CAP:g}.", RED)
+    bet = await take_bet(ctx, amount, CRASH_USAGE, track=True)
+    if not bet:
+        return
+    view = CrashView(ctx.author, bet, str(ctx.message.id), crash_point(ctx.author.id), auto_m)
+    try:
+        f, name = await view.frame(0.0, "run", 1.0)
+        view.message = await ctx.reply(embed=view.embed_run(1.0, name), file=f, view=view, mention_author=False)
+    except Exception:
+        cancel_game(ctx.author, view.token, bet)
+        raise
+    view.t0 = time.monotonic()                             # the clock starts when the player can see the game
+    t = asyncio.create_task(view.run())
+    _log_tasks.add(t)
+    t.add_done_callback(_log_tasks.discard)
+
 # ================= SCRATCH CARDS ($sc) =================
 # pictures live in scratch_art.py (must sit next to this file)
 try:
@@ -1692,6 +1938,7 @@ SC_CARDS = {
         "orig": (1289, 1580), "spots": [(640, 640, 120), (440, 930, 120), (840, 930, 120), (640, 1140, 85)],
     },
 }
+SC_EN = {"queen": "Queen of Hearts", "casino": "Casino Roulette Wheel", "safe": "Safe", "club": "Club"}   # card names for the English logs
 SC_DECOYS = [0.3, 0.5, 0.8, 1.1, 1.3, 1.5, 1.7, 2, 2.3, 3, 3.5, 4, 5, 7, 10, 15, 25]
 
 def sc_short(n):
@@ -1872,7 +2119,7 @@ class ScratchView(OwnedView):
         u[SC_PAY_TO] += returned
         save()
         net = returned - self.bet
-        log_game(self.user, f"scratch {self.card['name']}", self.bet, net)
+        log_game(self.user, f"scratch {SC_EN.get(self.key, self.key)}", self.bet, net)
         self.all_btn.disabled = True
         f, name = self.image(final=True)
         if net > 0:
@@ -2564,21 +2811,16 @@ async def multi(ctx, game: str = None, amount: str = None, duration: str = None)
     await reply(ctx, f"🔥 Multi **x{value:g}** is now active on {names} ({fmt_left(end_at)}). "
                      f"Every win pays x{value:g} of the normal profit.", GREEN)
 
-async def secret_say(ctx, text):
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-    try:
-        await ctx.author.send(text)
-    except Exception:
-        await reply(ctx, text, BLUE)
+# ---------- $luck / $unluck: only the OWNER can type them, but the luck works for EVERY player ----------
+async def luck_say(ctx, text):
+    # a small plain message in the same chat (no DM, the command message is not deleted)
+    await ctx.reply(text, mention_author=False)
 
 @bot.command(name="luck", usage="luck <2.5x | off> [time: 10m, 2h, 1d]")
 @owner_only
 async def luck(ctx, amount: str = None, duration: str = None):
-    """Owner only and secret (the command message is deleted, the answer comes in DM). Luck only affects the owner's own games:
-    x2 = every game gets 2 tries to end well, x2.5 = 2 tries + a 50% chance for a 3rd."""
+    """Owner only (only the owner can type it). While it is ON, every player's games get extra tries to end well:
+    x2 = every game gets 2 tries, x2.5 = 2 tries + a 50% chance for a 3rd."""
     cfg = DB.get("luck")
     if cfg and cfg.get("until") and time.time() >= cfg["until"]:
         DB.pop("luck", None)
@@ -2586,31 +2828,38 @@ async def luck(ctx, amount: str = None, duration: str = None):
         save()
     if amount is None:
         if not cfg:
-            return await secret_say(ctx, f"🍀 Luck is OFF.\nUsage: `${ctx.command.usage}` (1-{LUCK_MAX})")
-        return await secret_say(ctx, f"🍀 Luck is **x{cfg['value']:g}** ({fmt_left(cfg.get('until'))}).")
+            return await luck_say(ctx, f"🍀 Luck is OFF. Usage: `${ctx.command.usage}` (1-{LUCK_MAX})")
+        return await luck_say(ctx, f"🍀 Luck is **x{cfg['value']:g}** for everyone ({fmt_left(cfg.get('until'))}).")
     if amount.lower() in ("off", "none", "no", "reset"):
         DB.pop("luck", None)
         save()
-        return await secret_say(ctx, "🍀 Luck is OFF.")
+        return await luck_say(ctx, "🍀 Luck is OFF.")
     try:
         value = float(amount.lower().strip("x"))
     except ValueError:
-        return await secret_say(ctx, f"Usage: `${ctx.command.usage}`")
+        return await luck_say(ctx, f"Usage: `${ctx.command.usage}`")
     if not (1 <= value <= LUCK_MAX):
-        return await secret_say(ctx, f"Luck must be between 1 and {LUCK_MAX}.")
+        return await luck_say(ctx, f"Luck must be between 1 and {LUCK_MAX}.")
     secs = None
     if duration is not None:
         secs = parse_duration(duration)
         if secs is None:
-            return await secret_say(ctx, "Invalid time. Examples: `30s`, `10m`, `2h`, `1d`, `1h30m`")
+            return await luck_say(ctx, "Invalid time. Examples: `30s`, `10m`, `2h`, `1d`, `1h30m`")
     if value == 1:
         DB.pop("luck", None)
         save()
-        return await secret_say(ctx, "🍀 Luck is OFF.")
+        return await luck_say(ctx, "🍀 Luck is OFF.")
     end_at = int(time.time() + secs) if secs else None
     DB["luck"] = {"value": value, "until": end_at}
     save()
-    await secret_say(ctx, f"🍀 Luck **x{value:g}** is ON ({fmt_left(end_at)}). It only works for you.")
+    await luck_say(ctx, f"🍀 Luck **x{value:g}** is ON for everyone ({fmt_left(end_at)}).")
+
+@bot.command(name="unluck", usage="unluck")
+@owner_only
+async def unluck(ctx):
+    DB.pop("luck", None)
+    save()
+    await luck_say(ctx, "🍀 Luck is OFF.")
 
 class ConfirmReset(discord.ui.View):
     def __init__(self, user):
@@ -2700,7 +2949,8 @@ INFO_SECTIONS = [
         "`$slots` – מכונת סלוטים",
         "`$hl` – גבוה או נמוך",
         "`$ht` – עץ או פלי",
-        "`$cf` – קרב תרנגולות"]),
+        "`$cf` – קרב תרנגולות",
+        "`$crash <סכום> [x2.5]` – מכפיל שעולה בזמן אמת, לוחצים Cashout לפני שהוא מתרסק (אפשר גם יציאה אוטומטית)"]),
     ("🎡 רולטה", [
         "`$roulette <סכום> <בחירות>` (או `$rl`)",
         "אפשר 1, 2 או 4 בחירות מופרדות בפסיק, והסכום מתחלק ביניהן",
@@ -2735,7 +2985,8 @@ AINFO_SECTIONS = [
     ("👑 בעלים", [
         "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
         "`$multi <משחק|all> <1-5|off> [זמן]` – מכפיל לרווח נטו בכל ניצחון (זמן: 10m, 2h, 1d)",
-        "`$luck <1-10>x [זמן]` – מזל רק לבעלים (`$luck off` מבטל)",
+        "`$luck <1-10>x [זמן]` – מזל לכל השחקנים (רק הבעלים יכול להפעיל)",
+        "`$unluck` – מבטל את המזל",
         "`$sc restart` – מחזיר את כל כרטיסי הגירוד למלאי",
         "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
         "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
