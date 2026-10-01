@@ -258,44 +258,51 @@ def refund_pending():
 
 # ---------- game logs ----------
 _log_tasks = set()
+LOG_COLOR = 0x2B2D31
 
 def bg(coro):
     t = asyncio.create_task(coro)
     _log_tasks.add(t)
     t.add_done_callback(_log_tasks.discard)
 
-async def send_log(user, text, color):
+async def send_log(user, title, desc, color, fields):
     try:
         cid = DB.get("log_channel")
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        e = discord.Embed(description=text, color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=f"{user.name} ({user.id})", icon_url=user.display_avatar.url)
+        e = discord.Embed(title=title, description=desc or None, color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=user.name, icon_url=user.display_avatar.url)
+        e.add_field(name="Player", value=f"<@{user.id}>\n`{user.id}`", inline=True)
+        for name, value in fields or ():
+            e.add_field(name=name, value=value, inline=True)
+        e.set_footer(text="Amram Casino Logs")
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
 
-def log_event(user, text, color):
+def log_event(user, title, desc, color, fields=None):
     if DB.get("log_channel"):
-        bg(send_log(user, text, color))
+        bg(send_log(user, title, desc, color, fields))
 
 def log_game(user, game, bet, net):
     cash = user_data(user.id)["cash"]
+    c = cur()
     if net > 0:
-        icon, result, color = "🟢", f"Win **+{fmt(net)}**", GREEN
+        tag, color, res = "WIN", GREEN, f"+{fmt(net)} {c}"
     elif net < 0:
-        icon, result, color = "🔴", f"Loss **-{fmt(-net)}**", RED
+        tag, color, res = "LOSS", RED, f"-{fmt(-net)} {c}"
     else:
-        icon, result, color = "🟡", "Push - bet returned", YELLOW
-    lines = [f"{icon} **{game}**"]
+        tag, color, res = "PUSH", YELLOW, "Bet returned"
+    fields = []
     if bet:
-        lines.append(f"Bet: **{fmt(bet)}** {cur()}")
-    lines.append(f"Result: {result} {cur()}" if net else f"Result: {result}")
-    lines.append(f"Cash balance: **{fmt(cash)}** {cur()}")
-    log_event(user, "\n".join(lines), color)
+        fields.append(("Bet", f"{fmt(bet)} {c}"))
+    fields.append(("Result", res))
+    fields.append(("Balance", f"{fmt(cash)} {c}"))
+    log_event(user, f"{game.upper()}  |  {tag}", None, color, fields)
 
-def log_money(user, text, color=BLUE):
+def log_money(user, title, desc, color=BLUE):
     u = user_data(user.id)
-    log_event(user, f"{text}\nCash: **{fmt(u['cash'])}** • Bank: **{fmt(u['bank'])}** {cur()}", color)
+    c = cur()
+    log_event(user, title, desc, color, [("Cash", f"{fmt(u['cash'])} {c}"), ("Bank", f"{fmt(u['bank'])} {c}")])
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -845,7 +852,7 @@ class SizeView(OwnedView):
         pending_done(self.token)
         user_data(self.user.id)["cash"] += self.bet
         save()
-        log_money(self.user, f"🟡 **S$mines** — timed out, bet **{fmt(self.bet)}** {cur()} returned", YELLOW)
+        log_money(self.user, "S$MINES  |  TIMEOUT", f"Bet of {fmt(self.bet)} {cur()} was returned", YELLOW)
         if self.message:
             await self.message.edit(embed=discord.Embed(description="Timed out, your bet was returned.", color=RED), view=None)
 
@@ -1460,7 +1467,7 @@ async def refund_timeout(view, name):
     pending_done(view.token)
     user_data(view.user.id)["cash"] += view.bet
     save()
-    log_money(view.user, f"🟡 **{name}** — timed out, bet **{fmt(view.bet)}** {cur()} returned", YELLOW)
+    log_money(view.user, f"{name.upper()}  |  TIMEOUT", f"Bet of {fmt(view.bet)} {cur()} was returned", YELLOW)
     BUSY.discard(view.user.id)
     if view.message:
         await view.message.edit(embed=make_embed(view.user, "Timed out, your bet was returned.", RED), view=None)
@@ -1933,11 +1940,12 @@ except Exception as _e:
 SC_WIDTH = 560
 SC_PAY_TO = "bank"
 
+# the order here is the order of the menu and of the kiosk picture
 SC_CARDS = {
-    "queen": {
-        "name": "מלכת הלבבות", "emoji": "♥️", "min": 2_500_000, "total": 350, "cols": 5,
-        "wins": {2.3: 50, 1.7: 25, 1.5: 90, 0.5: 25, 25: 1},
-        "orig": (800, 950), "spots": [(412, 612, 102), (622, 612, 102), (195, 835, 102), (405, 835, 102), (620, 835, 102)],
+    "club": {
+        "name": "הקלף", "emoji": "♣️", "min": 50_000_000, "total": 50, "cols": 4,
+        "wins": {1.5: 5, 2: 5, 7: 2, 60: 1},
+        "orig": (1289, 1580), "spots": [(640, 640, 120), (440, 930, 120), (840, 930, 120), (640, 1140, 85)],
     },
     "casino": {
         "name": "קזינו גלגל הרולטה", "emoji": "🎰", "min": 25_000_000, "total": 200, "cols": 4,
@@ -1951,10 +1959,10 @@ SC_CARDS = {
         "orig": (1289, 1526),
         "spots": [(x, y, 68) for y in (1035, 1340) for x in (935, 665, 395)],
     },
-    "club": {
-        "name": "הקלף", "emoji": "♣️", "min": 50_000_000, "total": 50, "cols": 4,
-        "wins": {1.5: 5, 2: 5, 7: 2, 60: 1},
-        "orig": (1289, 1580), "spots": [(640, 640, 120), (440, 930, 120), (840, 930, 120), (640, 1140, 85)],
+    "queen": {
+        "name": "מלכת הלבבות", "emoji": "♥️", "min": 2_500_000, "total": 350, "cols": 5,
+        "wins": {2.3: 50, 1.7: 25, 1.5: 90, 0.5: 25, 25: 1},
+        "orig": (800, 950), "spots": [(412, 612, 102), (622, 612, 102), (195, 835, 102), (405, 835, 102), (620, 835, 102)],
     },
 }
 SC_EN = {"queen": "Queen of Hearts", "casino": "Casino Roulette Wheel", "safe": "Safe", "club": "Club"}
@@ -2108,11 +2116,22 @@ def sc_banner_render():
         d.text((x, X(y)), num, font=f, fill=fill, anchor="lt")
         d.text((x + wn + X(sp), X(y)), lab, font=f, fill=fill, anchor="lt")
 
+    def spade(cx, cy, s, fill, draw=None):
+        """Vector spade, centred on (cx, cy), about 2*s tall."""
+        g = draw or d
+        g.polygon([(X(cx), X(cy - s)), (X(cx - 0.92 * s), X(cy + 0.14 * s)), (X(cx + 0.92 * s), X(cy + 0.14 * s))], fill=fill)
+        for sx in (-0.44, 0.44):
+            r = 0.5 * s
+            g.ellipse([X(cx + sx * s - r), X(cy + 0.14 * s - r), X(cx + sx * s + r), X(cy + 0.14 * s + r)], fill=fill)
+        g.polygon([(X(cx), X(cy + 0.1 * s)), (X(cx - 0.34 * s), X(cy + 1.0 * s)), (X(cx + 0.34 * s), X(cy + 1.0 * s))], fill=fill)
+
     rnd = random.Random(7)
+    CHAMP = (222, 205, 160)        # soft champagne used for thin accents
+    CHAMP_D = (150, 132, 96)
 
     # ---- evening street background with soft lights ----
-    vgrad((0, 0, W, 700), (8, 14, 34), (44, 56, 100))
-    pal = [(255, 200, 120, 70), (130, 190, 255, 60), (255, 130, 170, 50), (200, 255, 200, 40)]
+    vgrad((0, 0, W, 700), (8, 12, 30), (40, 52, 96))
+    pal = [(190, 210, 255, 60), (130, 190, 255, 60), (255, 150, 190, 40), (200, 230, 255, 40)]
     over(lambda g: [g.ellipse(B((x - r, y - r, x + r, y + r)), fill=rnd.choice(pal))
                     for x, y, r in ((rnd.uniform(0, W), rnd.uniform(0, 600), rnd.uniform(10, 40)) for _ in range(46))], blur=5)
     vgrad((0, 700, W, H), (62, 64, 78), (22, 22, 32))
@@ -2120,7 +2139,7 @@ def sc_banner_render():
         d.line(B((0, yy, W, yy)), fill=(40, 42, 54), width=S)
     for xx in range(-500, 1600, 120):
         d.line(B((W / 2 + (xx - W / 2) * 0.5, 700, xx, H)), fill=(40, 42, 54), width=S)
-    over(lambda g: g.ellipse(B((120, 726, 980, 812)), fill=(255, 222, 150, 46)), blur=22)      # light spilling on the floor
+    over(lambda g: g.ellipse(B((120, 726, 980, 812)), fill=(190, 215, 255, 40)), blur=22)       # light spilling on the floor
     over(lambda g: g.ellipse(B((30, 712, 1070, 772)), fill=(0, 0, 0, 190)), blur=12)            # shadow under the kiosk
 
     # ---- back wall inside the kiosk ----
@@ -2128,8 +2147,8 @@ def sc_banner_render():
     for yy in range(222, 600, 22):
         d.line(B((110, yy, 990, yy)), fill=(24, 34, 60), width=S)
         d.line(B((110, yy + 1, 990, yy + 1)), fill=(66, 88, 128), width=1)
-    over(lambda g: g.rectangle(B((130, 206, 970, 300)), fill=(255, 244, 205, 90)), blur=26)      # light from the LED strip
-    vgrad((110, 206, 990, 221), (255, 253, 240), (255, 238, 180))
+    over(lambda g: g.rectangle(B((130, 206, 970, 300)), fill=(225, 238, 255, 90)), blur=26)      # light from the LED strip
+    vgrad((110, 206, 990, 221), (250, 252, 255), (214, 226, 246))
 
     # shelf
     vgrad((110, 478, 990, 494), (244, 247, 252), (186, 193, 206))
@@ -2217,9 +2236,10 @@ def sc_banner_render():
     d.line(B((54, 620, 1046, 620)), fill=(120, 128, 146), width=S)
     vgrad((62, 620, 1038, 716), (238, 242, 248), (206, 212, 224))
     vgrad((62, 636, 1038, 676), (0, 98, 192), (0, 62, 134))
-    d.rectangle(B((62, 676, 1038, 686)), fill=(255, 204, 0))
+    d.rectangle(B((62, 676, 1038, 680)), fill=CHAMP)                                       # thin accent line (was a thick yellow bar)
+    d.rectangle(B((62, 680, 1038, 686)), fill=(0, 46, 108))
     d.line(B((62, 636, 1038, 636)), fill=(90, 160, 235), width=S)
-    d.text((X(550), X(656)), he("גרדו ומצאו 3 מכפילים זהים!"), font=F(26), fill=(255, 255, 255), anchor="mm")
+    d.text((X(550), X(656)), he("מצאו צירוף של שלושה מכפילים"), font=F(26), fill=(255, 255, 255), anchor="mm")
     vgrad((62, 716, 1038, 738), (70, 74, 90), (30, 32, 42))
     # card terminal and pen cup on the counter
     over(lambda g: g.rounded_rectangle(B((992, 566, 1036, 600)), radius=6, fill=(0, 0, 0, 120)), blur=4)
@@ -2232,21 +2252,33 @@ def sc_banner_render():
     for px, py, col in ((80, 556, (200, 40, 40)), (86, 552, (30, 90, 200)), (92, 558, (30, 30, 34))):
         d.line(B((px + 6, 572, px, py)), fill=col, width=2 * S)
 
-    # ---- roof, lit sign box ----
+    # ---- roof ----
     over(lambda g: g.rectangle(B((50, 86, 1050, 104)), fill=(0, 0, 0, 110)), blur=6)
     d.polygon(B((36, 36, 1064, 36, 1046, 62, 54, 62)), fill=(238, 242, 250))
     vgrad((50, 62, 1050, 86), (250, 252, 255), (190, 198, 216))
     d.line(B((50, 86, 1050, 86)), fill=(120, 128, 146), width=S)
-    d.rounded_rectangle(B((90, 90, 1010, 192)), radius=X(10), fill=(212, 218, 230), outline=(110, 118, 136), width=S)
-    over(lambda g: g.rounded_rectangle(B((98, 98, 1002, 184)), radius=6, fill=(60, 150, 255, 120)), blur=10)
-    vgrad((98, 98, 1002, 184), (22, 114, 210), (0, 56, 126))
-    d.rounded_rectangle(B((98, 98, 1002, 184)), radius=X(6), outline=(120, 180, 240), width=S)
-    over(lambda g: g.rectangle(B((100, 100, 1000, 138)), fill=(255, 255, 255, 24)))
-    d.text((X(550), X(133)), he("כרטיסי גירוד"), font=F(64), fill=(255, 208, 0), anchor="mm", stroke_width=3 * S, stroke_fill=(0, 30, 84))
-    d.text((X(550), X(170)), he("מזל בכל גרידה"), font=F(20), fill=(255, 255, 255), anchor="mm")
-    for bxm in (172, 928):
-        d.ellipse(B((bxm - 36, 105, bxm + 36, 177)), fill=(255, 208, 0), outline=(255, 255, 255), width=3 * S)
-        d.text((X(bxm), X(141)), "₪", font=F(46), fill=(0, 56, 126), anchor="mm")
+
+    # ---- sign: dark glass panel with a thin champagne frame, spades on both sides ----
+    d.rounded_rectangle(B((90, 90, 1010, 192)), radius=X(10), fill=(40, 46, 62), outline=(110, 118, 136), width=S)
+    over(lambda g: g.rounded_rectangle(B((98, 98, 1002, 184)), radius=6, fill=(90, 130, 230, 90)), blur=10)
+    vgrad((98, 98, 1002, 184), (18, 26, 58), (6, 10, 28))
+    over(lambda g: g.ellipse(B((250, 96, 850, 200)), fill=(70, 110, 220, 70)), blur=24)       # soft glow behind the title
+    d.rounded_rectangle(B((98, 98, 1002, 184)), radius=X(6), outline=CHAMP_D, width=S)
+    d.rounded_rectangle(B((104, 104, 996, 178)), radius=X(4), outline=(70, 80, 112), width=1)
+    d.text((X(550), X(134)), he("כרטיסי גירוד"), font=F(60), fill=(248, 244, 232), anchor="mm",
+           stroke_width=2 * S, stroke_fill=(4, 8, 24))
+    # subtitle with thin rules on both sides
+    sub = "A M R A M   C A S I N O"
+    sw = d.textlength(sub, font=F(17))
+    d.text((X(550), X(168)), sub, font=F(17), fill=CHAMP, anchor="mm")
+    for sgn in (-1, 1):
+        x_in = 550 + sgn * (sw / S / 2 + 16)
+        x_out = 550 + sgn * (sw / S / 2 + 110)
+        d.line(B((min(x_in, x_out), 168, max(x_in, x_out), 168)), fill=CHAMP_D, width=S)
+    for sx in (172, 928):
+        d.ellipse(B((sx - 38, 103, sx + 38, 179)), fill=(10, 16, 40), outline=CHAMP_D, width=2 * S)
+        d.ellipse(B((sx - 33, 108, sx + 33, 174)), outline=(60, 70, 104), width=1)
+        spade(sx, 138, 22, (240, 236, 224))
 
     # ---- photo feel: vignette + fine grain (done on the small image: much faster) ----
     out = im.convert("RGB").resize((W, H), Image.LANCZOS)
@@ -2296,7 +2328,7 @@ class ScratchView(OwnedView):
         prizes = " • ".join(f"x{m:g}" for m in sorted(c["wins"], reverse=True))
         e = discord.Embed(color=YELLOW, title=f"🎟️ {c['name']}", description=(
             f"שילמת **{fmt(self.bet)}** {cur()} מהבנק\n\n"
-            f"גרדו ומצאו **3 מכפילים זהים** כדי לזכות!\n"
+            f"מצאו צירוף של **שלושה מכפילים** כדי לזכות!\n"
             f"מכפילים אפשריים: {prizes}\n\nנגרדו {len(self.revealed)}/{self.n}"))
         e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
         e.set_image(url=f"attachment://{name}")
@@ -2472,7 +2504,7 @@ class ScratchMenu(OwnedView):
             f"\n\n💳 **יתרה בבנק:** {fmt(bank)} {cur()}\n"
             "👇 בחרו חפיסה מהתפריט והקלידו כמה לשלם"))
         e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
-        e.set_footer(text="התשלום יורד מהבנק בלבד • מוצאים 3 מכפילים זהים וזוכים")
+        e.set_footer(text="התשלום יורד מהבנק בלבד • מוצאים צירוף של שלושה מכפילים וזוכים")
         if image:
             e.set_image(url="attachment://sc_menu.jpg")
         return e
@@ -2516,7 +2548,10 @@ async def scratch(ctx, sub: str = None):
         view.message = await ctx.reply(embed=view.embed(image=False), view=view, mention_author=False)
 
 # ================= ECONOMY =================
+ID_RE = re.compile(r"<@!?(\d{15,25})>|(\d{15,25})")
+
 async def resolve_target(ctx, arg):
+    """Reply target ("a"), a mention, a raw user ID, or a name."""
     if arg is None or arg.lower() == "a":
         ref = ctx.message.reference
         if ref is None:
@@ -2531,16 +2566,30 @@ async def resolve_target(ctx, arg):
         if not any(m.id == author.id for m in ctx.message.mentions):
             raise ReplyPingOff()
         return ctx.guild.get_member(author.id) or await ctx.guild.fetch_member(author.id)
+    m = ID_RE.fullmatch(arg.strip())
+    if m:
+        uid = int(m.group(1) or m.group(2))
+        member = ctx.guild.get_member(uid) if ctx.guild else None
+        if member:
+            return member
+        try:
+            return await ctx.guild.fetch_member(uid)
+        except discord.HTTPException:
+            pass
+        try:
+            return await bot.fetch_user(uid)
+        except discord.HTTPException:
+            raise commands.BadArgument("Unknown user ID")
     return await commands.MemberConverter().convert(ctx, arg)
 
-@bot.command(name="bal", aliases=["balance"], usage="bal [@user | a (reply)]")
+@bot.command(name="bal", aliases=["balance"], usage="bal [@user | user ID | a (reply)]")
 async def bal(ctx, target: str = None):
     if target is None:
         member = ctx.author
     else:
         member = await resolve_target(ctx, target)
         if member is None:
-            return await reply(ctx, "Usage: `$bal [@user]` — or reply to a player (ping ON) and type `$bal a`", RED)
+            return await reply(ctx, "Usage: `$bal [@user | user ID]` — or reply to a player (ping ON) and type `$bal a`", RED)
     u, c = user_data(member.id), cur()
     await ctx.reply(embed=make_embed(member, (
         "Use the `top` command to view your rank.\n\n"
@@ -2558,7 +2607,7 @@ async def move(ctx, amount, src, dst, usage, verb):
     u[src] -= amt
     u[dst] += amt
     save()
-    log_money(ctx.author, f"🏦 **{ctx.command.name}** — {verb} **{fmt(amt)}** {cur()}", BLUE)
+    log_money(ctx.author, ctx.command.name.upper(), f"{verb.capitalize()} {fmt(amt)} {cur()}", BLUE)
     await reply(ctx, f"Successfully {verb} {fmt(amt)} {cur()} {'to' if dst == 'bank' else 'from'} your bank account.", GREEN)
 
 @bot.command(name="dep", aliases=["deposit"], usage="dep <amount | half | all>")
@@ -2573,7 +2622,7 @@ async def earn(ctx, text):
     amt = random.randint(EARN_MIN, EARN_MAX)
     user_data(ctx.author.id)["cash"] += amt
     save()
-    log_money(ctx.author, f"🟢 **{ctx.command.name}** — earned **{fmt(amt)}** {cur()}", GREEN)
+    log_money(ctx.author, ctx.command.name.upper(), f"Earned {fmt(amt)} {cur()}", GREEN)
     await reply(ctx, text.format(f"{fmt(amt)} {cur()}"), GREEN)
 
 @bot.command(name="crime", cooldown_after_parsing=True)
@@ -2586,26 +2635,26 @@ async def crime(ctx):
 async def work(ctx):
     await earn(ctx, "You worked hard and got {}!")
 
-@bot.command(name="pay", usage="pay @user <amount | half | all>  (or reply + ping ON: pay a <amount>)")
+@bot.command(name="pay", usage="pay @user | user ID <amount | half | all>  (or reply + ping ON: pay a <amount>)")
 async def pay(ctx, target: str = None, amount: str = None):
     member = await resolve_target(ctx, target)
     if member is None or amount is None:
-        return await reply(ctx, "Usage: `$pay @user <amount | half | all>` — or reply to a player (ping ON) and type `$pay a <amount>`", RED)
+        return await reply(ctx, "Usage: `$pay @user | user ID <amount | half | all>` — or reply to a player (ping ON) and type `$pay a <amount>`", RED)
     if member.bot or member.id == ctx.author.id:
         return await reply(ctx, "You can't pay this user.", RED)
     u = user_data(ctx.author.id)
     amt = parse_amount(amount, u["cash"])
     if amt is None or amt <= 0:
-        return await reply(ctx, "Usage: `$pay @user <amount | half | all>`", RED)
+        return await reply(ctx, "Usage: `$pay @user | user ID <amount | half | all>`", RED)
     if amt > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
     u["cash"] -= amt
     user_data(member.id)["cash"] += amt
     save()
-    log_money(ctx.author, f"💸 **pay** — paid **{fmt(amt)}** {cur()} to {member.name} (id {member.id})", BLUE)
+    log_money(ctx.author, "PAY", f"Paid {fmt(amt)} {cur()} to {member.name} (`{member.id}`)", BLUE)
     await reply(ctx, f"You paid {fmt(amt)} {cur()} to {member.name}.", GREEN)
 
-@bot.command(name="rob", usage="rob @user  (or reply + ping ON: rob a)", cooldown_after_parsing=True)
+@bot.command(name="rob", usage="rob @user | user ID  (or reply + ping ON: rob a)", cooldown_after_parsing=True)
 @commands.cooldown(1, ROB_COOLDOWN, commands.BucketType.user)
 async def rob(ctx, target: str = None):
     try:
@@ -2615,7 +2664,7 @@ async def rob(ctx, target: str = None):
         raise
     if member is None:
         ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "Usage: `$rob @user` — or reply to a player (ping ON) and type `$rob a`", RED)
+        return await reply(ctx, "Usage: `$rob @user | user ID` — or reply to a player (ping ON) and type `$rob a`", RED)
     if member.bot or member.id == ctx.author.id:
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "You can't rob this user.", RED)
@@ -2633,7 +2682,7 @@ async def rob(ctx, target: str = None):
         tgt[k] -= v
     me["cash"] += sum(loot.values())
     save()
-    log_game(ctx.author, f"rob {member.name} (id {member.id})", 0, sum(loot.values()))
+    log_game(ctx.author, f"rob {member.name} ({member.id})", 0, sum(loot.values()))
     await reply(ctx, f"You robbed {fmt(sum(loot.values()))} {cur()} from {member.name}!", GREEN)
 
 # ---------- leaderboard ----------
@@ -2767,7 +2816,7 @@ async def shop_buy(interaction, item):
         save()
         print("Shop: add_roles failed:", repr(ex))
         return await shop_say(interaction, "I couldn't give you the role (my role must be above it). You were not charged.")
-    log_money(member, f"🛒 **shop** — bought **{name}** for **{fmt(price)}** {cur()}", YELLOW)
+    log_money(member, "SHOP", f"Bought {name} for {fmt(price)} {cur()}", YELLOW)
     await shop_say(interaction, f"✅ You bought {role.mention} for **{fmt(price)}** {cur()} (from your bank).")
 
 class ShopButton(discord.ui.Button):
@@ -2842,7 +2891,7 @@ async def setgamelogs(ctx, channel: discord.TextChannel = None):
     DB["log_channel"] = channel.id
     save()
     await reply(ctx, f"Game logs will now be sent to {channel.mention}.", GREEN)
-    log_event(ctx.author, "✅ This channel is now the game log (wins, losses and money changes).", BLUE)
+    log_event(ctx.author, "LOG CHANNEL SET", "This channel is now the game log (wins, losses and money changes).", BLUE)
 
 async def parse_money_args(ctx, args):
     where = member = amount = None
@@ -2878,7 +2927,7 @@ async def addmoney(ctx, *args: str):
         return await reply(ctx, err, RED)
     user_data(member.id)[where] += amt
     save()
-    log_event(ctx.author, f"💰 **addmoney** — added **{fmt(amt)}** {cur()} to {member.name}'s {where} (id {member.id})", BLUE)
+    log_event(ctx.author, "ADD MONEY", f"Added **{fmt(amt)}** {cur()} to the {where} of {member.name} (`{member.id}`)", BLUE)
     await reply(ctx, f"Added {fmt(amt)} {cur()} to {member.name}'s {where}.", GREEN)
 
 @bot.command(name="resetmoney", usage="resetmoney <bank|cash|all> @user [amount]")
@@ -2894,8 +2943,8 @@ async def resetmoney(ctx, *args: str):
     else:
         u[where] = amt
     save()
-    log_event(ctx.author, f"💰 **resetmoney** — {member.name}'s {where} " + ("reset to 0" if where == "all" else f"set to **{fmt(amt)}**") +
-              f" (id {member.id})", BLUE)
+    log_event(ctx.author, "RESET MONEY", f"{member.name} (`{member.id}`): {where} " +
+              ("reset to 0" if where == "all" else f"set to **{fmt(amt)}**"), BLUE)
     await reply(ctx, f"{member.name}'s {where} " + ("was reset to 0." if where == "all" else f"was set to {fmt(amt)} {cur()}."), GREEN)
 
 @bot.command(name="addmoneyrole", usage="addmoneyrole <bank|cash> @role <amount>")
@@ -2916,7 +2965,7 @@ async def addmoneyrole(ctx, where: str, role: discord.Role, amount: str):
     for m in members:
         user_data(m.id)[where] += amt
     save()
-    log_event(ctx.author, f"💰 **addmoneyrole** — added **{fmt(amt)}** {cur()} to the {where} of {len(members)} members of {role.name}", BLUE)
+    log_event(ctx.author, "ADD MONEY TO ROLE", f"Added **{fmt(amt)}** {cur()} to the {where} of {len(members)} members of {role.name}", BLUE)
     await reply(ctx, f"Added {fmt(amt)} {cur()} to the {where} of each of the {len(members)} members of {role.mention}.", GREEN)
 
 @bot.command(name="set-currency", aliases=["currency"], usage="set-currency <emoji>")
@@ -3158,79 +3207,91 @@ for _n, _k, _on, _t in (
         ("untouch", "touch", False, "👆 Touch is OFF.")):
     bot.command(name=_n)(owner_only(secret_cmd(_k, _on, _t)))
 
-def info_embed(user, title, description, sections):
-    e = discord.Embed(title=title, description=description, color=BLUE)
+# ================= INFO =================
+INFO_COLOR = 0x1F2A44
+
+def info_embed(user, title, description, sections, footer=None):
+    e = discord.Embed(title=title, description=description, color=INFO_COLOR)
     e.set_author(name=user.name, icon_url=user.display_avatar.url)
-    for name, lines in sections:
-        e.add_field(name=name, value="\n".join(lines), inline=False)
+    for name, rows in sections:
+        width = max(len(cmd) for cmd, _ in rows)
+        body = "\n".join(f"{cmd.ljust(width)}  {desc}" for cmd, desc in rows)
+        e.add_field(name=name, value=f"```\n{body}\n```", inline=False)
+    if footer:
+        e.set_footer(text=footer)
     return e
 
 INFO_SECTIONS = [
-    ("🎮 משחקי לוח", [
-        "`$gm` – חושפים אוצרות ופצצות, ואפשר לצאת עם Cashout בכל רגע",
-        "`$mines` – פצצה אחת, כל יהלום מעלה את הרווח",
-        "`S$mines` – כמו mines עם בחירת גודל לוח",
-        "`$mt` – מגדל כסף, מטפסים שורה אחרי שורה"]),
-    ("🃏 קלפים ומזל", [
-        "`$bj` – בלאק ג'ק",
-        "`$slots` – מכונת סלוטים",
-        "`$hl` – גבוה או נמוך",
-        "`$ht` – עץ או פלי",
-        "`$cf` – קרב תרנגולות",
-        "`$crash <סכום> [x2.5]` – מכפיל שעולה בזמן אמת, לוחצים Cashout לפני שהוא מתרסק (אפשר גם יציאה אוטומטית)"]),
-    ("🎡 רולטה", [
-        "`$roulette <סכום> <בחירות>` (או `$rl`)",
-        "אפשר 1, 2 או 4 בחירות מופרדות בפסיק, והסכום מתחלק ביניהן",
-        "דוגמה: `$roulette all 0,red,6,odd`",
-        "בחירות: מספר 0-36, `red`, `black`, `even`, `odd`, `1-18`, `19-36`, `1-12`, `13-24`, `25-36`, `1st`, `2nd`, `3rd`"]),
-    ("🎟️ כרטיסי גירוד", [
-        "`$sc` – בוחרים כרטיס מהרשימה, מקלידים סכום (מהבנק בלבד) וגורדים",
-        "מלכת הלבבות • קזינו גלגל הרולטה • כספת • הקלף"]),
-    ("💰 כלכלה", [
-        "`$bal [@user]` – מזומן ובנק",
-        "`$dep` / `$with` – הפקדה לבנק ומשיכה",
-        "`$work` / `$crime` – הרווחה מהירה",
-        "`$rob @user` – שוד מזומן של שחקן אחר",
-        "`$pay @user <סכום>` – העברת כסף",
-        "`$top` / `$lb` – טבלת העשירים",
-        "`$shop` – חנות רולים"]),
-    ("💡 טיפים", [
-        "סכום: מספר, `half`, `all`, או `5k` / `2.5m` / `1b`",
-        "אפשר לשחק רק משחק אחד בכל פעם – צריך לסיים אותו קודם",
-        "אפשר גם ריפליי לשחקן עם תיוג **ON** ואז `$rob a` / `$pay a <סכום>` / `$bal a`"]),
+    ("BOARD GAMES", [
+        ("$gm <bet>", "Find treasure, avoid bombs, cash out any time"),
+        ("$mines <bet>", "One bomb, every diamond raises the profit"),
+        ("S$mines <bet>", "Mines with a choice of board size"),
+        ("$mt <bet>", "Money Tower, climb row by row"),
+    ]),
+    ("CARDS AND LUCK", [
+        ("$bj <bet>", "Blackjack"),
+        ("$slots <bet>", "Slot machine"),
+        ("$hl <bet>", "Higher or lower"),
+        ("$ht <bet>", "Heads or tail"),
+        ("$cf <bet>", "Chicken fight"),
+        ("$crash <bet> [x2.5]", "Cash out before the rocket crashes"),
+    ]),
+    ("ROULETTE", [
+        ("$roulette <bet> <picks>", "Alias: $rl. Pick 1, 2 or 4 options"),
+        ("Example", "$roulette all 0,red,6,odd"),
+        ("Picks", "0-36, red, black, even, odd, 1-18, 19-36, 1-12, 13-24, 25-36, 1st, 2nd, 3rd"),
+    ]),
+    ("SCRATCH CARDS", [
+        ("$sc", "Pick a card, enter an amount (bank only) and scratch"),
+    ]),
+    ("ECONOMY", [
+        ("$bal [user]", "Cash and bank balance"),
+        ("$dep / $with", "Deposit to or withdraw from the bank"),
+        ("$work / $crime", "Quick earnings"),
+        ("$rob <user>", "Rob another player's cash"),
+        ("$pay <user> <amt>", "Send money to another player"),
+        ("$top / $lb", "Leaderboard"),
+        ("$shop", "Role shop"),
+    ]),
 ]
+INFO_FOOTER = "Amounts: number, half, all, 5k, 2.5m, 1b  |  <user> can be a mention, a user ID, or a reply with ping ON and the word 'a'"
 
 AINFO_SECTIONS = [
-    ("🛠 צוות (אדמין או רול צוות)", [
-        "`$addmoney <bank|cash> @user <סכום>` – הוספת כסף",
-        "`$addmoneyrole <bank|cash> @role <סכום>` – כסף לכל חברי הרול",
-        "`$resetmoney <bank|cash|all> @user [סכום]` – איפוס כסף של שחקן",
-        "`$set-currency <אימוג'י>` – שינוי סמל המטבע"]),
-    ("⚙️ אדמין", [
-        "`$staff-role @role` – קובע איזה רול נחשב צוות",
-        "`$setgamelogs #channel` – חדר הלוגים"]),
-    ("👑 בעלים", [
-        "`$setaddmoney <מקסימום>` – תקרה להוספת כסף לצוות (`off` מבטל)",
-        "`$multi <משחק|all> <1-5|off> [זמן]` – מכפיל לרווח נטו בכל ניצחון (זמן: 10m, 2h, 1d)",
-        "`$luck <1-10>x [זמן]` – מזל לכל השחקנים (רק הבעלים יכול להפעיל)",
-        "`$unluck` – מבטל את המזל",
-        "`$sc restart` – מחזיר את כל כרטיסי הגירוד למלאי",
-        "`$reset-economy` – מאפס את הכסף של כולם, עם כפתור אישור",
-        "`$disable <פקודה>` / `$undisable <פקודה|all>` – חסימה ושחרור של פקודה"]),
-    ("🧩 פקודות עם !", [
-        "`!set-role-member` – פאנל עם כפתור לקבלת רול (אדמין, בחדר שהוגדר)",
-        "`!clear <כמות>` – מוחק עד 350 הודעות (רק למי שיש את רול המחיקה)",
-        "🛡️ הגנה: מי שמוסיף בוט לשרת מועף, והבוט מועף איתו"]),
+    ("STAFF", [
+        ("$addmoney <bank|cash> <user> <amt>", "Add money to a player"),
+        ("$addmoneyrole <bank|cash> <role> <amt>", "Add money to every member of a role"),
+        ("$resetmoney <bank|cash|all> <user> [amt]", "Set or reset a player's money"),
+        ("$set-currency <emoji>", "Change the currency symbol"),
+    ]),
+    ("ADMIN", [
+        ("$staff-role <role>", "Set which role counts as staff"),
+        ("$setgamelogs <channel>", "Set the log channel"),
+    ]),
+    ("OWNER", [
+        ("$setaddmoney <max|off>", "Limit how much staff can add per command"),
+        ("$multi <game|all> <1-5|off> [time]", "Profit multiplier on wins"),
+        ("$luck <1-10>x [time]", "Luck for every player"),
+        ("$unluck", "Turn luck off"),
+        ("$sc restart", "Restock all scratch cards"),
+        ("$reset-economy", "Reset everyone's money (asks for confirmation)"),
+        ("$disable / $undisable <cmd|all>", "Block or unblock a command"),
+    ]),
+    ("BANG COMMANDS", [
+        ("!set-role-member", "Role button panel (admin)"),
+        ("!clear <amount>", "Delete up to 350 messages (clear role only)"),
+    ]),
 ]
 
 @bot.command(name="info")
 async def info(ctx):
-    await ctx.reply(embed=info_embed(ctx.author, "📖 מדריך הבוט", "הפקודות פועלות עם `$` בתחילת ההודעה.", INFO_SECTIONS),
+    await ctx.reply(embed=info_embed(ctx.author, "AMRAM CASINO  |  COMMAND GUIDE",
+                                     "All commands start with `$`.", INFO_SECTIONS, INFO_FOOTER),
                     mention_author=False)
 
 @bot.command(name="ainfo")
 @staff_only
 async def ainfo(ctx):
-    await ctx.reply(embed=info_embed(ctx.author, "🛠 מדריך צוות", "פקודות ניהול.", AINFO_SECTIONS), mention_author=False)
+    await ctx.reply(embed=info_embed(ctx.author, "AMRAM CASINO  |  STAFF GUIDE",
+                                     "Management commands.", AINFO_SECTIONS), mention_author=False)
 
 bot.run(TOKEN)
