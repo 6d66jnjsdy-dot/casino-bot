@@ -2042,172 +2042,203 @@ def he(text):
     return text if features.check("raqm") else text[::-1]
 
 def sc_banner():
-    """Menu picture: a little scratch-card kiosk (sign, striped awning, wooden shelves with card decks, price tags, counter)."""
+    """Menu picture: a lottery-style kiosk (lit sign box, glass window with acrylic card dispensers, price tags, counter).
+    Drawn at 2x and scaled down so every edge is smooth."""
+    S, W, H = 2, 1100, 820
     keys = list(SC_CARDS)
-    W, H = 1100, 800
-    cw, ch, step, layers = 200, 250, 4, 12
-    inner_l, inner_r = 90, W - 90
-    gap = (inner_r - inner_l - len(keys) * cw) / (len(keys) + 1)
-    wall_top, shelf_y = 238, 566
+    im = Image.new("RGBA", (W * S, H * S))
+    d = ImageDraw.Draw(im)
 
-    def vgrad(box, c1, c2):
-        x0, y0, x1, y1 = box
+    def X(v):
+        return int(v * S)
+
+    def B(b):
+        return [X(v) for v in b]
+
+    def vgrad(b, c1, c2):
+        x0, y0, x1, y1 = B(b)
         for y in range(y0, y1):
             k = (y - y0) / max(1, y1 - y0 - 1)
-            d.line([(x0, y), (x1, y)], fill=tuple(int(a + (b - a) * k) for a, b in zip(c1, c2)))
+            d.line([(x0, y), (x1, y)], fill=tuple(int(p + (q - p) * k) for p, q in zip(c1, c2)))
 
-    def pair(cx, y, num, label, font, fill, sp=8):
-        """'<label> <num>' centred on cx; the number is drawn separately so it never gets flipped."""
-        lab = he(label)
-        wl, wn = d.textlength(lab, font=font), d.textlength(num, font=font)
-        x = cx - (wl + sp + wn) / 2
-        d.text((x, y), num, font=font, fill=fill, anchor="lt")
-        d.text((x + wn + sp, y), lab, font=font, fill=fill, anchor="lt")
+    def hgrad(b, c1, c2):
+        x0, y0, x1, y1 = B(b)
+        for x in range(x0, x1):
+            k = (x - x0) / max(1, x1 - x0 - 1)
+            d.line([(x, y0), (x, y1)], fill=tuple(int(p + (q - p) * k) for p, q in zip(c1, c2)))
+
+    def over(fn, blur=0):
+        layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        fn(ImageDraw.Draw(layer))
+        if blur:
+            layer = layer.filter(ImageFilter.GaussianBlur(blur * S))
+        im.alpha_composite(layer)
+
+    def F(size):
+        return get_font(int(size * S))
 
     def fit(text, size, maxw):
-        while size > 12 and d.textlength(he(text), font=get_font(size)) > maxw:
+        while size > 10 and d.textlength(he(text), font=F(size)) > maxw * S:
             size -= 1
-        return get_font(size)
+        return F(size)
 
-    # night backdrop
-    im = Image.new("RGB", (W, H))
-    d = ImageDraw.Draw(im)
-    vgrad((0, 0, W, H), (14, 18, 42), (40, 26, 58))
+    def pair(cx, y, num, label, size, fill, sp=7):
+        """'<label> <num>' centred on cx; the number is drawn on its own so it never gets flipped."""
+        f, lab = F(size), he(label)
+        wl, wn = d.textlength(lab, font=f), d.textlength(num, font=f)
+        x = X(cx) - (wl + X(sp) + wn) / 2
+        d.text((x, X(y)), num, font=f, fill=fill, anchor="lt")
+        d.text((x + wn + X(sp), X(y)), lab, font=f, fill=fill, anchor="lt")
 
-    # back wall of the kiosk: dark wood planks
-    vgrad((60, wall_top, W - 60, 706), (84, 50, 30), (58, 34, 22))
-    for x in range(60, W - 60, 46):
-        d.line([(x, wall_top), (x, 706)], fill=(44, 25, 16), width=2)
-        d.line([(x + 2, wall_top), (x + 2, 706)], fill=(104, 64, 38), width=1)
+    rnd = random.Random(7)
 
-    # warm light falling from the awning
-    glow = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(glow).ellipse([100, wall_top - 160, W - 100, wall_top + 260], fill=110)
-    glow = glow.filter(ImageFilter.GaussianBlur(70))
-    im = Image.composite(Image.new("RGB", (W, H), (255, 214, 140)), im, glow.point(lambda v: v // 2))
-    d = ImageDraw.Draw(im)
+    # ---- evening street background with soft lights ----
+    vgrad((0, 0, W, 700), (8, 14, 34), (44, 56, 100))
+    pal = [(255, 200, 120, 70), (130, 190, 255, 60), (255, 130, 170, 50), (200, 255, 200, 40)]
+    over(lambda g: [g.ellipse(B((x - r, y - r, x + r, y + r)), fill=rnd.choice(pal))
+                    for x, y, r in ((rnd.uniform(0, W), rnd.uniform(0, 600), rnd.uniform(10, 40)) for _ in range(46))], blur=5)
+    vgrad((0, 700, W, H), (62, 64, 78), (22, 22, 32))
+    for yy in (722, 752, 792):
+        d.line(B((0, yy, W, yy)), fill=(40, 42, 54), width=S)
+    for xx in range(-500, 1600, 120):
+        d.line(B((W / 2 + (xx - W / 2) * 0.5, 700, xx, H)), fill=(40, 42, 54), width=S)
+    over(lambda g: g.ellipse(B((120, 726, 980, 812)), fill=(255, 222, 150, 46)), blur=22)      # light spilling on the floor
+    over(lambda g: g.ellipse(B((30, 712, 1070, 772)), fill=(0, 0, 0, 190)), blur=12)            # shadow under the kiosk
 
-    # wooden posts
-    for x0 in (22, W - 62):
-        vgrad((x0, 120, x0 + 40, 740), (140, 88, 48), (98, 60, 34))
-        d.line([(x0 + 8, 120), (x0 + 8, 740)], fill=(176, 118, 70), width=3)
-        d.rectangle([x0, 120, x0 + 40, 740], outline=(50, 28, 16), width=3)
+    # ---- back wall inside the kiosk ----
+    vgrad((110, 206, 990, 600), (52, 70, 108), (28, 40, 70))
+    for yy in range(222, 600, 22):
+        d.line(B((110, yy, 990, yy)), fill=(24, 34, 60), width=S)
+        d.line(B((110, yy + 1, 990, yy + 1)), fill=(66, 88, 128), width=1)
+    over(lambda g: g.rectangle(B((130, 206, 970, 300)), fill=(255, 244, 205, 90)), blur=26)      # light from the LED strip
+    vgrad((110, 206, 990, 221), (255, 253, 240), (255, 238, 180))
 
-    # shelves + decks + price tags
+    # shelf
+    vgrad((110, 478, 990, 494), (244, 247, 252), (186, 193, 206))
+    d.line(B((110, 478, 990, 478)), fill=(255, 255, 255), width=S)
+    over(lambda g: g.rectangle(B((110, 494, 990, 508)), fill=(0, 0, 0, 110)), blur=5)
+
+    # ---- decks in acrylic holders ----
+    cw, ch, bw = 168, 210, 188
+    gap = (880 - 4 * bw) / 5
     for i, key in enumerate(keys):
         c = SC_CARDS[key]
         left = len(sc_stock(key)["left"])
-        x = int(inner_l + gap + i * (cw + gap))
-        base_y = shelf_y - ch
-        n = 0 if not left else max(2, round(left / c["total"] * layers))
+        bx = int(110 + gap + i * (bw + gap))
+        cx0, base_y = bx + (bw - cw) // 2, 478 - 8 - ch
+        n = 0 if not left else max(2, round(left / c["total"] * 10))
         rng = random.Random(key)
-
-        # shadow on the wall behind the deck
-        sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle([x + 10, base_y - n * step + 8, x + cw + 14, shelf_y], radius=14, fill=(0, 0, 0, 150))
-        im = Image.alpha_composite(im.convert("RGBA"), sh.filter(ImageFilter.GaussianBlur(12))).convert("RGB")
-        d = ImageDraw.Draw(im)
-
-        # cards under the top one (their edges stick out above it, like a real deck)
+        over(lambda g: g.rounded_rectangle(B((bx + 12, 244, bx + bw + 12, 482)), radius=10, fill=(0, 0, 0, 120)), blur=8)
+        over(lambda g: g.rounded_rectangle(B((bx, 228, bx + bw, 478)), radius=8, fill=(190, 215, 240, 26),
+                                           outline=(200, 225, 250, 150), width=2 * S))
         for j in range(n - 1, 0, -1):
-            jx = rng.randint(-2, 2)
-            y = base_y - j * step
-            d.rounded_rectangle([x + jx, y, x + jx + cw, y + ch], radius=12,
-                                fill=(246, 246, 250), outline=(150, 150, 160), width=2)
-
-        # top card
+            jx = rng.randint(-1, 1)
+            d.rounded_rectangle(B((cx0 + jx, base_y - j * 3, cx0 + jx + cw, base_y - j * 3 + ch)), radius=X(8),
+                                fill=(246, 246, 250), outline=(150, 150, 162), width=S)
         b = sc_base(key)
-        k = max(cw / b.width, ch / b.height)   # scale so the art fully covers the card (no empty strip at the bottom)
-        art = b.resize((max(cw, round(b.width * k)), max(ch, round(b.height * k))), Image.LANCZOS).crop((0, 0, cw, ch))
+        k = max(cw * S / b.width, ch * S / b.height)
+        art = b.resize((max(cw * S, round(b.width * k)), max(ch * S, round(b.height * k))), Image.LANCZOS).crop((0, 0, cw * S, ch * S))
         if not left:
             art = Image.blend(art.convert("L").convert("RGB"), Image.new("RGB", art.size, (20, 20, 20)), 0.55)
-        m = Image.new("L", (cw, ch), 0)
-        ImageDraw.Draw(m).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=12, fill=255)
-        im.paste(art, (x, base_y), m)
-        d = ImageDraw.Draw(im)
-        d.rounded_rectangle([x, base_y, x + cw, base_y + ch], radius=12,
-                            outline=(240, 240, 245) if left else (110, 110, 110), width=3)
+        m = Image.new("L", (cw * S, ch * S), 0)
+        ImageDraw.Draw(m).rounded_rectangle([0, 0, cw * S - 1, ch * S - 1], radius=X(8), fill=255)
+        im.paste(art.convert("RGBA"), (X(cx0), X(base_y)), m)
+        d.rounded_rectangle(B((cx0, base_y, cx0 + cw, base_y + ch)), radius=X(8),
+                            outline=(240, 240, 246) if left else (110, 110, 112), width=2 * S)
         if not left:
-            d.text((x + cw / 2, base_y + ch / 2), "SOLD OUT", font=get_font(32), fill=(255, 90, 90),
-                   anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0))
+            tag = Image.new("RGBA", (X(220), X(60)), (0, 0, 0, 0))
+            ImageDraw.Draw(tag).text((X(110), X(30)), "SOLD OUT", font=F(34), fill=(255, 80, 80, 255), anchor="mm",
+                                     stroke_width=3 * S, stroke_fill=(0, 0, 0, 255))
+            tag = tag.rotate(14, expand=True, resample=Image.BICUBIC)
+            im.alpha_composite(tag, (X(bx + bw / 2 - 110) - (tag.width - X(220)) // 2, X(base_y + ch / 2 - 30) - (tag.height - X(60)) // 2))
+        # acrylic front: lip, glare, steel base
+        over(lambda g: g.rounded_rectangle(B((bx + 2, 442, bx + bw - 2, 476)), radius=6, fill=(220, 235, 250, 46),
+                                           outline=(230, 242, 255, 120), width=S))
+        over(lambda g: g.polygon(B((bx + 18, 230, bx + 58, 230, bx + 24, 440, bx + 6, 440)), fill=(255, 255, 255, 52)))
+        hgrad((bx - 4, 470, bx + bw + 4, 480), (150, 156, 170), (232, 236, 244))
 
-    # shelf board (drawn over the bottom of the decks so they look like they stand on it)
-    vgrad((66, shelf_y, W - 66, shelf_y + 22), (176, 118, 70), (120, 76, 42))
-    d.line([(66, shelf_y), (W - 66, shelf_y)], fill=(214, 160, 104), width=3)
-    d.rectangle([66, shelf_y, W - 66, shelf_y + 22], outline=(50, 28, 16), width=2)
-
-    # price tags hanging under the shelf
+    # ---- price tags under the shelf ----
     for i, key in enumerate(keys):
         c = SC_CARDS[key]
         left = len(sc_stock(key)["left"])
-        x = int(inner_l + gap + i * (cw + gap))
-        cx, ty = x + cw / 2, shelf_y + 34
-        d.line([(cx - 30, shelf_y + 22), (cx - 14, ty)], fill=(230, 220, 190), width=2)
-        d.line([(cx + 30, shelf_y + 22), (cx + 14, ty)], fill=(230, 220, 190), width=2)
-        d.rounded_rectangle([x, ty, x + cw, ty + 104], radius=10, fill=(250, 241, 216), outline=(110, 70, 38), width=3)
-        d.ellipse([cx - 5, ty + 5, cx + 5, ty + 15], fill=(120, 80, 44))
-        d.text((cx, ty + 24), he(c["name"]), font=fit(c["name"], 24, cw - 18), fill=(120, 28, 24), anchor="mt")
-        pair(cx, ty + 54, sc_short(c["min"]), "סכום התחלתי", get_font(18), (60, 44, 40))
+        bx = int(110 + gap + i * (bw + gap))
+        cx, ty = bx + bw / 2, 512
+        over(lambda g: g.rounded_rectangle(B((bx + 3, ty + 4, bx + bw + 3, ty + 80)), radius=6, fill=(0, 0, 0, 120)), blur=4)
+        d.rounded_rectangle(B((bx, ty, bx + bw, ty + 76)), radius=X(6), fill=(250, 251, 254), outline=(170, 178, 194), width=S)
+        d.rounded_rectangle(B((bx, ty, bx + bw, ty + 26)), radius=X(6), fill=(0, 84, 170))
+        d.rectangle(B((bx, ty + 16, bx + bw, ty + 26)), fill=(0, 84, 170))
+        d.text((X(cx), X(ty + 13)), he(c["name"]), font=fit(c["name"], 19, bw - 16), fill=(255, 255, 255), anchor="mm")
+        pair(cx, ty + 31, sc_short(c["min"]), "סכום התחלתי", 17, (0, 58, 128))
         ratio = left / c["total"]
-        col = (24, 130, 58) if ratio > 0.5 else (190, 110, 10) if ratio > 0.2 else (190, 36, 36)
+        col = (24, 130, 58) if ratio > 0.5 else (196, 112, 8) if ratio > 0.2 else (200, 36, 36)
         if left:
-            pair(cx, ty + 77, f"{left}/{c['total']}", "נותרו", get_font(19), col)
+            pair(cx, ty + 52, f"{left}/{c['total']}", "נותרו", 17, col)
         else:
-            d.text((cx, ty + 77), he("אזל המלאי"), font=get_font(19), fill=col, anchor="mt")
+            d.text((X(cx), X(ty + 52)), he("אזל המלאי"), font=F(17), fill=col, anchor="lt")
+        for px in (bx + 8, bx + bw - 8):
+            d.ellipse(B((px - 2, ty + 4, px + 2, ty + 8)), fill=(150, 156, 170))
 
-    # counter
-    vgrad((40, 706, W - 40, 724), (200, 140, 86), (150, 98, 56))
-    d.line([(40, 706), (W - 40, 706)], fill=(232, 182, 120), width=3)
-    vgrad((52, 724, W - 52, H), (104, 64, 38), (66, 38, 24))
-    for x in range(52, W - 52, 70):
-        d.line([(x, 724), (x, H)], fill=(46, 26, 16), width=2)
-    d.rectangle([40, 706, W - 40, H], outline=(40, 22, 14), width=3)
-    d.rounded_rectangle([W / 2 - 250, 738, W / 2 + 250, 786], radius=12, fill=(34, 16, 20), outline=(235, 190, 60), width=3)
-    d.text((W / 2, 762), he("גרדו ומצאו 3 מכפילים זהים!"), font=get_font(26), fill=(255, 224, 130), anchor="mm")
+    # ---- glass in front of the window ----
+    over(lambda g: g.rectangle(B((110, 206, 990, 600)), fill=(150, 200, 255, 12)))
+    over(lambda g: (g.polygon(B((130, 222, 330, 222, 205, 598, 110, 598)), fill=(255, 255, 255, 24)),
+                    g.polygon(B((372, 222, 424, 222, 300, 598, 250, 598)), fill=(255, 255, 255, 15)),
+                    g.polygon(B((770, 222, 900, 222, 780, 598, 690, 598)), fill=(255, 255, 255, 18))))
 
-    # striped awning with scalloped edge
-    aw_top, aw_bot, sw = 128, 214, 55
-    x0, x1 = 12, W - 12
-    n_st = (x1 - x0) // sw
-    sx0 = (W - n_st * sw) // 2
-    for k in range(n_st):
-        col = (200, 36, 48) if k % 2 == 0 else (248, 238, 216)
-        xa = sx0 + k * sw
-        d.polygon([(xa + 6 * (1 if k < n_st / 2 else -1) * 0, aw_top), (xa + sw, aw_top), (xa + sw, aw_bot), (xa, aw_bot)], fill=col)
-        d.ellipse([xa, aw_bot - sw // 2, xa + sw, aw_bot + sw // 2], fill=col)
-    # shading on the awning
-    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shade)
-    for y in range(aw_top, aw_bot + sw // 2 + 1):
-        sd.line([(sx0, y), (sx0 + n_st * sw, y)], fill=(0, 0, 0, int(70 * (y - aw_top) / (aw_bot - aw_top + sw // 2))))
-    im = Image.alpha_composite(im.convert("RGBA"), shade).convert("RGB")
-    d = ImageDraw.Draw(im)
-    d.line([(sx0, aw_top), (sx0 + n_st * sw, aw_top)], fill=(120, 20, 28), width=4)
+    # ---- pillars + header beam ----
+    for x0 in (70, 988):
+        hgrad((x0, 196, x0 + 42, 722), (186, 194, 210), (246, 248, 252))
+        d.rectangle(B((x0 + 15, 210, x0 + 27, 598)), fill=(0, 84, 170))
+        d.line(B((x0 + 15, 210, x0 + 15, 598)), fill=(70, 150, 230), width=S)
+        d.rectangle(B((x0, 196, x0 + 42, 722)), outline=(110, 118, 136), width=S)
+    vgrad((70, 196, 1030, 210), (230, 235, 244), (150, 158, 176))
+    over(lambda g: g.rectangle(B((110, 210, 990, 224)), fill=(0, 0, 0, 90)), blur=4)
 
-    # sign on top with light bulbs
-    sx, sy, sx2, sy2 = 150, 18, W - 150, 118
-    d.rounded_rectangle([sx, sy, sx2, sy2], radius=18, fill=(30, 12, 22), outline=(235, 190, 60), width=6)
-    bulbs = []
-    for x in range(sx + 24, sx2 - 10, 38):
-        bulbs += [(x, sy + 10), (x, sy2 - 10)]
-    for y in range(sy + 30, sy2 - 20, 30):
-        bulbs += [(sx + 10, y), (sx2 - 10, y)]
-    gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(gl)
-    for bx, by in bulbs:
-        gd.ellipse([bx - 11, by - 11, bx + 11, by + 11], fill=(255, 220, 120, 140))
-    im = Image.alpha_composite(im.convert("RGBA"), gl.filter(ImageFilter.GaussianBlur(5))).convert("RGB")
-    d = ImageDraw.Draw(im)
-    for bx, by in bulbs:
-        d.ellipse([bx - 5, by - 5, bx + 5, by + 5], fill=(255, 244, 190))
-    d.text((W / 2, (sy + sy2) / 2 + 2), he("כרטיסי גירוד"), font=get_font(60), fill=(255, 214, 90), anchor="mm",
-           stroke_width=2, stroke_fill=(120, 60, 0))
-    for sxm in (sx + 120, sx2 - 120):
-        d.polygon([(sxm, 68 - 16), (sxm + 10, 68), (sxm, 68 + 16), (sxm - 10, 68)], fill=(255, 214, 90))
+    # ---- counter ----
+    vgrad((54, 598, 1046, 620), (240, 244, 250), (180, 187, 202))
+    d.line(B((54, 598, 1046, 598)), fill=(255, 255, 255), width=2 * S)
+    d.line(B((54, 620, 1046, 620)), fill=(120, 128, 146), width=S)
+    vgrad((62, 620, 1038, 716), (238, 242, 248), (206, 212, 224))
+    vgrad((62, 636, 1038, 676), (0, 98, 192), (0, 62, 134))
+    d.rectangle(B((62, 676, 1038, 686)), fill=(255, 204, 0))
+    d.line(B((62, 636, 1038, 636)), fill=(90, 160, 235), width=S)
+    d.text((X(550), X(656)), he("גרדו ומצאו 3 מכפילים זהים!"), font=F(26), fill=(255, 255, 255), anchor="mm")
+    vgrad((62, 716, 1038, 738), (70, 74, 90), (30, 32, 42))
+    # card terminal and pen cup on the counter
+    over(lambda g: g.rounded_rectangle(B((992, 566, 1036, 600)), radius=6, fill=(0, 0, 0, 120)), blur=4)
+    d.rounded_rectangle(B((992, 560, 1034, 598)), radius=X(6), fill=(26, 28, 36), outline=(90, 96, 110), width=S)
+    d.rectangle(B((998, 566, 1028, 578)), fill=(40, 140, 230))
+    for r in range(2):
+        for cc in range(3):
+            d.rectangle(B((999 + cc * 10, 583 + r * 7, 1005 + cc * 10, 587 + r * 7)), fill=(120, 126, 142))
+    hgrad((74, 570, 98, 598), (150, 156, 170), (232, 236, 244))
+    for px, py, col in ((80, 556, (200, 40, 40)), (86, 552, (30, 90, 200)), (92, 558, (30, 30, 34))):
+        d.line(B((px + 6, 572, px, py)), fill=col, width=2 * S)
 
-    d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60), width=5)
+    # ---- roof, lit sign box ----
+    over(lambda g: g.rectangle(B((50, 86, 1050, 104)), fill=(0, 0, 0, 110)), blur=6)
+    d.polygon(B((36, 36, 1064, 36, 1046, 62, 54, 62)), fill=(238, 242, 250))
+    vgrad((50, 62, 1050, 86), (250, 252, 255), (190, 198, 216))
+    d.line(B((50, 86, 1050, 86)), fill=(120, 128, 146), width=S)
+    d.rounded_rectangle(B((90, 90, 1010, 192)), radius=X(10), fill=(212, 218, 230), outline=(110, 118, 136), width=S)
+    over(lambda g: g.rounded_rectangle(B((98, 98, 1002, 184)), radius=6, fill=(60, 150, 255, 120)), blur=10)
+    vgrad((98, 98, 1002, 184), (22, 114, 210), (0, 56, 126))
+    d.rounded_rectangle(B((98, 98, 1002, 184)), radius=X(6), outline=(120, 180, 240), width=S)
+    over(lambda g: g.rectangle(B((100, 100, 1000, 138)), fill=(255, 255, 255, 24)))
+    d.text((X(550), X(133)), he("כרטיסי גירוד"), font=F(64), fill=(255, 208, 0), anchor="mm", stroke_width=3 * S, stroke_fill=(0, 30, 84))
+    d.text((X(550), X(170)), he("מזל בכל גרידה"), font=F(20), fill=(255, 255, 255), anchor="mm")
+    for bxm in (172, 928):
+        d.ellipse(B((bxm - 36, 105, bxm + 36, 177)), fill=(255, 208, 0), outline=(255, 255, 255), width=3 * S)
+        d.text((X(bxm), X(141)), "₪", font=F(46), fill=(0, 56, 126), anchor="mm")
+
+    # ---- photo feel: vignette + fine grain ----
+    vig = Image.new("L", im.size, 0)
+    ImageDraw.Draw(vig).ellipse(B((-W * 0.25, -H * 0.3, W * 1.25, H * 1.3)), fill=255)
+    vig = vig.filter(ImageFilter.GaussianBlur(120 * S))
+    rgb = Image.composite(im.convert("RGB"), Image.new("RGB", im.size, (4, 8, 18)), vig)
+    rgb = Image.blend(rgb, Image.effect_noise(im.size, 26).convert("RGB"), 0.03)
+    out = rgb.resize((W, H), Image.LANCZOS)
     buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=90)
+    out.save(buf, "JPEG", quality=92)
     return buf.getvalue()
 # --- render end ---
 
