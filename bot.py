@@ -589,12 +589,27 @@ class BoardView(OwnedView):
             for i, t in enumerate(self.tiles):
                 if i not in self.revealed:
                     t.disabled = True
+        await self.push(interaction)
+
+    async def edit_ui(self, interaction, **kw):
+        # fast clicking can make Discord reject an edit (rate limit): retry, then fall back to editing the message itself
+        for i in range(4):
+            try:
+                if i == 0:
+                    return await interaction.edit_original_response(**kw)
+                if self.message:
+                    return await self.message.edit(**kw)
+                return
+            except discord.HTTPException:
+                await asyncio.sleep(0.4 * (i + 1))
+
+    async def push(self, interaction):
         self.version += 1
         v = self.version
         async with self.edit_lock:
             if v != self.version or self.done:
                 return
-            await interaction.edit_original_response(content=self.header, view=self)
+            await self.edit_ui(interaction, content=self.header, view=self)
 
     def payout(self):
         base = int(self.profit)
@@ -638,7 +653,7 @@ class BoardView(OwnedView):
         self.reveal_all(lost or self.reveal_on_cashout)
         kw = dict(content=self.header, embed=self.embed(lost), view=self.final_view(lost))
         async with self.edit_lock:
-            await interaction.edit_original_response(**kw)
+            await self.edit_ui(interaction, **kw)
 
     async def on_timeout(self):
         if self.done:
@@ -779,12 +794,7 @@ class MoneyTower(BoardView):
             return await self.finish(interaction, False)
         for j in range((row - 1) * 3, (row - 1) * 3 + 3):
             self.tiles[j].disabled = False
-        self.version += 1
-        v = self.version
-        async with self.edit_lock:
-            if v != self.version or self.done:
-                return
-            await interaction.edit_original_response(content=self.header, view=self)
+        await self.push(interaction)
 
     def reveal_all(self, show):
         for i, kind in enumerate(self.board):
