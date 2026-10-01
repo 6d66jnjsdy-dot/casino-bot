@@ -47,7 +47,7 @@ GREEN, RED, BLUE, YELLOW = 0x77B255, 0xC0392B, 0x3B82F6, 0xF1C40F
 BUSY_MSG = "You already have an active game! Finish it first."
 
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏺"}
-MULT = {"diamond": 3.5, "urn": 25, "stone": 1.1, "coin": 2, "bag": 5.5, "map": 1}
+MULT = {"diamond": 3, "urn": 15, "stone": 1.1, "coin": 2, "bag": 4.5, "map": 1}
 URN_CHANCE = (3, 7)   # 3 out of 7 games have the urn 🏺
 MINES_MULT = [1.1, 1.2, 1.5, 1.8, 2.2, 4.3, 6.1, 8.1]
 SMINES = {   # key: (columns, rows, mines, multiplier per click)
