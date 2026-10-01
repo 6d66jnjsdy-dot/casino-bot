@@ -39,7 +39,7 @@ BUSY_MSG = "You already have an active game! Finish it first."
 EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "stone": "🪨", "bag": "💰", "urn": "🏺"}
 MULT = {"diamond": 3, "urn": 15, "stone": 1.1, "coin": 2, "bag": 4.5, "map": 1}
 MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (never the urn or the bag)
-URN_CHANCE = (3, 7)
+URN_CHANCE = (3, 10)
 MINES_MULT = [1.1, 1.2, 1.5, 1.8, 2.2, 4.3, 6.1, 8.1]
 SMINES = {
     "2x2": (2, 2, 1, [1.2, 2, 3.7]),
@@ -479,7 +479,7 @@ def shuffled(**parts):
     return board
 
 def gm_board():
-    tiles = ["map"] + ["bomb"] * 10 + ["stone"] * 4 + ["coin"] * 2 + ["bag"] + ["diamond"] * 2
+    tiles = ["map"] + ["bomb"] * 12 + ["stone"] * 2 + ["coin"] * 2 + ["bag"] + ["diamond"] * 2
     if random.randint(1, URN_CHANCE[1]) <= URN_CHANCE[0]:
         tiles[tiles.index("stone")] = "urn"
     random.shuffle(tiles)
