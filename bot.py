@@ -333,6 +333,17 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None, case_insensitive=True)
 
+USER_LOCKS = {}
+
+@bot.event
+async def on_message(message):
+    # commands of the same user run strictly one after another, in the order they were sent
+    if message.author.bot:
+        return
+    lock = USER_LOCKS.setdefault(message.author.id, asyncio.Lock())
+    async with lock:
+        await bot.process_commands(message)
+
 def cmd_key(ctx):
     return "s$mines" if ctx.command.name == "mines" and ctx.prefix.lower() == "s$" else ctx.command.name
 
@@ -2465,7 +2476,7 @@ class ScratchSelect(discord.ui.Select):
         opts = []
         for key, c in SC_CARDS.items():
             left = len(sc_stock(key)["left"])
-            desc = f"סכום התחלתי {sc_short(c['min'])} • נותרו {left}/{c['total']}" if left else "אזל המלאי ❌"
+            desc = (f"התחלה {sc_short(c['min'])} • פרס ראשי x{max(c['wins']):g} • נותרו {left}/{c['total']}" if left else "אזל המלאי")
             opts.append(discord.SelectOption(label=c["name"], value=key, emoji=c["emoji"], description=desc))
         super().__init__(placeholder="בחירת כרטיס גירוד", options=opts)
 
@@ -2493,18 +2504,11 @@ class ScratchMenu(OwnedView):
 
     def embed(self, image=True):
         bank = user_data(self.user.id)["bank"]
-        lines = []
-        for key, c in SC_CARDS.items():
-            left = len(sc_stock(key)["left"])
-            stock = f"נותרו **{left}/{c['total']}**" if left else "אזל המלאי ❌"
-            lines.append(f"{c['emoji']} **{c['name']}**\n"
-                         f"╰ סכום התחלתי `{sc_short(c['min'])}` • פרס ראשי `x{max(c['wins']):g}` • {stock}")
-        e = discord.Embed(color=0xD4AF37, title="🎟️ ✦ כרטיסי גירוד ✦ 🎟️", description=(
-            "\n\n".join(lines) +
-            f"\n\n💳 **יתרה בבנק:** {fmt(bank)} {cur()}\n"
-            "👇 בחרו חפיסה מהתפריט והקלידו כמה לשלם"))
+        e = discord.Embed(color=0x1F2A44, title="כרטיסי גירוד", description=(
+            f"\u200f**יתרה בבנק:** {fmt(bank)} {cur()}\n"
+            "\u200fבחרו כרטיס מהתפריט שמתחת והקלידו כמה לשלם."))
         e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
-        e.set_footer(text="התשלום יורד מהבנק בלבד • מוצאים צירוף של שלושה מכפילים וזוכים")
+        e.set_footer(text="התשלום יורד מהבנק בלבד")
         if image:
             e.set_image(url="attachment://sc_menu.jpg")
         return e
