@@ -2042,83 +2042,172 @@ def he(text):
     return text if features.check("raqm") else text[::-1]
 
 def sc_banner():
-    """Menu picture: 4 real-looking decks of scratch cards (the stack gets thinner as the stock runs out)."""
+    """Menu picture: a little scratch-card kiosk (sign, striped awning, wooden shelves with card decks, price tags, counter)."""
     keys = list(SC_CARDS)
-    cw, ch, step, layers = 250, 300, 5, 14
-    gap, pad, label_h = 34, 40, 110
-    W = pad * 2 + len(keys) * cw + (len(keys) - 1) * gap
-    base_y = pad + layers * step
-    H = base_y + ch + label_h
+    W, H = 1100, 800
+    cw, ch, step, layers = 200, 250, 4, 12
+    inner_l, inner_r = 90, W - 90
+    gap = (inner_r - inner_l - len(keys) * cw) / (len(keys) + 1)
+    wall_top, shelf_y = 238, 566
 
-    # green felt table with a soft vignette
+    def vgrad(box, c1, c2):
+        x0, y0, x1, y1 = box
+        for y in range(y0, y1):
+            k = (y - y0) / max(1, y1 - y0 - 1)
+            d.line([(x0, y), (x1, y)], fill=tuple(int(a + (b - a) * k) for a, b in zip(c1, c2)))
+
+    def pair(cx, y, num, label, font, fill, sp=8):
+        """'<label> <num>' centred on cx; the number is drawn separately so it never gets flipped."""
+        lab = he(label)
+        wl, wn = d.textlength(lab, font=font), d.textlength(num, font=font)
+        x = cx - (wl + sp + wn) / 2
+        d.text((x, y), num, font=font, fill=fill, anchor="lt")
+        d.text((x + wn + sp, y), lab, font=font, fill=fill, anchor="lt")
+
+    def fit(text, size, maxw):
+        while size > 12 and d.textlength(he(text), font=get_font(size)) > maxw:
+            size -= 1
+        return get_font(size)
+
+    # night backdrop
     im = Image.new("RGB", (W, H))
     d = ImageDraw.Draw(im)
-    for y in range(H):
-        k = y / H
-        d.line([(0, y), (W, y)], fill=(int(24 - 10 * k), int(92 - 38 * k), int(58 - 24 * k)))
-    vig = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(vig).ellipse([-W // 3, -H // 2, W + W // 3, H + H // 2], fill=255)
-    vig = vig.filter(ImageFilter.GaussianBlur(90))
-    im = Image.composite(im, Image.new("RGB", (W, H), (6, 24, 16)), vig).convert("RGBA")
+    vgrad((0, 0, W, H), (14, 18, 42), (40, 26, 58))
 
-    mask = Image.new("L", (cw, ch), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=14, fill=255)
+    # back wall of the kiosk: dark wood planks
+    vgrad((60, wall_top, W - 60, 706), (84, 50, 30), (58, 34, 22))
+    for x in range(60, W - 60, 46):
+        d.line([(x, wall_top), (x, 706)], fill=(44, 25, 16), width=2)
+        d.line([(x + 2, wall_top), (x + 2, 706)], fill=(104, 64, 38), width=1)
 
+    # warm light falling from the awning
+    glow = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(glow).ellipse([100, wall_top - 160, W - 100, wall_top + 260], fill=110)
+    glow = glow.filter(ImageFilter.GaussianBlur(70))
+    im = Image.composite(Image.new("RGB", (W, H), (255, 214, 140)), im, glow.point(lambda v: v // 2))
+    d = ImageDraw.Draw(im)
+
+    # wooden posts
+    for x0 in (22, W - 62):
+        vgrad((x0, 120, x0 + 40, 740), (140, 88, 48), (98, 60, 34))
+        d.line([(x0 + 8, 120), (x0 + 8, 740)], fill=(176, 118, 70), width=3)
+        d.rectangle([x0, 120, x0 + 40, 740], outline=(50, 28, 16), width=3)
+
+    # shelves + decks + price tags
     for i, key in enumerate(keys):
         c = SC_CARDS[key]
         left = len(sc_stock(key)["left"])
-        x = pad + i * (cw + gap)
+        x = int(inner_l + gap + i * (cw + gap))
+        base_y = shelf_y - ch
         n = 0 if not left else max(2, round(left / c["total"] * layers))
         rng = random.Random(key)
 
-        # shadow under the deck
+        # shadow on the wall behind the deck
         sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle([x + 8, base_y + 14, x + cw + 8, base_y + ch + 16], radius=16, fill=(0, 0, 0, 170))
-        im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(14)))
+        ImageDraw.Draw(sh).rounded_rectangle([x + 10, base_y - n * step + 8, x + cw + 14, shelf_y], radius=14, fill=(0, 0, 0, 150))
+        im = Image.alpha_composite(im.convert("RGBA"), sh.filter(ImageFilter.GaussianBlur(12))).convert("RGB")
         d = ImageDraw.Draw(im)
 
-        # the cards under the top one: their edges stick out above it, like in a real deck
+        # cards under the top one (their edges stick out above it, like a real deck)
         for j in range(n - 1, 0, -1):
-            jx = rng.randint(-3, 3)
+            jx = rng.randint(-2, 2)
             y = base_y - j * step
-            d.rounded_rectangle([x + jx, y, x + jx + cw, y + ch], radius=14,
-                                fill=(246, 246, 250, 255), outline=(150, 150, 160, 255), width=2)
+            d.rounded_rectangle([x + jx, y, x + jx + cw, y + ch], radius=12,
+                                fill=(246, 246, 250), outline=(150, 150, 160), width=2)
 
-        # the top card
+        # top card
         b = sc_base(key)
-        art = b.resize((cw, round(b.height * cw / b.width)), Image.LANCZOS).crop((0, 0, cw, ch))
+        k = max(cw / b.width, ch / b.height)   # scale so the art fully covers the card (no empty strip at the bottom)
+        art = b.resize((max(cw, round(b.width * k)), max(ch, round(b.height * k))), Image.LANCZOS).crop((0, 0, cw, ch))
         if not left:
             art = Image.blend(art.convert("L").convert("RGB"), Image.new("RGB", art.size, (20, 20, 20)), 0.55)
-        im.paste(art.convert("RGBA"), (x, base_y), mask)
+        m = Image.new("L", (cw, ch), 0)
+        ImageDraw.Draw(m).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=12, fill=255)
+        im.paste(art, (x, base_y), m)
         d = ImageDraw.Draw(im)
-        d.rounded_rectangle([x, base_y, x + cw, base_y + ch], radius=14,
-                            outline=(240, 240, 245, 255) if left else (110, 110, 110, 255), width=4)
+        d.rounded_rectangle([x, base_y, x + cw, base_y + ch], radius=12,
+                            outline=(240, 240, 245) if left else (110, 110, 110), width=3)
         if not left:
-            d.text((x + cw / 2, base_y + ch / 2), "SOLD OUT", font=get_font(36), fill=(255, 90, 90, 255),
-                   anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 255))
+            d.text((x + cw / 2, base_y + ch / 2), "SOLD OUT", font=get_font(32), fill=(255, 90, 90),
+                   anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0))
 
-        # label under the deck (Hebrew is reversed because PIL draws left-to-right)
-        cx, ty = x + cw / 2, base_y + ch + 16
-        d.text((cx, ty), he(c["name"]), font=get_font(27), fill=(255, 224, 130, 255), anchor="mt",
-               stroke_width=1, stroke_fill=(0, 0, 0, 255))
+    # shelf board (drawn over the bottom of the decks so they look like they stand on it)
+    vgrad((66, shelf_y, W - 66, shelf_y + 22), (176, 118, 70), (120, 76, 42))
+    d.line([(66, shelf_y), (W - 66, shelf_y)], fill=(214, 160, 104), width=3)
+    d.rectangle([66, shelf_y, W - 66, shelf_y + 22], outline=(50, 28, 16), width=2)
 
-        # "סכום התחלתי <מספר>": the number is drawn separately so it never gets flipped (e.g. 2.5M)
-        f22 = get_font(22)
-        label, num = he("סכום התחלתי"), sc_short(c["min"])
-        w_label, w_num, sp = d.textlength(label, font=f22), d.textlength(num, font=f22), 8
-        lx = cx - (w_label + sp + w_num) / 2
-        col_txt = (235, 235, 240, 255)
-        d.text((lx, ty + 36), num, font=f22, fill=col_txt, anchor="lt")                      # the number on the left
-        d.text((lx + w_num + sp, ty + 36), label, font=f22, fill=col_txt, anchor="lt")       # the Hebrew text on the right
-
+    # price tags hanging under the shelf
+    for i, key in enumerate(keys):
+        c = SC_CARDS[key]
+        left = len(sc_stock(key)["left"])
+        x = int(inner_l + gap + i * (cw + gap))
+        cx, ty = x + cw / 2, shelf_y + 34
+        d.line([(cx - 30, shelf_y + 22), (cx - 14, ty)], fill=(230, 220, 190), width=2)
+        d.line([(cx + 30, shelf_y + 22), (cx + 14, ty)], fill=(230, 220, 190), width=2)
+        d.rounded_rectangle([x, ty, x + cw, ty + 104], radius=10, fill=(250, 241, 216), outline=(110, 70, 38), width=3)
+        d.ellipse([cx - 5, ty + 5, cx + 5, ty + 15], fill=(120, 80, 44))
+        d.text((cx, ty + 24), he(c["name"]), font=fit(c["name"], 24, cw - 18), fill=(120, 28, 24), anchor="mt")
+        pair(cx, ty + 54, sc_short(c["min"]), "סכום התחלתי", get_font(18), (60, 44, 40))
         ratio = left / c["total"]
-        col = (110, 255, 140, 255) if ratio > 0.5 else (255, 190, 70, 255) if ratio > 0.2 else (255, 100, 100, 255)
-        d.text((cx, ty + 66), f"{left}/{c['total']}", font=get_font(22), fill=col, anchor="mt")
+        col = (24, 130, 58) if ratio > 0.5 else (190, 110, 10) if ratio > 0.2 else (190, 36, 36)
+        if left:
+            pair(cx, ty + 77, f"{left}/{c['total']}", "נותרו", get_font(19), col)
+        else:
+            d.text((cx, ty + 77), he("אזל המלאי"), font=get_font(19), fill=col, anchor="mt")
 
+    # counter
+    vgrad((40, 706, W - 40, 724), (200, 140, 86), (150, 98, 56))
+    d.line([(40, 706), (W - 40, 706)], fill=(232, 182, 120), width=3)
+    vgrad((52, 724, W - 52, H), (104, 64, 38), (66, 38, 24))
+    for x in range(52, W - 52, 70):
+        d.line([(x, 724), (x, H)], fill=(46, 26, 16), width=2)
+    d.rectangle([40, 706, W - 40, H], outline=(40, 22, 14), width=3)
+    d.rounded_rectangle([W / 2 - 250, 738, W / 2 + 250, 786], radius=12, fill=(34, 16, 20), outline=(235, 190, 60), width=3)
+    d.text((W / 2, 762), he("גרדו ומצאו 3 מכפילים זהים!"), font=get_font(26), fill=(255, 224, 130), anchor="mm")
+
+    # striped awning with scalloped edge
+    aw_top, aw_bot, sw = 128, 214, 55
+    x0, x1 = 12, W - 12
+    n_st = (x1 - x0) // sw
+    sx0 = (W - n_st * sw) // 2
+    for k in range(n_st):
+        col = (200, 36, 48) if k % 2 == 0 else (248, 238, 216)
+        xa = sx0 + k * sw
+        d.polygon([(xa + 6 * (1 if k < n_st / 2 else -1) * 0, aw_top), (xa + sw, aw_top), (xa + sw, aw_bot), (xa, aw_bot)], fill=col)
+        d.ellipse([xa, aw_bot - sw // 2, xa + sw, aw_bot + sw // 2], fill=col)
+    # shading on the awning
+    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shade)
+    for y in range(aw_top, aw_bot + sw // 2 + 1):
+        sd.line([(sx0, y), (sx0 + n_st * sw, y)], fill=(0, 0, 0, int(70 * (y - aw_top) / (aw_bot - aw_top + sw // 2))))
+    im = Image.alpha_composite(im.convert("RGBA"), shade).convert("RGB")
     d = ImageDraw.Draw(im)
-    d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60, 255), width=5)
+    d.line([(sx0, aw_top), (sx0 + n_st * sw, aw_top)], fill=(120, 20, 28), width=4)
+
+    # sign on top with light bulbs
+    sx, sy, sx2, sy2 = 150, 18, W - 150, 118
+    d.rounded_rectangle([sx, sy, sx2, sy2], radius=18, fill=(30, 12, 22), outline=(235, 190, 60), width=6)
+    bulbs = []
+    for x in range(sx + 24, sx2 - 10, 38):
+        bulbs += [(x, sy + 10), (x, sy2 - 10)]
+    for y in range(sy + 30, sy2 - 20, 30):
+        bulbs += [(sx + 10, y), (sx2 - 10, y)]
+    gl = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(gl)
+    for bx, by in bulbs:
+        gd.ellipse([bx - 11, by - 11, bx + 11, by + 11], fill=(255, 220, 120, 140))
+    im = Image.alpha_composite(im.convert("RGBA"), gl.filter(ImageFilter.GaussianBlur(5))).convert("RGB")
+    d = ImageDraw.Draw(im)
+    for bx, by in bulbs:
+        d.ellipse([bx - 5, by - 5, bx + 5, by + 5], fill=(255, 244, 190))
+    d.text((W / 2, (sy + sy2) / 2 + 2), he("כרטיסי גירוד"), font=get_font(60), fill=(255, 214, 90), anchor="mm",
+           stroke_width=2, stroke_fill=(120, 60, 0))
+    for sxm in (sx + 120, sx2 - 120):
+        d.polygon([(sxm, 68 - 16), (sxm + 10, 68), (sxm, 68 + 16), (sxm - 10, 68)], fill=(255, 214, 90))
+
+    d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60), width=5)
     buf = io.BytesIO()
-    im.convert("RGB").save(buf, "JPEG", quality=90)
+    im.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 # --- render end ---
 
@@ -2245,7 +2334,7 @@ class AmountModal(discord.ui.Modal):
         c = SC_CARDS[key]
         super().__init__(title=f"{c['name']} - כמה כסף?"[:45])
         self.menu, self.key = menu, key
-        self.amount = discord.ui.TextInput(label=f"סכום מהבנק (מינימום {sc_short(c['min'])})"[:45],
+        self.amount = discord.ui.TextInput(label=f"סכום מהבנק (סכום התחלתי {sc_short(c['min'])})"[:45],
                                            placeholder="למשל: 5m או 2500000 או half או all", max_length=20)
         self.add_item(self.amount)
 
@@ -2264,7 +2353,7 @@ class AmountModal(discord.ui.Modal):
         if price is None or price <= 0:
             return await say("סכום לא תקין. למשל: `5m`, `2500000`, `half` או `all`")
         if price < c["min"]:
-            return await say(f"המינימום לכרטיס הזה הוא **{fmt(c['min'])}** {cur()}.")
+            return await say(f"הסכום ההתחלתי לכרטיס הזה הוא **{fmt(c['min'])}** {cur()}.")
         if price > u["bank"]:
             return await say(f"אין לך מספיק כסף **בבנק**. יש לך {fmt(u['bank'])} {cur()} (`$dep` להפקדה).")
         u["bank"] -= price
@@ -2295,7 +2384,7 @@ class ScratchSelect(discord.ui.Select):
         opts = []
         for key, c in SC_CARDS.items():
             left = len(sc_stock(key)["left"])
-            desc = f"מינימום {sc_short(c['min'])} • נותרו {left}/{c['total']}" if left else "אזל המלאי ❌"
+            desc = f"סכום התחלתי {sc_short(c['min'])} • נותרו {left}/{c['total']}" if left else "אזל המלאי ❌"
             opts.append(discord.SelectOption(label=c["name"], value=key, emoji=c["emoji"], description=desc))
         super().__init__(placeholder="בחירת כרטיס גירוד", options=opts)
 
@@ -2328,7 +2417,7 @@ class ScratchMenu(OwnedView):
             left = len(sc_stock(key)["left"])
             stock = f"נותרו **{left}/{c['total']}**" if left else "אזל המלאי ❌"
             lines.append(f"{c['emoji']} **{c['name']}**\n"
-                         f"╰ מינימום `{sc_short(c['min'])}` • פרס ראשי `x{max(c['wins']):g}` • {stock}")
+                         f"╰ סכום התחלתי `{sc_short(c['min'])}` • פרס ראשי `x{max(c['wins']):g}` • {stock}")
         e = discord.Embed(color=0xD4AF37, title="🎟️ ✦ כרטיסי גירוד ✦ 🎟️", description=(
             "\n\n".join(lines) +
             f"\n\n💳 **יתרה בבנק:** {fmt(bank)} {cur()}\n"
