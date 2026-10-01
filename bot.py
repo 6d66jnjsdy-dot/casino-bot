@@ -1,4 +1,4 @@
-import discord, random, json, os, asyncio, io, signal, math, time, base64, re
+import discord, random, json, os, asyncio, io, signal, math, time, base64, re, secrets
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 from discord.ext import commands, tasks
@@ -416,6 +416,10 @@ async def graceful_shutdown():
 async def start_web():
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="Bot is alive"))
+    app.router.add_get("/sc/{token}", sc_page)
+    app.router.add_get("/sc/{token}/data", sc_data)
+    app.router.add_get("/sc/{token}/img", sc_img)
+    app.router.add_post("/sc/{token}/done", sc_done)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
@@ -2050,6 +2054,92 @@ def sc_banner():
     return buf.getvalue()
 # --- render end ---
 
+# ---------- real finger scratching (web page) ----------
+# The button "גרד באצבע" opens a page with a real scratch canvas. The result of the card is already decided when it is bought,
+# the page only reveals it, and when it is finished the page tells the bot to settle the game in Discord.
+# Needs the public address of the bot: PUBLIC_URL (Render sets RENDER_EXTERNAL_URL by itself).
+PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
+WEB_SC = {}
+
+SC_PAGE = """<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>כרטיס גירוד</title>
+<style>
+html,body{margin:0;background:#18181c;color:#fff;font-family:sans-serif;text-align:center}
+#wrap{position:relative;width:min(100vw,560px);margin:0 auto}
+img,canvas{display:block;width:100%}
+canvas{position:absolute;left:0;top:0;touch-action:none}
+#msg{padding:12px;font-size:18px}
+button{font-size:18px;padding:10px 22px;margin:10px;border:0;border-radius:8px;background:#3b82f6;color:#fff}
+</style></head><body>
+<div id="msg">גרדו עם האצבע את העיגולים</div>
+<div id="wrap"><img id="bg" src="/sc/__TOKEN__/img"><canvas id="cv"></canvas></div>
+<button id="all">גרד הכל</button>
+<script>
+const T="__TOKEN__",cv=document.getElementById("cv"),msg=document.getElementById("msg"),all=document.getElementById("all");
+const g=cv.getContext("2d");
+let spots=[],W=0,H=0,R=16,done=false,down=false,last=null,cleared=[];
+function hole(x,y,r){g.globalCompositeOperation="destination-out";g.beginPath();g.arc(x,y,r,0,7);g.fill();g.globalCompositeOperation="source-over";}
+function pos(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height];}
+function scratch(e){const p=pos(e),a=last||p;g.globalCompositeOperation="destination-out";g.lineCap="round";g.lineWidth=R*2;g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(p[0],p[1]);g.stroke();g.globalCompositeOperation="source-over";last=p;}
+function check(){
+ spots.forEach((s,i)=>{if(cleared[i])return;
+  const x0=Math.max(0,Math.floor(s[0]-s[2])),y0=Math.max(0,Math.floor(s[1]-s[2])),n=Math.ceil(s[2]*2);
+  const d=g.getImageData(x0,y0,Math.min(n,W-x0),Math.min(n,H-y0));
+  let t=0,c=0;
+  for(let y=0;y<d.height;y+=3)for(let x=0;x<d.width;x+=3){const dx=x0+x-s[0],dy=y0+y-s[1];if(dx*dx+dy*dy<=s[2]*s[2]){t++;if(d.data[(y*d.width+x)*4+3]<40)c++;}}
+  if(t&&c/t>0.5){cleared[i]=true;hole(s[0],s[1],s[2]+4);}
+ });
+ const left=cleared.filter(x=>!x).length;
+ msg.textContent=left?"נשארו "+left+" עיגולים לגרד":"הכל נגרד!";
+ if(!left)finish();
+}
+async function finish(){
+ if(done)return;done=true;msg.textContent="מסיים...";
+ try{await fetch("/sc/"+T+"/done",{method:"POST"});}catch(e){}
+ msg.textContent="✅ התוצאה נשלחה לדיסקורד - אפשר לחזור";all.style.display="none";
+}
+cv.addEventListener("pointerdown",e=>{if(done)return;down=true;last=null;cv.setPointerCapture(e.pointerId);scratch(e);});
+cv.addEventListener("pointermove",e=>{if(down&&!done)scratch(e);});
+const up=()=>{if(!down)return;down=false;last=null;check();};
+cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",up);
+all.onclick=()=>{cleared=cleared.map(()=>true);g.clearRect(0,0,W,H);finish();};
+(async()=>{
+ const d=await (await fetch("/sc/"+T+"/data")).json();
+ spots=d.spots;W=d.w;H=d.h;cv.width=W;cv.height=H;R=Math.max(14,W*0.035);cleared=spots.map(()=>false);
+ spots.forEach(s=>{const gr=g.createRadialGradient(s[0]-s[2]*.3,s[1]-s[2]*.3,s[2]*.1,s[0],s[1],s[2]);
+  gr.addColorStop(0,"#f0f0f5");gr.addColorStop(1,"#8a8a94");g.fillStyle=gr;g.beginPath();g.arc(s[0],s[1],s[2],0,7);g.fill();
+  g.strokeStyle="#46464f";g.lineWidth=3;g.stroke();});
+})();
+</script></body></html>"""
+
+def sc_web_view(request):
+    v = WEB_SC.get(request.match_info["token"])
+    if v is None:
+        raise web.HTTPNotFound(text="הקלף הזה כבר לא זמין")
+    return v
+
+async def sc_page(request):
+    sc_web_view(request)
+    return web.Response(text=SC_PAGE.replace("__TOKEN__", request.match_info["token"]), content_type="text/html",
+                        headers={"Cache-Control": "no-store"})
+
+async def sc_data(request):
+    v = sc_web_view(request)
+    c = v.card
+    k = SC_WIDTH / c["orig"][0]
+    return web.json_response({"w": SC_WIDTH, "h": round(SC_WIDTH * c["orig"][1] / c["orig"][0]),
+                              "spots": [[x * k, y * k, r * k] for x, y, r in c["spots"]]})
+
+async def sc_img(request):
+    v = sc_web_view(request)
+    data = await asyncio.to_thread(lambda: sc_render(v.key, v.labels, set(range(v.n)), True, v.mult).getvalue())
+    return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+async def sc_done(request):
+    await sc_web_view(request).settle_web()
+    return web.json_response({"ok": True})
+
 class SpotButton(discord.ui.Button):
     def __init__(self, idx, row):
         super().__init__(style=discord.ButtonStyle.secondary, label=str(idx + 1), row=row)
@@ -2075,6 +2165,13 @@ class ScratchView(OwnedView):
         self.all_btn.callback = self.settle
         for b in (*self.spot_btns, self.all_btn):
             self.add_item(b)
+        self.web_btn = self.web_token = None
+        if PUBLIC_URL:
+            self.web_token = secrets.token_urlsafe(12)
+            WEB_SC[self.web_token] = self
+            self.web_btn = discord.ui.Button(style=discord.ButtonStyle.link, label="🖐️ גרד באצבע", row=self.all_btn.row,
+                                             url=f"{PUBLIC_URL}/sc/{self.web_token}")
+            self.add_item(self.web_btn)
 
     def image(self, final=False):
         self.render_n += 1
@@ -2115,6 +2212,9 @@ class ScratchView(OwnedView):
 
     def finalize(self):
         self.done = True
+        WEB_SC.pop(self.web_token, None)
+        if self.web_btn:
+            self.remove_item(self.web_btn)
         for i in range(self.n):
             if i not in self.revealed:
                 self.reveal(i)
@@ -2157,6 +2257,18 @@ class ScratchView(OwnedView):
         self.stop()
         async with self.edit_lock:
             await interaction.edit_original_response(embed=e, attachments=[f], view=self)
+
+    async def settle_web(self):
+        if self.done:
+            return
+        e, f = self.finalize()
+        self.stop()
+        async with self.edit_lock:
+            if self.message:
+                try:
+                    await self.message.edit(embed=e, attachments=[f], view=self)
+                except Exception:
+                    pass
 
     async def on_timeout(self):
         if self.done:
