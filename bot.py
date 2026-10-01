@@ -1,6 +1,6 @@
-import discord, random, json, os, asyncio, io, signal, math, time, base64, re, secrets
+import discord, random, json, os, asyncio, io, signal, math, time, base64, re
 from functools import lru_cache
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 from discord.ext import commands, tasks
 from aiohttp import web
 
@@ -416,10 +416,6 @@ async def graceful_shutdown():
 async def start_web():
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="Bot is alive"))
-    app.router.add_get("/sc/{token}", sc_page)
-    app.router.add_get("/sc/{token}/data", sc_data)
-    app.router.add_get("/sc/{token}/img", sc_img)
-    app.router.add_post("/sc/{token}/done", sc_done)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
@@ -2041,104 +2037,81 @@ def sc_render(key, labels, revealed, final=False, mult=0):
     buf.seek(0)
     return buf
 
-@lru_cache(maxsize=1)
+def he(text):
+    """Hebrew for PIL: reversed only when this Pillow has no RTL support (raqm)."""
+    return text if features.check("raqm") else text[::-1]
+
 def sc_banner():
-    tw, th = 220, 250
-    im = Image.new("RGB", (tw * 4 + 6, th), (24, 24, 28))
-    for i, key in enumerate(SC_CARDS):
+    """Menu picture: 4 real-looking decks of scratch cards (the stack gets thinner as the stock runs out)."""
+    keys = list(SC_CARDS)
+    cw, ch, step, layers = 250, 300, 5, 14
+    gap, pad, label_h = 34, 40, 110
+    W = pad * 2 + len(keys) * cw + (len(keys) - 1) * gap
+    base_y = pad + layers * step
+    H = base_y + ch + label_h
+
+    # green felt table with a soft vignette
+    im = Image.new("RGB", (W, H))
+    d = ImageDraw.Draw(im)
+    for y in range(H):
+        k = y / H
+        d.line([(0, y), (W, y)], fill=(int(24 - 10 * k), int(92 - 38 * k), int(58 - 24 * k)))
+    vig = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(vig).ellipse([-W // 3, -H // 2, W + W // 3, H + H // 2], fill=255)
+    vig = vig.filter(ImageFilter.GaussianBlur(90))
+    im = Image.composite(im, Image.new("RGB", (W, H), (6, 24, 16)), vig).convert("RGBA")
+
+    mask = Image.new("L", (cw, ch), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=14, fill=255)
+
+    for i, key in enumerate(keys):
+        c = SC_CARDS[key]
+        left = len(sc_stock(key)["left"])
+        x = pad + i * (cw + gap)
+        n = 0 if not left else max(2, round(left / c["total"] * layers))
+        rng = random.Random(key)
+
+        # shadow under the deck
+        sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(sh).rounded_rectangle([x + 8, base_y + 14, x + cw + 8, base_y + ch + 16], radius=16, fill=(0, 0, 0, 170))
+        im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(14)))
+        d = ImageDraw.Draw(im)
+
+        # the cards under the top one: their edges stick out above it, like in a real deck
+        for j in range(n - 1, 0, -1):
+            jx = rng.randint(-3, 3)
+            y = base_y - j * step
+            d.rounded_rectangle([x + jx, y, x + jx + cw, y + ch], radius=14,
+                                fill=(246, 246, 250, 255), outline=(150, 150, 160, 255), width=2)
+
+        # the top card
         b = sc_base(key)
-        t = b.resize((tw, round(b.height * tw / b.width)), Image.LANCZOS).crop((0, 0, tw, th))
-        im.paste(t, (i * (tw + 2), 0))
+        art = b.resize((cw, round(b.height * cw / b.width)), Image.LANCZOS).crop((0, 0, cw, ch))
+        if not left:
+            art = Image.blend(art.convert("L").convert("RGB"), Image.new("RGB", art.size, (20, 20, 20)), 0.55)
+        im.paste(art.convert("RGBA"), (x, base_y), mask)
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle([x, base_y, x + cw, base_y + ch], radius=14,
+                            outline=(240, 240, 245, 255) if left else (110, 110, 110, 255), width=4)
+        if not left:
+            d.text((x + cw / 2, base_y + ch / 2), "SOLD OUT", font=get_font(36), fill=(255, 90, 90, 255),
+                   anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 255))
+
+        # label under the deck (Hebrew is reversed because PIL draws left-to-right)
+        cx, ty = x + cw / 2, base_y + ch + 16
+        d.text((cx, ty), he(c["name"]), font=get_font(27), fill=(255, 224, 130, 255), anchor="mt",
+               stroke_width=1, stroke_fill=(0, 0, 0, 255))
+        d.text((cx, ty + 36), f"min {sc_short(c['min'])}", font=get_font(22), fill=(235, 235, 240, 255), anchor="mt")
+        ratio = left / c["total"]
+        col = (110, 255, 140, 255) if ratio > 0.5 else (255, 190, 70, 255) if ratio > 0.2 else (255, 100, 100, 255)
+        d.text((cx, ty + 66), f"{left}/{c['total']}", font=get_font(22), fill=col, anchor="mt")
+
+    d = ImageDraw.Draw(im)
+    d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60, 255), width=5)
     buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=88)
+    im.convert("RGB").save(buf, "JPEG", quality=90)
     return buf.getvalue()
 # --- render end ---
-
-# ---------- real finger scratching (web page) ----------
-# The button "גרד באצבע" opens a page with a real scratch canvas. The result of the card is already decided when it is bought,
-# the page only reveals it, and when it is finished the page tells the bot to settle the game in Discord.
-# Needs the public address of the bot: PUBLIC_URL (Render sets RENDER_EXTERNAL_URL by itself).
-PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
-WEB_SC = {}
-
-SC_PAGE = """<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>כרטיס גירוד</title>
-<style>
-html,body{margin:0;background:#18181c;color:#fff;font-family:sans-serif;text-align:center}
-#wrap{position:relative;width:min(100vw,560px);margin:0 auto}
-img,canvas{display:block;width:100%}
-canvas{position:absolute;left:0;top:0;touch-action:none}
-#msg{padding:12px;font-size:18px}
-button{font-size:18px;padding:10px 22px;margin:10px;border:0;border-radius:8px;background:#3b82f6;color:#fff}
-</style></head><body>
-<div id="msg">גרדו עם האצבע את העיגולים</div>
-<div id="wrap"><img id="bg" src="/sc/__TOKEN__/img"><canvas id="cv"></canvas></div>
-<button id="all">גרד הכל</button>
-<script>
-const T="__TOKEN__",cv=document.getElementById("cv"),msg=document.getElementById("msg"),all=document.getElementById("all");
-const g=cv.getContext("2d");
-let spots=[],W=0,H=0,R=16,done=false,down=false,last=null,cleared=[];
-function hole(x,y,r){g.globalCompositeOperation="destination-out";g.beginPath();g.arc(x,y,r,0,7);g.fill();g.globalCompositeOperation="source-over";}
-function pos(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height];}
-function scratch(e){const p=pos(e),a=last||p;g.globalCompositeOperation="destination-out";g.lineCap="round";g.lineWidth=R*2;g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(p[0],p[1]);g.stroke();g.globalCompositeOperation="source-over";last=p;}
-function check(){
- spots.forEach((s,i)=>{if(cleared[i])return;
-  const x0=Math.max(0,Math.floor(s[0]-s[2])),y0=Math.max(0,Math.floor(s[1]-s[2])),n=Math.ceil(s[2]*2);
-  const d=g.getImageData(x0,y0,Math.min(n,W-x0),Math.min(n,H-y0));
-  let t=0,c=0;
-  for(let y=0;y<d.height;y+=3)for(let x=0;x<d.width;x+=3){const dx=x0+x-s[0],dy=y0+y-s[1];if(dx*dx+dy*dy<=s[2]*s[2]){t++;if(d.data[(y*d.width+x)*4+3]<40)c++;}}
-  if(t&&c/t>0.5){cleared[i]=true;hole(s[0],s[1],s[2]+4);}
- });
- const left=cleared.filter(x=>!x).length;
- msg.textContent=left?"נשארו "+left+" עיגולים לגרד":"הכל נגרד!";
- if(!left)finish();
-}
-async function finish(){
- if(done)return;done=true;msg.textContent="מסיים...";
- try{await fetch("/sc/"+T+"/done",{method:"POST"});}catch(e){}
- msg.textContent="✅ התוצאה נשלחה לדיסקורד - אפשר לחזור";all.style.display="none";
-}
-cv.addEventListener("pointerdown",e=>{if(done)return;down=true;last=null;cv.setPointerCapture(e.pointerId);scratch(e);});
-cv.addEventListener("pointermove",e=>{if(down&&!done)scratch(e);});
-const up=()=>{if(!down)return;down=false;last=null;check();};
-cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",up);
-all.onclick=()=>{cleared=cleared.map(()=>true);g.clearRect(0,0,W,H);finish();};
-(async()=>{
- const d=await (await fetch("/sc/"+T+"/data")).json();
- spots=d.spots;W=d.w;H=d.h;cv.width=W;cv.height=H;R=Math.max(14,W*0.035);cleared=spots.map(()=>false);
- spots.forEach(s=>{const gr=g.createRadialGradient(s[0]-s[2]*.3,s[1]-s[2]*.3,s[2]*.1,s[0],s[1],s[2]);
-  gr.addColorStop(0,"#f0f0f5");gr.addColorStop(1,"#8a8a94");g.fillStyle=gr;g.beginPath();g.arc(s[0],s[1],s[2],0,7);g.fill();
-  g.strokeStyle="#46464f";g.lineWidth=3;g.stroke();});
-})();
-</script></body></html>"""
-
-def sc_web_view(request):
-    v = WEB_SC.get(request.match_info["token"])
-    if v is None:
-        raise web.HTTPNotFound(text="הקלף הזה כבר לא זמין")
-    return v
-
-async def sc_page(request):
-    sc_web_view(request)
-    return web.Response(text=SC_PAGE.replace("__TOKEN__", request.match_info["token"]), content_type="text/html",
-                        headers={"Cache-Control": "no-store"})
-
-async def sc_data(request):
-    v = sc_web_view(request)
-    c = v.card
-    k = SC_WIDTH / c["orig"][0]
-    return web.json_response({"w": SC_WIDTH, "h": round(SC_WIDTH * c["orig"][1] / c["orig"][0]),
-                              "spots": [[x * k, y * k, r * k] for x, y, r in c["spots"]]})
-
-async def sc_img(request):
-    v = sc_web_view(request)
-    data = await asyncio.to_thread(lambda: sc_render(v.key, v.labels, set(range(v.n)), True, v.mult).getvalue())
-    return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "no-store"})
-
-async def sc_done(request):
-    await sc_web_view(request).settle_web()
-    return web.json_response({"ok": True})
 
 class SpotButton(discord.ui.Button):
     def __init__(self, idx, row):
@@ -2165,21 +2138,6 @@ class ScratchView(OwnedView):
         self.all_btn.callback = self.settle
         for b in (*self.spot_btns, self.all_btn):
             self.add_item(b)
-        self.web_btn = self.web_token = None
-        if PUBLIC_URL:
-            self.web_token = secrets.token_urlsafe(12)
-            WEB_SC[self.web_token] = self
-            self.web_btn = discord.ui.Button(style=discord.ButtonStyle.primary, label="🖐️ גרד באצבע", row=self.all_btn.row)
-            self.web_btn.callback = self.web_link
-            self.add_item(self.web_btn)
-
-    async def web_link(self, interaction):
-        # the link is sent as a private (ephemeral) message: only the player who owns this card can ever see it
-        if self.done:
-            return await interaction.response.send_message("המשחק כבר נגמר.", ephemeral=True)
-        link = discord.ui.View()
-        link.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="פתח את הקלף", url=f"{PUBLIC_URL}/sc/{self.web_token}"))
-        await interaction.response.send_message("🖐️ הקישור האישי שלך לגירוד (רק אתה רואה אותו):", view=link, ephemeral=True)
 
     def image(self, final=False):
         self.render_n += 1
@@ -2220,9 +2178,6 @@ class ScratchView(OwnedView):
 
     def finalize(self):
         self.done = True
-        WEB_SC.pop(self.web_token, None)
-        if self.web_btn:
-            self.remove_item(self.web_btn)
         for i in range(self.n):
             if i not in self.revealed:
                 self.reveal(i)
@@ -2265,18 +2220,6 @@ class ScratchView(OwnedView):
         self.stop()
         async with self.edit_lock:
             await interaction.edit_original_response(embed=e, attachments=[f], view=self)
-
-    async def settle_web(self):
-        if self.done:
-            return
-        e, f = self.finalize()
-        self.stop()
-        async with self.edit_lock:
-            if self.message:
-                try:
-                    await self.message.edit(embed=e, attachments=[f], view=self)
-                except Exception:
-                    pass
 
     async def on_timeout(self):
         if self.done:
@@ -2370,12 +2313,19 @@ class ScratchMenu(OwnedView):
         self.add_item(ScratchSelect())
 
     def embed(self):
+        bank = user_data(self.user.id)["bank"]
         lines = []
         for key, c in SC_CARDS.items():
             left = len(sc_stock(key)["left"])
-            lines.append(f"{c['emoji']} **{c['name']}** — מינימום {sc_short(c['min'])} • " + (f"נותרו {left}/{c['total']}" if left else "אזל ❌"))
-        e = discord.Embed(color=YELLOW, title="🎟️ כרטיסי גירוד", description=(
-            "\n".join(lines) + "\n\nבחרו כרטיס מהרשימה, ואז הקלידו כמה כסף לשלם.\nהתשלום יורד **מהבנק בלבד**."))
+            stock = f"נותרו **{left}/{c['total']}**" if left else "אזל המלאי ❌"
+            lines.append(f"{c['emoji']} **{c['name']}**\n"
+                         f"╰ מינימום `{sc_short(c['min'])}` • פרס ראשי `x{max(c['wins']):g}` • {stock}")
+        e = discord.Embed(color=0x2B6B3F, title="🎟️ ✦ כרטיסי גירוד ✦ 🎟️", description=(
+            "\n\n".join(lines) +
+            f"\n\n💳 **יתרה בבנק:** {fmt(bank)} {cur()}\n"
+            "👇 בחרו חפיסה מהתפריט והקלידו כמה לשלם"))
+        e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
+        e.set_footer(text="התשלום יורד מהבנק בלבד • מוצאים 3 מכפילים זהים וזוכים")
         e.set_image(url="attachment://sc_menu.jpg")
         return e
 
@@ -2404,7 +2354,8 @@ async def scratch(ctx, sub: str = None):
     if not SC_ART:
         return await reply(ctx, "scratch_art.py is missing next to the bot file.", RED)
     view = ScratchMenu(ctx.author)
-    view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(sc_banner()), "sc_menu.jpg"),
+    banner = await asyncio.to_thread(sc_banner)
+    view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(banner), "sc_menu.jpg"),
                                    view=view, mention_author=False)
 
 # ================= ECONOMY =================
