@@ -466,7 +466,9 @@ async def on_command_error(ctx, err):
     if isinstance(err, (commands.MissingRequiredArgument, commands.BadArgument)):
         return await reply(ctx, f"Usage: `${ctx.command.usage or ctx.command.name}`", RED)
     if not isinstance(err, (commands.CommandNotFound, commands.CheckFailure)):
+        import traceback
         print("Error:", repr(err))
+        traceback.print_exception(type(err), err, err.__traceback__)
 
 # ================= BOARDS =================
 def shuffled(**parts):
@@ -2041,7 +2043,16 @@ def he(text):
     """Hebrew for PIL: reversed only when this Pillow has no RTL support (raqm)."""
     return text if features.check("raqm") else text[::-1]
 
+SC_BANNER_CACHE = {}
+
 def sc_banner():
+    key = tuple(len(sc_stock(k)["left"]) for k in SC_CARDS)
+    if key not in SC_BANNER_CACHE:
+        SC_BANNER_CACHE.clear()
+        SC_BANNER_CACHE[key] = sc_banner_render()
+    return SC_BANNER_CACHE[key]
+
+def sc_banner_render():
     """Menu picture: a lottery-style kiosk (lit sign box, glass window with acrylic card dispensers, price tags, counter).
     Drawn at 2x and scaled down so every edge is smooth."""
     S, W, H = 2, 1100, 820
@@ -2070,9 +2081,16 @@ def sc_banner():
     def over(fn, blur=0):
         layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
         fn(ImageDraw.Draw(layer))
+        bb = layer.getbbox()
+        if not bb:
+            return
+        pad = blur * S * 3
+        x0, y0 = max(0, bb[0] - pad), max(0, bb[1] - pad)
+        x1, y1 = min(im.width, bb[2] + pad), min(im.height, bb[3] + pad)
+        part = layer.crop((x0, y0, x1, y1))
         if blur:
-            layer = layer.filter(ImageFilter.GaussianBlur(blur * S))
-        im.alpha_composite(layer)
+            part = part.filter(ImageFilter.GaussianBlur(blur * S))
+        im.alpha_composite(part, (x0, y0))
 
     def F(size):
         return get_font(int(size * S))
@@ -2230,15 +2248,15 @@ def sc_banner():
         d.ellipse(B((bxm - 36, 105, bxm + 36, 177)), fill=(255, 208, 0), outline=(255, 255, 255), width=3 * S)
         d.text((X(bxm), X(141)), "₪", font=F(46), fill=(0, 56, 126), anchor="mm")
 
-    # ---- photo feel: vignette + fine grain ----
-    vig = Image.new("L", im.size, 0)
-    ImageDraw.Draw(vig).ellipse(B((-W * 0.25, -H * 0.3, W * 1.25, H * 1.3)), fill=255)
-    vig = vig.filter(ImageFilter.GaussianBlur(120 * S))
-    rgb = Image.composite(im.convert("RGB"), Image.new("RGB", im.size, (4, 8, 18)), vig)
-    rgb = Image.blend(rgb, Image.effect_noise(im.size, 26).convert("RGB"), 0.03)
-    out = rgb.resize((W, H), Image.LANCZOS)
+    # ---- photo feel: vignette + fine grain (done on the small image: much faster) ----
+    out = im.convert("RGB").resize((W, H), Image.LANCZOS)
+    vig = Image.new("L", (W // 4, H // 4), 0)
+    ImageDraw.Draw(vig).ellipse([-W // 16, -H // 12, W // 4 + W // 16, H // 4 + H // 12], fill=255)
+    vig = vig.filter(ImageFilter.GaussianBlur(30)).resize((W, H), Image.BILINEAR)
+    out = Image.composite(out, Image.new("RGB", (W, H), (4, 8, 18)), vig)
+    out = Image.blend(out, Image.effect_noise((W, H), 26).convert("RGB"), 0.03)
     buf = io.BytesIO()
-    out.save(buf, "JPEG", quality=92)
+    out.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 # --- render end ---
 
@@ -2441,7 +2459,7 @@ class ScratchMenu(OwnedView):
         self.user, self.message, self.chosen = user, None, False
         self.add_item(ScratchSelect())
 
-    def embed(self):
+    def embed(self, image=True):
         bank = user_data(self.user.id)["bank"]
         lines = []
         for key, c in SC_CARDS.items():
@@ -2455,7 +2473,8 @@ class ScratchMenu(OwnedView):
             "👇 בחרו חפיסה מהתפריט והקלידו כמה לשלם"))
         e.set_author(name=self.user.name, icon_url=self.user.display_avatar.url)
         e.set_footer(text="התשלום יורד מהבנק בלבד • מוצאים 3 מכפילים זהים וזוכים")
-        e.set_image(url="attachment://sc_menu.jpg")
+        if image:
+            e.set_image(url="attachment://sc_menu.jpg")
         return e
 
     async def on_timeout(self):
@@ -2483,9 +2502,18 @@ async def scratch(ctx, sub: str = None):
     if not SC_ART:
         return await reply(ctx, "scratch_art.py is missing next to the bot file.", RED)
     view = ScratchMenu(ctx.author)
-    banner = await asyncio.to_thread(sc_banner)
-    view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(banner), "sc_menu.jpg"),
-                                   view=view, mention_author=False)
+    try:
+        banner = await asyncio.to_thread(sc_banner)
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        print("Scratch banner failed, sending the menu without the picture:", repr(ex))
+        banner = None
+    if banner:
+        view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(banner), "sc_menu.jpg"),
+                                       view=view, mention_author=False)
+    else:
+        view.message = await ctx.reply(embed=view.embed(image=False), view=view, mention_author=False)
 
 # ================= ECONOMY =================
 async def resolve_target(ctx, arg):
