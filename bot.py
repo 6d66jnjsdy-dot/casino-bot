@@ -1789,6 +1789,7 @@ class CrashView(OwnedView):
         super().__init__(timeout=180)
         self.user, self.bet, self.token, self.crash, self.auto = user, bet, token, crash, auto
         self.message = self.t0 = self.last_name = None
+        self.shown_m = 1.0          # the multiplier of the last picture the player really received
         self.done, self.render_n = False, 0
         self.edit_lock = asyncio.Lock()
         # the two pictures we already know in advance (the crash and the auto-cashout) are drawn BEFORE they are needed,
@@ -1837,25 +1838,25 @@ class CrashView(OwnedView):
             e = make_embed(self.user, f"{extra}Your bet was returned.\nYou now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
         else:
             e = result_embed(self.user, net > 0, abs(net), extra)
-        if interaction is not None:
-            # 1) INSTANT: the result text answers the click right away (the old picture stays for a split second)
-            if self.last_name:
-                e.set_image(url=f"attachment://{self.last_name}")
-            try:
-                await interaction.response.edit_message(embed=e, view=None)
-            except discord.HTTPException:
-                pass
-        # 2) the final picture (already drawn for crash / auto-cashout, drawn now only for a manual cashout)
-        data = None
-        if kind == "crash":
-            data = await self.pre_crash
-        elif self.pre_auto is not None and m == self.auto:
-            data = await self.pre_auto
-        if data is None:
-            data = await asyncio.to_thread(render_crash, crash_t(shown), kind, shown)
-        f, name = self.file_of(data)
-        e.set_image(url=f"attachment://{name}")
-        async with self.edit_lock:
+        async with self.edit_lock:      # waits for a frame that is still being uploaded, so it can never land AFTER the result
+            if interaction is not None:
+                # 1) INSTANT: the result text answers the click right away (the old picture stays for a split second)
+                if self.last_name:
+                    e.set_image(url=f"attachment://{self.last_name}")
+                try:
+                    await interaction.response.edit_message(embed=e, view=None)
+                except discord.HTTPException:
+                    pass
+            # 2) the final picture (already drawn for crash / auto-cashout, drawn now only for a manual cashout)
+            data = None
+            if kind == "crash":
+                data = await self.pre_crash
+            elif self.pre_auto is not None and m == self.auto:
+                data = await self.pre_auto
+            if data is None:
+                data = await asyncio.to_thread(render_crash, crash_t(shown), kind, shown)
+            f, name = self.file_of(data)
+            e.set_image(url=f"attachment://{name}")
             try:
                 await self.message.edit(embed=e, attachments=[f], view=None)
             except discord.HTTPException:
@@ -1867,11 +1868,11 @@ class CrashView(OwnedView):
             if not interaction.response.is_done():
                 await interaction.response.defer()
             return
-        m = math.floor(crash_mult(time.monotonic() - self.t0) * 100) / 100   # the real multiplier at the moment of the click
-        if m >= self.crash:
+        if time.monotonic() - self.t0 >= crash_time(self.crash) - 0.005:
             await self.settle("crash", self.crash, interaction)      # the rocket was already gone
         else:
-            await self.settle("cash", max(1.0, m), interaction)
+            # what you see is what you get: you are paid the multiplier of the last picture you received
+            await self.settle("cash", max(1.0, self.shown_m), interaction)
 
     async def run(self):
         try:
@@ -1888,7 +1889,7 @@ class CrashView(OwnedView):
                     return await self.settle("crash", self.crash)
                 if t >= ta - 0.005:
                     return await self.settle("cash", self.auto)
-                m = crash_mult(t)
+                m = math.floor(crash_mult(t) * 100) / 100
                 f, name = await self.frame(t, "run", m)
                 async with self.edit_lock:
                     if self.done:
@@ -1896,6 +1897,7 @@ class CrashView(OwnedView):
                     try:
                         await self.message.edit(embed=self.embed_run(m, name), attachments=[f])
                         self.last_name = name
+                        self.shown_m = m
                     except discord.HTTPException:
                         pass
                 el = time.monotonic() - self.t0
