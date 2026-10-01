@@ -2169,9 +2169,17 @@ class ScratchView(OwnedView):
         if PUBLIC_URL:
             self.web_token = secrets.token_urlsafe(12)
             WEB_SC[self.web_token] = self
-            self.web_btn = discord.ui.Button(style=discord.ButtonStyle.link, label="🖐️ גרד באצבע", row=self.all_btn.row,
-                                             url=f"{PUBLIC_URL}/sc/{self.web_token}")
+            self.web_btn = discord.ui.Button(style=discord.ButtonStyle.primary, label="🖐️ גרד באצבע", row=self.all_btn.row)
+            self.web_btn.callback = self.web_link
             self.add_item(self.web_btn)
+
+    async def web_link(self, interaction):
+        # the link is sent as a private (ephemeral) message: only the player who owns this card can ever see it
+        if self.done:
+            return await interaction.response.send_message("המשחק כבר נגמר.", ephemeral=True)
+        link = discord.ui.View()
+        link.add_item(discord.ui.Button(style=discord.ButtonStyle.link, label="פתח את הקלף", url=f"{PUBLIC_URL}/sc/{self.web_token}"))
+        await interaction.response.send_message("🖐️ הקישור האישי שלך לגירוד (רק אתה רואה אותו):", view=link, ephemeral=True)
 
     def image(self, final=False):
         self.render_n += 1
