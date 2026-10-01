@@ -1775,19 +1775,34 @@ def render_crash(t, state, m):
     im.convert("RGB").resize((CR_W, CR_H), Image.LANCZOS).save(buf, "JPEG", quality=88)
     return buf.getvalue()
 
+def crash_t(m):
+    return crash_time(m) if m > 1 else 0.0
+
+async def crash_pre(*args):
+    try:
+        return await asyncio.to_thread(render_crash, *args)
+    except Exception:
+        return None
+
 class CrashView(OwnedView):
     def __init__(self, user, bet, token, crash, auto=None):
         super().__init__(timeout=180)
         self.user, self.bet, self.token, self.crash, self.auto = user, bet, token, crash, auto
-        self.message = self.t0 = None
+        self.message = self.t0 = self.last_name = None
         self.done, self.render_n = False, 0
         self.edit_lock = asyncio.Lock()
+        # the two pictures we already know in advance (the crash and the auto-cashout) are drawn BEFORE they are needed,
+        # so when the moment comes there is nothing left to render, it only has to be uploaded
+        self.pre_crash = asyncio.create_task(crash_pre(crash_t(crash), "crash", crash))
+        self.pre_auto = asyncio.create_task(crash_pre(crash_t(auto), "cash", auto)) if auto and auto < crash else None
 
-    async def frame(self, t, state, m):
+    def file_of(self, data):
         self.render_n += 1
         name = f"crash{self.render_n}.jpg"
-        data = await asyncio.to_thread(render_crash, t, state, m)
         return discord.File(io.BytesIO(data), name), name
+
+    async def frame(self, t, state, m):
+        return self.file_of(await asyncio.to_thread(render_crash, t, state, m))
 
     def embed_run(self, m, name):
         lines = [f"**Bet:** `{fmt(self.bet)}` {cur()}",
@@ -1799,9 +1814,11 @@ class CrashView(OwnedView):
         e.set_image(url=f"attachment://{name}")
         return e
 
-    async def settle(self, kind, m):
+    async def settle(self, kind, m, interaction=None):
         # everything up to the first await is synchronous: the round can only be settled once
         if self.done:
+            if interaction is not None and not interaction.response.is_done():
+                await interaction.response.defer()
             return
         self.done = True
         pending_done(self.token)
@@ -1815,13 +1832,28 @@ class CrashView(OwnedView):
         BUSY.discard(self.user.id)
         self.stop()
         shown = m if kind == "cash" else self.crash
-        t = crash_time(shown) if shown > 1 else 0.0
         extra = f"✅ You cashed out at **x{m:.2f}**\n" if kind == "cash" else f"💥 Crashed at **x{self.crash:.2f}**\n"
         if net == 0:
             e = make_embed(self.user, f"{extra}Your bet was returned.\nYou now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
         else:
             e = result_embed(self.user, net > 0, abs(net), extra)
-        f, name = await self.frame(t, kind, shown)
+        if interaction is not None:
+            # 1) INSTANT: the result text answers the click right away (the old picture stays for a split second)
+            if self.last_name:
+                e.set_image(url=f"attachment://{self.last_name}")
+            try:
+                await interaction.response.edit_message(embed=e, view=None)
+            except discord.HTTPException:
+                pass
+        # 2) the final picture (already drawn for crash / auto-cashout, drawn now only for a manual cashout)
+        data = None
+        if kind == "crash":
+            data = await self.pre_crash
+        elif self.pre_auto is not None and m == self.auto:
+            data = await self.pre_auto
+        if data is None:
+            data = await asyncio.to_thread(render_crash, crash_t(shown), kind, shown)
+        f, name = self.file_of(data)
         e.set_image(url=f"attachment://{name}")
         async with self.edit_lock:
             try:
@@ -1831,15 +1863,15 @@ class CrashView(OwnedView):
 
     @discord.ui.button(label="Cashout", style=discord.ButtonStyle.success)
     async def cashout(self, interaction, button):
-        if not interaction.response.is_done():
-            await interaction.response.defer()
         if self.done or self.t0 is None:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
             return
         m = math.floor(crash_mult(time.monotonic() - self.t0) * 100) / 100   # the real multiplier at the moment of the click
         if m >= self.crash:
-            await self.settle("crash", self.crash)      # the rocket was already gone
+            await self.settle("crash", self.crash, interaction)      # the rocket was already gone
         else:
-            await self.settle("cash", max(1.0, m))
+            await self.settle("cash", max(1.0, m), interaction)
 
     async def run(self):
         try:
@@ -1863,6 +1895,7 @@ class CrashView(OwnedView):
                         return
                     try:
                         await self.message.edit(embed=self.embed_run(m, name), attachments=[f])
+                        self.last_name = name
                     except discord.HTTPException:
                         pass
                 el = time.monotonic() - self.t0
@@ -1894,6 +1927,7 @@ async def crash_cmd(ctx, amount: str = None, auto: str = None):
     try:
         f, name = await view.frame(0.0, "run", 1.0)
         view.message = await ctx.reply(embed=view.embed_run(1.0, name), file=f, view=view, mention_author=False)
+        view.last_name = name
     except Exception:
         cancel_game(ctx.author, view.token, bet)
         raise
@@ -1917,24 +1951,24 @@ SC_PAY_TO = "bank"     # where the winnings go ("bank" or "cash"). The purchase 
 SC_CARDS = {
     "queen": {
         "name": "מלכת הלבבות", "emoji": "♥️", "min": 2_500_000, "total": 350, "cols": 5,
-        "wins": {2.3: 50, 1.7: 25, 1.5: 50, 0.5: 25, 25: 1},
+        "wins": {2.3: 50, 1.7: 25, 1.5: 90, 0.5: 25, 25: 1},
         "orig": (800, 950), "spots": [(412, 612, 102), (622, 612, 102), (195, 835, 102), (405, 835, 102), (620, 835, 102)],
     },
     "casino": {
         "name": "קזינו גלגל הרולטה", "emoji": "🎰", "min": 25_000_000, "total": 200, "cols": 4,
-        "wins": {3.5: 5, 1.3: 50, 5: 10, 45: 1},
+        "wins": {3.5: 5, 1.3: 50, 5: 10, 45: 1, 1.1: 20},
         "orig": (1289, 1542),
         "spots": [(x, y, 67) for y in (1138, 1340) for x in (1068, 898, 733, 567, 396, 228)],
     },
     "safe": {
         "name": "כספת", "emoji": "🔐", "min": 5_000_000, "total": 350, "cols": 3,
-        "wins": {1.2: 100, 1.5: 50, 2: 25, 30: 1},
+        "wins": {1.2: 136, 1.5: 50, 2: 25, 30: 1},
         "orig": (1289, 1526),
         "spots": [(x, y, 68) for y in (1035, 1340) for x in (935, 665, 395)],
     },
     "club": {
         "name": "הקלף", "emoji": "♣️", "min": 50_000_000, "total": 50, "cols": 4,
-        "wins": {2: 5, 7: 2, 60: 1},
+        "wins": {1.5: 5, 2: 5, 7: 2, 60: 1},
         "orig": (1289, 1580), "spots": [(640, 640, 120), (440, 930, 120), (840, 930, 120), (640, 1140, 85)],
     },
 }
