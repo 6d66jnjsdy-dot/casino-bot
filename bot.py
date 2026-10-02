@@ -249,7 +249,7 @@ def refund_pending():
     DB["pending"] = {}
     save()
 
-# ---------- game logs ----------
+# ---------- game logs (compact: one small embed, no author/fields/footer) ----------
 _log_tasks = set()
 LOG_COLOR = 0x2B2D31
 
@@ -262,12 +262,12 @@ async def send_log(user, title, desc, color, fields):
     try:
         cid = DB.get("log_channel")
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        e = discord.Embed(title=title, description=desc or None, color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=user.name, icon_url=user.display_avatar.url)
-        e.add_field(name="Player", value=f"<@{user.id}>\n`{user.id}`", inline=True)
-        for name, value in fields or ():
-            e.add_field(name=name, value=value, inline=True)
-        e.set_footer(text="Amram Casino Logs")
+        lines = [f"**{title}** • <@{user.id}>"]
+        if desc:
+            lines.append(desc)
+        if fields:
+            lines.append(" • ".join(f"{name}: {value}" for name, value in fields))
+        e = discord.Embed(description="\n".join(lines), color=color)
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
@@ -290,7 +290,7 @@ def log_game(user, game, bet, net):
         fields.append(("Bet", f"{fmt(bet)} {c}"))
     fields.append(("Result", res))
     fields.append(("Balance", f"{fmt(cash)} {c}"))
-    log_event(user, f"{game.upper()}  |  {tag}", None, color, fields)
+    log_event(user, f"{game.upper()} | {tag}", None, color, fields)
 
 def log_money(user, title, desc, color=BLUE):
     u = user_data(user.id)
@@ -455,6 +455,7 @@ async def on_ready():
         await restore_backup()
         refund_pending()
         loaded.set()
+        bg(setup_card_emojis())
         bg(warm_animations())
     print("Logged in as", bot.user)
 
@@ -856,7 +857,7 @@ class SizeView(OwnedView):
         pending_done(self.token)
         user_data(self.user.id)["cash"] += self.bet
         save()
-        log_money(self.user, "S$MINES  |  TIMEOUT", f"Bet of {fmt(self.bet)} {cur()} was returned", YELLOW)
+        log_money(self.user, "S$MINES | TIMEOUT", f"Bet of {fmt(self.bet)} {cur()} was returned", YELLOW)
         if self.message:
             await self.message.edit(embed=discord.Embed(description="Timed out, your bet was returned.", color=RED), view=None)
 
@@ -895,6 +896,7 @@ async def mt(ctx, amount: str = None):
 # ================= BLACKJACK =================
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 SUITS = ["♣", "♠", "♥", "♦"]
+SUIT_EMOJI = {"♣": "♣️", "♠": "♠️", "♥": "♥️", "♦": "♦️"}
 
 def card_value(rank):
     return 11 if rank == "A" else 10 if rank in "JQK" else int(rank)
@@ -905,22 +907,8 @@ def hand_value(cards):
         total, aces = total - 10, aces - 1
     return total
 
-TABLE_W = 960
-
-@lru_cache(maxsize=None)
-def get_font(size):
-    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except Exception:
-            pass
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
-
-# ---------- real playing cards, drawn in code (no images) ----------
-SW, SH = 96, 134          # final card size in pixels
+# ---------- real playing cards, drawn in code, uploaded once as bot emojis (never sent as images) ----------
+SW, SH = 96, 134          # card size in pixels
 _CK = 4                   # supersampling (drawn big, scaled down = smooth edges)
 _CRED = (200, 24, 40, 255)
 _CBLACK = (24, 24, 30, 255)
@@ -929,6 +917,7 @@ _CGOLD_D = (150, 105, 15, 255)
 _CSKIN = (250, 218, 178, 255)
 _CINK = (40, 30, 30, 255)
 SUIT_COLOR = {"♣": _CBLACK, "♠": _CBLACK, "♥": _CRED, "♦": _CRED}
+SUIT_LETTER = {"♣": "C", "♠": "S", "♥": "H", "♦": "D"}
 
 def _ccircle(cx, cy, r, n=48):
     return [(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
@@ -1063,25 +1052,63 @@ def get_back():
     im.paste(inner, (m, m), mask)
     return im.resize((SW, SH), Image.LANCZOS)
 
-def render_table(dealer, hands, hide_dealer):
-    rows = [("YOUR HAND" + (f" {i + 1}" if len(hands) > 1 else ""), list(h)) for i, h in enumerate(hands)]
-    rows.append(("DEALER HAND", [dealer[0], None] if hide_dealer else list(dealer)))
-    PAD, LABEL_H, GAP, GAPX = 16, 46, 16, 10
-    step = lambda n: SW + GAPX if n <= 1 else min(SW + GAPX, (TABLE_W - 2 * PAD - SW) / (n - 1))
-    height = 2 * PAD + len(rows) * (LABEL_H + SH) + (len(rows) - 1) * GAP
-    img = Image.new("RGBA", (TABLE_W, height), (0, 0, 0, 0))
-    d, y = ImageDraw.Draw(img), PAD
-    for label, cards in rows:
-        d.text((PAD, y), label, font=get_font(32), fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(255, 255, 255, 255))
-        y += LABEL_H
-        for i, c in enumerate(cards):
-            im = get_back() if c is None else get_card(c)
-            img.paste(im, (int(PAD + i * step(len(cards))), y), im)
-        y += SH + GAP
+# --- the 52 cards + the card back become application emojis of the bot (created once, reused after every restart) ---
+CARD_EMOJI = {}
+CARD_BACK = None
+
+def _emoji_png(card):
+    im = get_back() if card is None else get_card(card)
+    sq = Image.new("RGBA", (128, 128), (0, 0, 0, 0))     # emojis are square: the card is centred on a transparent square
+    c = im.resize((92, 128), Image.LANCZOS)
+    sq.paste(c, (18, 0), c)
     buf = io.BytesIO()
-    img.save(buf, "PNG")
-    buf.seek(0)
-    return buf
+    sq.save(buf, "PNG")
+    return buf.getvalue()
+
+async def setup_card_emojis():
+    global CARD_BACK
+    try:
+        if not hasattr(bot, "create_application_emoji"):
+            print("Card emojis need discord.py 2.5 or newer (pip install -U discord.py). Using text cards.")
+            return
+        have = {e.name: e for e in await bot.fetch_application_emojis()}
+        todo = [(None, "c_back")] + [((r, s), f"c_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
+        made = 0
+        for card, name in todo:
+            e = have.get(name)
+            if e is None:
+                data = await asyncio.to_thread(_emoji_png, card)
+                e = await bot.create_application_emoji(name=name, image=data)
+                made += 1
+                await asyncio.sleep(0.3)
+            if card is None:
+                CARD_BACK = str(e)
+            else:
+                CARD_EMOJI[card] = str(e)
+        print(f"Card emojis ready ({made} created)")
+    except Exception as ex:
+        print("Card emojis failed, using text cards:", repr(ex))
+
+def card_text(card):
+    return CARD_EMOJI.get(card) or f"**{card[0]}**{SUIT_EMOJI[card[1]]}"
+
+def back_text():
+    return CARD_BACK or "❓"
+
+def cards_text(cards):
+    return " ".join(card_text(c) for c in cards)
+
+@lru_cache(maxsize=None)
+def get_font(size):
+    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 class BlackjackView(discord.ui.View):
     def __init__(self, user, bet, token=None):
@@ -1091,7 +1118,7 @@ class BlackjackView(discord.ui.View):
         random.shuffle(self.deck)
         self.hands = [{"cards": [self.deck.pop(), self.deck.pop()], "bet": bet, "bust": False}]
         self.dealer = [self.deck.pop(), self.deck.pop()]
-        self.active = self.net = self.render_n = 0
+        self.active = self.net = 0
         self.done = self.split_used = False
         self.message = None
         self.refresh_buttons()
@@ -1170,9 +1197,7 @@ class BlackjackView(discord.ui.View):
         self.pay(returned, sum(h["bet"] for h in self.hands))
 
     def render(self):
-        self.render_n += 1
-        filename = f"bj{self.render_n}.png"
-        file = discord.File(render_table(self.dealer, [h["cards"] for h in self.hands], not self.done), filename=filename)
+        """Text-only embed (no image): instant to build and to send."""
         c, color, head = cur(), YELLOW, None
         if self.done:
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
@@ -1182,19 +1207,27 @@ class BlackjackView(discord.ui.View):
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
-            lines.append(f"Your Value{f' (Hand {i + 1})' if multi else ''}: **{hand_value(h['cards'])}**{mark}")
-        lines.append(f"Dealer Value: **{hand_value(self.dealer) if self.done else card_value(self.dealer[0][0])}**")
+            lines.append(f"**Your Hand{f' {i + 1}' if multi else ''}**{mark}")
+            lines.append(cards_text(h["cards"]))
+            lines.append("")
+            lines.append(f"Value: **{hand_value(h['cards'])}**")
+        if self.done:
+            dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
+        else:
+            dealer_cards, dealer_val = f"{card_text(self.dealer[0])} {back_text()}", card_value(self.dealer[0][0])
+        lines += ["**Dealer**", dealer_cards, "", f"Value: **{dealer_val}**"]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
-        e.set_image(url=f"attachment://{filename}")
-        return e, file
+        return e
 
     async def update(self, interaction):
         self.refresh_buttons()
+        e = self.render()
+        # answer the click directly with the new message: no defer, no upload = instant
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        e, f = self.render()
-        await interaction.edit_original_response(embed=e, attachments=[f], view=self)
+            await interaction.response.edit_message(embed=e, view=self)
+        else:
+            await interaction.edit_original_response(embed=e, view=self)
 
     async def advance(self, interaction):
         self.active += 1
@@ -1248,8 +1281,7 @@ class BlackjackView(discord.ui.View):
             h["bust"] = hand_value(h["cards"]) > 21
         self.finalize()
         if self.message:
-            e, f = self.render()
-            await self.message.edit(embed=e, attachments=[f], view=self)
+            await self.message.edit(embed=self.render(), view=self)
 
 @bot.command(name="bj", aliases=["blackjack"], usage="bj <amount | half | all>")
 async def bj(ctx, amount: str = None):
@@ -1260,8 +1292,7 @@ async def bj(ctx, amount: str = None):
     view = BlackjackView(ctx.author, bet, str(ctx.message.id))
     try:
         natural = view.check_naturals()
-        e, f = view.render()
-        msg = await ctx.send(embed=e, file=f, view=view)
+        msg = await ctx.send(embed=view.render(), view=view)
     except Exception:
         if not view.done:
             cancel_game(ctx.author, view.token, bet)
@@ -1578,7 +1609,7 @@ async def refund_timeout(view, name):
     pending_done(view.token)
     user_data(view.user.id)["cash"] += view.bet
     save()
-    log_money(view.user, f"{name.upper()}  |  TIMEOUT", f"Bet of {fmt(view.bet)} {cur()} was returned", YELLOW)
+    log_money(view.user, f"{name.upper()} | TIMEOUT", f"Bet of {fmt(view.bet)} {cur()} was returned", YELLOW)
     BUSY.discard(view.user.id)
     if view.message:
         await view.message.edit(embed=make_embed(view.user, "Timed out, your bet was returned.", RED), view=None)
