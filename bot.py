@@ -1052,7 +1052,6 @@ def get_back():
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=5 * K, fill=255)
     im.paste(inner, (m, m), mask)
     return im.resize((SW, SH), Image.LANCZOS)
-from cards_art import get_card, get_back
 
 # --- the 52 cards + the card back become application emojis of the bot (created once, reused after every restart) ---
 CARD_EMOJI = {}
@@ -1072,7 +1071,7 @@ async def setup_card_emojis():
             return
         allem = await bot.fetch_application_emojis()
         for e in allem:
-        if e.name.startswith(("c_", "k_")):  # old square version of the cards: remove it
+            if e.name.startswith(("c_", "k_")):  # old square version of the cards: remove it
                 try:
                     await e.delete()
                 except Exception:
@@ -1472,10 +1471,10 @@ async def slots(ctx, amount: str = None):
 
 # ================= ROULETTE =================
 ROUL_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-ROUL_WAIT = 15
-ROUL_ALLOWED_PICKS = (1, 2, 4)
+ROUL_WAIT = 30
 ROUL_COLOR = 0x9B8CD6
-ROUL_USAGE = "roulette <amount | half | all> <1, 2 or 4 options: 0,red,6,odd>"
+ROUL_USAGE = "roulette <amount | half | all> <bet: 0-36, red, black, even, odd, 1-12...>"
+ROUL_JOIN = "roulette <amount> <bet>"
 
 def roul_color(n):
     return "green" if n == 0 else "red" if n in ROUL_RED else "black"
@@ -1527,88 +1526,108 @@ def roul_pick_list(text):
             picks.append(c)
     return picks or None
 
-def roul_embed(bet):
-    names = ", ".join(p[0] for p in bet["picks"])
-    each = f" ({fmt(bet['per'])} each)" if len(bet["picks"]) > 1 else ""
-    return discord.Embed(color=ROUL_COLOR, title="🎰 Roulette Round Opened", description=(
-        f"Roulette round opened by {bet['user'].mention}.\n\n"
-        f"**Bet:** {fmt(bet['stake'])}{cur()} on **{names}**{each}\n\n"
-        f"The wheel spins <t:{bet['end']}:R>."))
+ROUNDS = {}   # channel id -> the open roulette round of that channel (everyone can join it, as many bets as they want)
 
-async def run_roulette(msg, bet):
+def roul_embed(rnd):
+    first = rnd["bets"][0]
+    names = ", ".join(b["pick"][0] for b in rnd["bets"] if b["user"].id == first["user"].id and b["token"].split(":")[0] == first["token"].split(":")[0])
+    each = f" ({fmt(first['per'])} each)" if "," in names else ""
+    return discord.Embed(color=ROUL_COLOR, title="🎰 Roulette Round Opened", description=(
+        f"Roulette round opened by {first['user'].mention}.\n\n"
+        f"**Bet:** {fmt(first['per'])} {cur()} on **{names}**{each}\n\n"
+        f"Place a `${ROUL_JOIN}` to join before it closes.\n"
+        f"Betting closes <t:{rnd['end']}:R>."))
+
+async def run_roulette(cid, rnd):
     try:
-        await asyncio.sleep(max(0, bet["end"] - time.time()))
+        await asyncio.sleep(max(0, rnd["end"] - time.time()))
+        if ROUNDS.get(cid) is rnd:
+            ROUNDS.pop(cid, None)
+        bets = rnd["bets"]
         winner = random.randint(0, 36)
-        for _ in range(luck_attempts(bet["user"].id) - 1):
-            if any(t(winner) for _, t, _ in bet["picks"]):
+        for _ in range(luck_attempts(0) - 1):
+            if any(b["pick"][1](winner) for b in bets):
                 break
             winner = random.randint(0, 36)
-        emoji = {"red": "🔴", "black": "⚫", "green": "🟢"}[roul_color(winner)]
-        user = bet["user"]
-        hits = [(l, m) for l, t, m in bet["picks"] if t(winner)]
-        win = sum(bet["per"] * m for _, m in hits)
-        net = win - bet["stake"]
-        if net > 0:
-            win += multi_extra("roulette", net)
-            net = win - bet["stake"]
-        pending_done(bet["token"])
-        user_data(user.id)["cash"] += win
+        color_name = roul_color(winner)
+        lines = []
+        for b in bets:
+            hit = b["pick"][1](winner)
+            win = b["per"] * b["pick"][2] if hit else 0
+            net = win - b["per"]
+            if net > 0:
+                win += multi_extra("roulette", net)
+                net = win - b["per"]
+            DB.get("pending", {}).pop(b["token"], None)
+            user_data(b["user"].id)["cash"] += win
+            log_game(b["user"], "roulette", b["per"], net)
+            if win > 0:
+                lines.append(f"🏆 {b['user'].mention} Won - {fmt(win)} {cur()}")
+            else:
+                lines.append(f"❌ {b['user'].mention} Lost")
         save()
-        log_game(user, "roulette", bet["stake"], net)
-        hit_txt = f" (hit: {', '.join(l for l, _ in hits)})" if hits else ""
-        if net > 0:
-            line, color = f"🟢 You won **+{fmt(net)}** {cur()}{hit_txt}", GREEN
-        elif net < 0:
-            line, color = f"🔴 You lost **{fmt(-net)}** {cur()}{hit_txt}", RED
-        else:
-            line, color = f"🟡 You got your bet back{hit_txt}", YELLOW
-        e = discord.Embed(color=color, title="🎰 Roulette Round Closed", description=(
-            f"Roulette round opened by {user.mention}.\n\n"
-            f"The ball landed on {emoji} **{winner}**\n\n{line}\n"
-            f"You now have {fmt(user_data(user.id)['cash'])} {cur()}."))
+        e = discord.Embed(color=ROUL_COLOR, title="Roulette Results", description=(
+            f"The ball landed on **{winner} ({color_name.capitalize()})**\n\n**Results**\n" + "\n".join(lines)))
         none = discord.AllowedMentions.none()
-        try:
-            await msg.edit(embed=e, allowed_mentions=none)
-        except Exception:
-            await msg.channel.send(embed=e, allowed_mentions=none)
+        await rnd["channel"].send(embed=e, allowed_mentions=none)
     except Exception as ex:
         print("Roulette failed:", repr(ex))
-        BUSY.discard(bet["user"].id)
+        if ROUNDS.get(cid) is rnd:
+            ROUNDS.pop(cid, None)
+        for b in rnd["bets"]:
+            if DB.get("pending", {}).pop(b["token"], None) is not None:
+                user_data(b["user"].id)["cash"] += b["per"]
+        save()
 
 @bot.command(name="roulette", aliases=["rl"], usage=ROUL_USAGE)
 async def roulette(ctx, amount: str = None, *, picks: str = None):
-    if ctx.author.id in BUSY:
-        return await reply(ctx, BUSY_MSG, RED)
     choices = roul_pick_list(picks)
-    if choices is None:
+    if choices is None or amount is None:
         return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
-    if len(choices) not in ROUL_ALLOWED_PICKS:
-        return await reply(ctx, "Choose 1, 2 or 4 options (the amount is split equally between them).", RED)
     u = user_data(ctx.author.id)
+    n = len(choices)
     total = parse_amount(amount, u["cash"])
     if total is None:
         return await reply(ctx, f"Usage: `${ROUL_USAGE}` (min {MIN_BET})", RED)
-    if total < MIN_BET:
+    per = total // n if amount.lower() in ("all", "half") else total
+    if per < MIN_BET:
         return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
-    if total > u["cash"]:
+    if per * n > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
-    per = total // len(choices)
-    stake = per * len(choices)
-    if per < 1:
-        return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
-    token = str(ctx.message.id)
-    u["cash"] -= stake
-    DB.setdefault("pending", {})[token] = {"uid": str(ctx.author.id), "bet": stake}
-    BUSY.add(ctx.author.id)
+    u["cash"] -= per * n
+    base = str(ctx.message.id)
+    new = []
+    for i, c in enumerate(choices):
+        tok = f"{base}:{i}"
+        DB.setdefault("pending", {})[tok] = {"uid": str(ctx.author.id), "bet": per}
+        new.append({"user": ctx.author, "per": per, "pick": c, "token": tok})
     save()
-    bet = {"user": ctx.author, "per": per, "stake": stake, "picks": choices, "token": token,
-           "end": int(time.time()) + ROUL_WAIT}
+    rnd = ROUNDS.get(ctx.channel.id)
+    opened = rnd is None or rnd["end"] <= time.time()
+    if opened:
+        rnd = {"end": int(time.time()) + ROUL_WAIT, "bets": [], "channel": ctx.channel}
+        ROUNDS[ctx.channel.id] = rnd
+    rnd["bets"].extend(new)
+    none = discord.AllowedMentions.none()
     try:
-        msg = await ctx.reply(embed=roul_embed(bet), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        if opened:
+            await ctx.reply(embed=roul_embed(rnd), mention_author=False, allowed_mentions=none)
+        else:
+            names = ", ".join(c[0] for c in choices)
+            await ctx.reply(embed=make_embed(ctx.author, (
+                f"**Bet Placed**\n\nYour roulette bet for {fmt(per)} {cur()} on **{names}** has been added."), GREEN),
+                mention_author=False)
     except Exception:
-        cancel_game(ctx.author, token, stake)
+        for b in new:
+            DB.get("pending", {}).pop(b["token"], None)
+            rnd["bets"].remove(b)
+        u["cash"] += per * n
+        save()
+        if opened:
+            ROUNDS.pop(ctx.channel.id, None)
         raise
-    bg(run_roulette(msg, bet))
+    if opened:
+        bg(run_roulette(ctx.channel.id, rnd))
 
 # ================= HEADS OR TAIL / CHICKEN FIGHT =================
 async def refund_timeout(view, name):
@@ -1684,8 +1703,8 @@ async def cf(ctx, amount: str = None):
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
         desc = (f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
-                f"**Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%**\n"
-                f"**You now have {fmt(u['cash'])} {c}**")
+                f"-# **Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%**\n"
+                f"-# **You now have {fmt(u['cash'])} {c}**")
         color = GREEN
     else:
         u["chicken"] = CF_MIN
@@ -3379,8 +3398,8 @@ INFO_SECTIONS = [
         ("$crash <bet> [x2.5]", "Cash out before the rocket crashes"),
     ]),
     ("ROULETTE", [
-        ("$roulette <bet> <picks>", "Alias: $rl. Pick 1, 2 or 4 options"),
-        ("Example", "$roulette all 0,red,6,odd"),
+        ("$roulette <amount> <bet>", "Alias: $rl. Join the open round, any number of bets"),
+        ("Example", "$roulette 500 red   /   $roulette 150 0,6,odd"),
         ("Picks", "0-36, red, black, even, odd, 1-18, 19-36, 1-12, 13-24, 25-36, 1st, 2nd, 3rd"),
     ]),
     ("SCRATCH CARDS", [
