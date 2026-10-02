@@ -1058,11 +1058,8 @@ CARD_BACK = None
 
 def _emoji_png(card):
     im = get_back() if card is None else get_card(card)
-    sq = Image.new("RGBA", (128, 128), (0, 0, 0, 0))     # emojis are square: the card is centred on a transparent square
-    c = im.resize((92, 128), Image.LANCZOS)
-    sq.paste(c, (18, 0), c)
     buf = io.BytesIO()
-    sq.save(buf, "PNG")
+    im.resize((92, 128), Image.LANCZOS).save(buf, "PNG")     # card-shaped emoji, no empty padding
     return buf.getvalue()
 
 async def setup_card_emojis():
@@ -1071,8 +1068,15 @@ async def setup_card_emojis():
         if not hasattr(bot, "create_application_emoji"):
             print("Card emojis need discord.py 2.5 or newer (pip install -U discord.py). Using text cards.")
             return
-        have = {e.name: e for e in await bot.fetch_application_emojis()}
-        todo = [(None, "c_back")] + [((r, s), f"c_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
+        allem = await bot.fetch_application_emojis()
+        for e in allem:
+            if e.name.startswith("c_"):          # old square version of the cards: remove it
+                try:
+                    await e.delete()
+                except Exception:
+                    pass
+        have = {e.name: e for e in allem}
+        todo = [(None, "k_back")] + [((r, s), f"k_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
         made = 0
         for card, name in todo:
             e = have.get(name)
@@ -1095,8 +1099,10 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
+CARD_HEADER = "## "   # cards are written on a heading line so Discord shows the emojis BIG. Use "# " for even bigger, "" for small.
+
 def cards_text(cards):
-    return " ".join(card_text(c) for c in cards)
+    return ", ".join(card_text(c) for c in cards)
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -1208,14 +1214,13 @@ class BlackjackView(discord.ui.View):
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
             lines.append(f"**Your Hand{f' {i + 1}' if multi else ''}**{mark}")
-            lines.append(cards_text(h["cards"]))
-            lines.append("")
+            lines.append(CARD_HEADER + cards_text(h["cards"]))
             lines.append(f"Value: **{hand_value(h['cards'])}**")
         if self.done:
             dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
         else:
-            dealer_cards, dealer_val = f"{card_text(self.dealer[0])} {back_text()}", card_value(self.dealer[0][0])
-        lines += ["**Dealer**", dealer_cards, "", f"Value: **{dealer_val}**"]
+            dealer_cards, dealer_val = f"{card_text(self.dealer[0])}, {back_text()}", card_value(self.dealer[0][0])
+        lines += ["**Dealer**", CARD_HEADER + dealer_cards, f"Value: **{dealer_val}**"]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
         return e
