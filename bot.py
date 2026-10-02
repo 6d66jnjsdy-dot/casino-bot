@@ -49,7 +49,7 @@ MINES_MULT = [1.1, 1.2, 1.4, 1.9, 2.3, 4.3, 6.1, 8.1]
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
     "2x2": (2, 2, 1, [1.3, 2, 3.9]),
-    "4x4": (4, 4, 2, [1.2, 1.3, 1.5, 1.8, 2, 2.1, 2.2, 2.7, 3, 3.4, 3.8, 4.2, 8.6, 10.5]),
+    "4x4": (4, 4, 2, [1.2, 1.4, 1.6, 1.8, 2, 2.4, 2.76, 3.2, 3.4, 3.7, 4.1, 6.4, 8.6, 10.5]),
     "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 9.85, 12, 15]),
 }
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
@@ -600,7 +600,6 @@ class BoardView(OwnedView):
     game_name = "game"
     multi_key = None
     cash_row = None
-    auto_cash_all = False   # True = when every safe tile is found the game cashes out by itself (so the leftover bombs are never shown as dark/disabled tiles)
 
     def __init__(self, user, bet, token=None):
         super().__init__(timeout=120)
@@ -658,18 +657,14 @@ class BoardView(OwnedView):
             await interaction.response.defer()
         if self.done or idx in self.revealed:
             return
+        if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
+            return          # every safe tile is already found: the leftover tiles stay the same colour and a click on them does nothing
         self.luck_fix(idx)
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
             return await self.finish(interaction, True)
         self.after(kind)
-        if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
-            if self.auto_cash_all:
-                return await self.finish(interaction, False)
-            for i, t in enumerate(self.tiles):
-                if i not in self.revealed:
-                    t.disabled = True
         await self.push(interaction)
 
     async def edit_ui(self, interaction, **kw):
@@ -754,7 +749,6 @@ class BoardView(OwnedView):
             await self.message.edit(content=self.header, embed=self.embed(False), view=self.final_view(False))
 
 class GoldMines(BoardView):
-    auto_cash_all = True
     game_name = "gm"
     multi_key = "gm"
 
@@ -790,7 +784,6 @@ class GoldMines(BoardView):
 class Mines(BoardView):
     cols = 3
     reveal_on_cashout = False
-    auto_cash_all = True
     game_name = "mines"
     multi_key = "mines"
 
@@ -802,7 +795,6 @@ class Mines(BoardView):
 
 class SMines(BoardView):
     reveal_on_cashout = False
-    auto_cash_all = True
     multi_key = "s$mines"
 
     def __init__(self, user, bet, key, token=None):
@@ -834,8 +826,6 @@ class MoneyTower(BoardView):
     def __init__(self, user, bet, token=None):
         self.climbed = 0
         super().__init__(user, bet, token)
-        for i, t in enumerate(self.tiles):
-            t.disabled = i // 3 != 4
 
     def luck_pool(self, idx):
         row = idx // 3
@@ -879,12 +869,8 @@ class MoneyTower(BoardView):
         self.reveal(idx)
         if kind == "bomb":
             return await self.finish(interaction, True)
-        for j in range(row * 3, row * 3 + 3):
-            self.tiles[j].disabled = True
         if self.climbed >= 5:
             return await self.finish(interaction, False)
-        for j in range((row - 1) * 3, (row - 1) * 3 + 3):
-            self.tiles[j].disabled = False
         await self.push(interaction)
 
     def reveal_all(self, show):
