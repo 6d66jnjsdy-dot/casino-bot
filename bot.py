@@ -29,7 +29,6 @@ ALLOWED_CHANNELS = {
     1554844436632969347,
     1554845002637508738,
     1554651968478122135,
-    1555486192559202334,
 }
 OWNER_ID = 1537816435370229820
 OWNER_IDS = {OWNER_ID, 1292041341618094173}   # everyone here has full owner permissions
@@ -59,14 +58,11 @@ MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
 MULTI_MAX = 5
-MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch", "crash")
+MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch")
 
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1
 ROB_FROM, ROB_PERCENT, ROB_COOLDOWN = ("cash",), 0.8, 360
-ROB_FAIL_BROKE, ROB_FAIL_RICH = 0.30, 0.70   # chance to get caught: without money / with money
-ROB_LOSS = 0.70                              # when caught (rob / crime) you lose 70% of your CASH, the bank is safe
-CRIME_CAUGHT = 0.85                          # chance to get caught in $crime when you have money
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
 SLOT_BUFF = 1.065 * 1.15 * 1.15 * 0.85   # multipliers lowered by 15%
@@ -265,9 +261,9 @@ def refund_pending():
     DB["pending"] = {}
     save()
 
-# ---------- game logs (compact: one small embed, no author/fields/footer) ----------
+# ---------- game logs (professional embeds) ----------
 _log_tasks = set()
-LOG_COLOR = 0x2B2D31
+LOG_FOOTER = "Amram Casino  •  Activity Log"
 
 def bg(coro):
     t = asyncio.create_task(coro)
@@ -277,52 +273,79 @@ def bg(coro):
 GAME_NAMES = {"gm": "Gold Mines", "mines": "Mines", "money tower": "Money Tower", "blackjack": "Blackjack",
               "slots": "Slots", "roulette": "Roulette", "heads or tail": "Heads or Tail",
               "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower"}
+GAME_ICONS = (("s$mines", "💣"), ("mines", "💣"), ("gm", "⛏️"), ("money tower", "🗼"), ("blackjack", "🃏"),
+              ("slots", "🎰"), ("roulette", "🎡"), ("heads", "🪙"), ("chicken", "🐓"), ("higher", "🎲"),
+              ("scratch", "🎟️"), ("rob", "🦹"))
+LOG_TITLES = {
+    "DEP": "🏦 Deposit", "WITH": "🏧 Withdrawal", "WORK": "🔨 Work", "CRIME": "🕵️ Crime", "PAY": "🤝 Transfer",
+    "SHOP": "🛒 Shop Purchase", "ADD MONEY": "➕ Money Added", "REMOVE MONEY": "➖ Money Removed",
+    "RESET MONEY": "♻️ Money Reset", "ADD MONEY TO ROLE": "👥 Money Added To Role", "LOG CHANNEL SET": "📋 Log Channel Set",
+}
 
 def pretty(text):
     text = text.strip()
     return text.title() if text.isupper() else text[:1].upper() + text[1:]
 
-async def send_log(user, title, desc, color, fields):
+def game_icon(game):
+    g = game.lower()
+    for key, icon in GAME_ICONS:
+        if g.startswith(key):
+            return icon
+    return "🎮"
+
+def log_head(title):
+    parts = [p.strip() for p in title.split("|")]
+    base = LOG_TITLES.get(parts[0].upper())
+    if base is None:
+        low = parts[0].lower()
+        base = f"{game_icon(low)} {GAME_NAMES.get(low) or pretty(parts[0])}"
+    return base + "".join(f"  •  {pretty(p)}" for p in parts[1:])
+
+async def send_log(user, head, desc, color, fields):
     try:
         cid = DB.get("log_channel")
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        head = "  ·  ".join(pretty(p) for p in title.split("|"))
-        lines = [f"**{head}**"]
-        if desc:
-            lines.append(desc)
-        if fields:
-            lines.append("  ·  ".join(f"{name} **{value}**" for name, value in fields))
-        e = discord.Embed(description="\n".join(lines), color=color, timestamp=discord.utils.utcnow())
+        e = discord.Embed(title=head, description=desc or None, color=color, timestamp=discord.utils.utcnow())
         e.set_author(name=user.name, icon_url=user.display_avatar.url)
-        e.set_footer(text=f"ID {user.id}")
+        e.set_thumbnail(url=user.display_avatar.url)
+        for name, value in fields or []:
+            e.add_field(name=name, value=value, inline=True)
+        e.set_footer(text=f"{LOG_FOOTER}  •  ID {user.id}")
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
 
 def log_event(user, title, desc, color, fields=None):
     if DB.get("log_channel"):
-        bg(send_log(user, title, desc, color, fields))
+        bg(send_log(user, log_head(title), desc, color, fields))
 
-def log_game(user, game, bet, net):
-    cash = user_data(user.id)["cash"]
-    c = cur()
+def log_game(user, game, bet, net, detail=None):
+    if not DB.get("log_channel"):
+        return
+    u, c = user_data(user.id), cur()
     if net > 0:
-        tag, color, res = "WIN", GREEN, f"+{fmt(net)} {c}"
+        tag, color, dot, amt = "WIN", GREEN, "🟢", f"+{fmt(net)}"
     elif net < 0:
-        tag, color, res = "LOSS", RED, f"-{fmt(-net)} {c}"
+        tag, color, dot, amt = "LOSS", RED, "🔴", f"-{fmt(-net)}"
     else:
-        tag, color, res = "PUSH", YELLOW, "Bet returned"
+        tag, color, dot, amt = "PUSH", YELLOW, "🟡", "±0"
+    low = game.lower()
+    desc = f"{dot} **{tag}**  ·  `{amt}` {c}" + (f"\n{detail}" if detail else "")
     fields = []
     if bet:
-        fields.append(("Bet", f"{fmt(bet)} {c}"))
-    fields.append(("Result", res))
-    fields.append(("Balance", f"{fmt(cash)} {c}"))
-    log_event(user, f"{GAME_NAMES.get(game, game)} | {tag}", None, color, fields)
+        fields.append(("💵 Bet", f"`{fmt(bet)}` {c}"))
+    fields.append(("📊 Net", f"`{amt}` {c}"))
+    if low.startswith("scratch"):
+        fields.append(("🏦 Bank", f"`{fmt(u['bank'])}` {c}"))
+    else:
+        fields.append(("💰 Cash", f"`{fmt(u['cash'])}` {c}"))
+    head = f"{game_icon(game)} {GAME_NAMES.get(low) or pretty(game)}"
+    bg(send_log(user, head, desc, color, fields))
 
 def log_money(user, title, desc, color=BLUE):
-    u = user_data(user.id)
-    c = cur()
-    log_event(user, title, desc, color, [("Cash", f"{fmt(u['cash'])} {c}"), ("Bank", f"{fmt(u['bank'])} {c}")])
+    u, c = user_data(user.id), cur()
+    log_event(user, title, desc, color, [("💵 Cash", f"`{fmt(u['cash'])}` {c}"), ("🏦 Bank", f"`{fmt(u['bank'])}` {c}"),
+                                         ("💎 Total", f"`{fmt(u['cash'] + u['bank'])}` {c}")])
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -483,6 +506,7 @@ async def on_ready():
         await restore_backup()
         refund_pending()
         loaded.set()
+        bg(refresh_banner())
         bg(setup_card_emojis())
         bg(warm_animations())
     print("Logged in as", bot.user)
@@ -571,7 +595,7 @@ class BoardView(OwnedView):
         self.board = self.make_board()
         self.revealed, self.profit = set(), 0
         self.done = False
-        self.version = 0
+        self.dirty = self.flushing = False
         self.edit_lock = asyncio.Lock()
         self.message = None
         self.tiles = [Tile(i, self.cols) for i in range(len(self.board))]
@@ -634,24 +658,30 @@ class BoardView(OwnedView):
         await self.push(interaction)
 
     async def edit_ui(self, interaction, **kw):
-        # fast clicking can make Discord reject an edit (rate limit): retry, then fall back to editing the message itself
-        for i in range(4):
+        # fast clicking can make Discord reject an edit: retry (alternating interaction / message) until it goes through
+        for i in range(8):
             try:
-                if i == 0:
+                if i % 2 == 0 or not self.message:
                     return await interaction.edit_original_response(**kw)
-                if self.message:
-                    return await self.message.edit(**kw)
-                return
+                return await self.message.edit(**kw)
             except discord.HTTPException:
-                await asyncio.sleep(0.4 * (i + 1))
+                await asyncio.sleep(0.3 * (i + 1))
 
     async def push(self, interaction):
-        self.version += 1
-        v = self.version
-        async with self.edit_lock:
-            if v != self.version or self.done:
-                return
-            await self.edit_ui(interaction, content=self.header, view=self)
+        # clicks that arrive while an edit is running only mark the board as dirty, the loop then draws the LATEST board
+        self.dirty = True
+        if self.flushing:
+            return
+        self.flushing = True
+        try:
+            while self.dirty and not self.done:
+                self.dirty = False
+                async with self.edit_lock:
+                    if self.done:
+                        break
+                    await self.edit_ui(interaction, content=self.header, view=self)
+        finally:
+            self.flushing = False
 
     def payout(self):
         base = int(self.profit)
@@ -1135,7 +1165,7 @@ def back_text():
 CARD_HEADER = "# "   # cards are written on a heading line so Discord shows the emojis BIG. "## " = smaller, "" = small.
 
 def cards_text(cards):
-    return ", ".join(card_text(c) for c in cards)
+    return " ".join(card_text(c) for c in cards)
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -1252,7 +1282,7 @@ class BlackjackView(discord.ui.View):
         if self.done:
             dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
         else:
-            dealer_cards, dealer_val = f"{card_text(self.dealer[0])}, {back_text()}", card_value(self.dealer[0][0])
+            dealer_cards, dealer_val = f"{card_text(self.dealer[0])} {back_text()}", card_value(self.dealer[0][0])
         lines += ["**Dealer**", CARD_HEADER + dealer_cards, f"Value: **{dealer_val}**"]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
@@ -1429,7 +1459,6 @@ def render_slots(final, win):
     return gif.getvalue(), png.getvalue()
 
 SLOT_CACHE = {}
-CRASH_LIVE = set()   # tokens of running crash games (the slots warm-up pauses while a crash game runs, so it can't make it lag)
 
 async def get_slots_anim(final):
     key = tuple(final)
@@ -1443,13 +1472,30 @@ async def warm_animations():
         for a in SLOTS:
             for b in SLOTS:
                 for c in SLOTS:
-                    while CRASH_LIVE:
-                        await asyncio.sleep(0.5)
                     await get_slots_anim([a, b, c])
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.25)
         print("Animations are ready")
     except Exception as ex:
         print("Warm-up failed:", repr(ex))
+
+async def finish_slots(ctx, token, bet, win, mult, final, png, msg):
+    try:
+        await asyncio.sleep(SLOT_WAIT + LOAD_BUFFER)
+    finally:
+        pending_done(token)
+        user_data(ctx.author.id)["cash"] += win
+        save()
+        BUSY.discard(ctx.author.id)
+    line = "🎰  ┃ " + " ┃ ".join(final) + " ┃  🎰"
+    extra = f"{line}\n" + (f"**x{mult:.2f}**\n\n" if win else "\n")
+    result = result_embed(ctx.author, win > 0, win - bet if win else bet, extra)
+    result.set_image(url="attachment://slots_result.png")
+    if msg:
+        try:
+            await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
+        except discord.HTTPException:
+            pass
+    log_game(ctx.author, "slots", bet, win - bet)
 
 @bot.command(name="slots", aliases=["slot"], usage="slots <amount | half | all>")
 async def slots(ctx, amount: str = None):
@@ -1484,24 +1530,12 @@ async def slots(ctx, amount: str = None):
         msg = None
         try:
             msg = await ctx.reply(embed=e, file=discord.File(io.BytesIO(gif), "slots.gif"), mention_author=False)
-            await asyncio.sleep(SLOT_WAIT + LOAD_BUFFER)
         except discord.HTTPException:
             pass
-        pending_done(token)
-        user_data(ctx.author.id)["cash"] += win
-        save()
-        line = "🎰  ┃ " + " ┃ ".join(final) + " ┃  🎰"
-        extra = f"{line}\n" + (f"**x{mult:.2f}**\n\n" if win else "\n")
-        result = result_embed(ctx.author, win > 0, win - bet if win else bet, extra)
-        result.set_image(url="attachment://slots_result.png")
-        if msg:
-            try:
-                await msg.edit(embed=result, attachments=[discord.File(io.BytesIO(png), "slots_result.png")])
-            except discord.HTTPException:
-                pass
-        log_game(ctx.author, "slots", bet, win - bet)
-    finally:
+    except Exception:
         BUSY.discard(ctx.author.id)
+        raise
+    bg(finish_slots(ctx, token, bet, win, mult, final, png, msg))
 
 # ================= ROULETTE =================
 ROUL_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
@@ -1731,20 +1765,19 @@ async def cf(ctx, amount: str = None):
     u, c = user_data(ctx.author.id), cur()
     strength = max(CF_MIN, min(CF_MAX, u.get("chicken", CF_MIN)))
     won = any(random.randint(1, 100) <= strength + CF_HIDDEN for _ in range(luck_attempts(ctx.author.id)))
-    profit = bet
     if won:
         profit = bet + multi_extra("cf", bet)
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
         e = make_embed(ctx.author, f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!", GREEN)
-        # embed field = small bold white text (same look as the screenshot)
-        e.add_field(name=f"Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%",
-                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     else:
-        u["chicken"] = CF_MIN
-        e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c}🐓.", RED)
+        profit = -bet
+        u["chicken"] = strength = CF_MIN
+        e = make_embed(ctx.author, f"Your chicken lost the fight, you lost {fmt(bet)} {c}🐓!", RED)
+    e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
+                value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     save()
-    log_game(ctx.author, "chicken fight", bet, profit if won else -bet)
+    log_game(ctx.author, "chicken fight", bet, profit)
     await ctx.reply(embed=e, mention_author=False)
 
 # ================= HIGHER OR LOWER =================
@@ -1847,334 +1880,6 @@ async def hl(ctx, amount: str = None):
         cancel_game(ctx.author, view.token, bet)
         BUSY.discard(ctx.author.id)
         raise
-
-# ================= CRASH =================
-CRASH_RATE = 0.1
-CRASH_TICK = 1.0
-CRASH_EDGE = 0.1615     # P(crash >= x) = 0.8385 / x  (win chance 2.5% lower than with 0.14)
-CRASH_CAP = 100.0
-CRASH_AUTO_MIN = 1.01
-CRASH_USAGE = "crash <amount | half | all> [auto-cashout, e.g. 2.5x]"
-CR_W, CR_H, CR_S = 640, 300, 2
-
-def crash_mult(t):
-    return math.exp(CRASH_RATE * t)
-
-def crash_time(m):
-    return math.log(m) / CRASH_RATE
-
-def crash_point(uid):
-    best = 1.0
-    for _ in range(max(1, luck_attempts(uid))):
-        r = random.random()
-        p = math.floor(100 * (1 - CRASH_EDGE) / (1 - r)) / 100
-        best = max(best, min(CRASH_CAP, p))
-    return best
-
-@lru_cache(maxsize=1)
-def crash_bg():
-    """Dark blue night sky with a soft glow and a few stars."""
-    W, H = CR_W * CR_S, CR_H * CR_S
-    top, bot = (11, 15, 32), (27, 22, 56)
-    grad = Image.new("RGB", (1, H))
-    for y in range(H):
-        k = y / H
-        grad.putpixel((0, y), tuple(int(a + (b - a) * k) for a, b in zip(top, bot)))
-    im = grad.resize((W, H)).convert("RGBA")
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(glow).ellipse([W * 0.15, H * 0.35, W * 0.95, H * 1.35], fill=(80, 60, 190, 70))
-    im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(70 * CR_S // 2)))
-    rnd = random.Random(11)
-    d = ImageDraw.Draw(im)
-    for _ in range(70):
-        x, y, r = rnd.uniform(W * 0.14, W), rnd.uniform(0, H * 0.85), rnd.choice((1, 1, 1, 2)) * CR_S / 2
-        a = rnd.randint(70, 190)
-        d.ellipse([x - r, y - r, x + r, y + r], fill=(220, 225, 255, a))
-    return im
-
-@lru_cache(maxsize=1)
-def crash_rocket():
-    """Small modern rocket pointing right, flame behind it (drawn big, scaled down)."""
-    K = 4
-    im = Image.new("RGBA", (260 * K, 110 * K), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    cy = 55 * K
-    for i, (len_, col) in enumerate(((100, (255, 110, 30, 255)), (72, (255, 190, 50, 255)), (44, (255, 245, 170, 255)))):
-        h = (22 - i * 5) * K
-        d.polygon([(110 * K, cy - h), (110 * K - len_ * K, cy), (110 * K, cy + h)], fill=col)
-    d.polygon([(122 * K, cy - 8 * K), (96 * K, cy - 34 * K), (160 * K, cy - 12 * K)], fill=(190, 40, 60, 255))
-    d.polygon([(122 * K, cy + 8 * K), (96 * K, cy + 34 * K), (160 * K, cy + 12 * K)], fill=(190, 40, 60, 255))
-    d.rounded_rectangle([108 * K, cy - 20 * K, 214 * K, cy + 20 * K], radius=20 * K, fill=(240, 242, 250, 255),
-                        outline=(160, 168, 190, 255), width=2 * K)
-    d.pieslice([170 * K, cy - 20 * K, 250 * K, cy + 20 * K], 270, 90, fill=(225, 55, 70, 255))
-    d.rectangle([108 * K, cy - 4 * K, 190 * K, cy + 4 * K], fill=(215, 220, 235, 255))
-    d.ellipse([150 * K, cy - 11 * K, 174 * K, cy + 11 * K], fill=(70, 170, 255, 255), outline=(30, 90, 150, 255), width=2 * K)
-    d.ellipse([155 * K, cy - 8 * K, 164 * K, cy - 1 * K], fill=(190, 230, 255, 255))
-    return im.resize((130, 55), Image.LANCZOS)
-
-def crash_step(span, target=4):
-    raw = span / target
-    for s in (0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100):
-        if s >= raw:
-            return s
-    return 100
-
-def _glow(im, draw_fn, radius, passes=1):
-    layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
-    draw_fn(ImageDraw.Draw(layer))
-    layer = layer.filter(ImageFilter.GaussianBlur(radius))
-    for _ in range(passes):
-        im.alpha_composite(layer)
-
-def render_crash(t, state, m):
-    S = CR_S
-    W, H = CR_W * S, CR_H * S
-    im = crash_bg().copy()
-    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(ov)
-    L, R, T, B = 86 * S, W - 30 * S, 30 * S, H - 42 * S
-    tmax, mmax = max(8.0, t * 1.15), max(2.0, m * 1.2)
-    grid, label = (255, 255, 255, 22), (160, 168, 205, 255)
-    ystep, k = crash_step(mmax - 1), 0
-    while 1 + k * ystep <= mmax:
-        val = 1 + k * ystep
-        py = B - (val - 1) / (mmax - 1) * (B - T)
-        d.line([(L, py), (R, py)], fill=grid, width=S)
-        d.text((L - 12 * S, py), f"{val:g}x", font=get_font(13 * S), fill=label, anchor="rm")
-        k += 1
-    xstep, x = crash_step(tmax, 5), 0.0
-    while x <= tmax:
-        px = L + x / tmax * (R - L)
-        d.line([(px, T), (px, B)], fill=(255, 255, 255, 12), width=S)
-        d.text((px, B + 10 * S), f"{x:g}s", font=get_font(13 * S), fill=label, anchor="mt")
-        x += xstep
-    im.alpha_composite(ov)
-    col = {"run": (96, 165, 250), "crash": (248, 82, 82), "cash": (74, 222, 128)}[state]
-    N = 80
-    pts = []
-    for i in range(N + 1):
-        tt = t * i / N
-        pts.append((L + tt / tmax * (R - L), B - (crash_mult(tt) - 1) / (mmax - 1) * (B - T)))
-    # soft area under the curve, fading downwards
-    mask = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(mask).polygon(pts + [(pts[-1][0], B), (pts[0][0], B)], fill=255)
-    fade = Image.linear_gradient("L").resize((W, H))            # black -> white, top to bottom
-    fade = fade.point(lambda v: int(95 * (1 - v / 255)))
-    alpha = Image.composite(fade, Image.new("L", (W, H), 0), mask)
-    area = Image.new("RGBA", (W, H), col + (0,))
-    area.putalpha(alpha)
-    im.alpha_composite(area)
-    # glowing line
-    _glow(im, lambda g: g.line(pts, fill=col + (200,), width=9 * S, joint="curve"), 7 * S)
-    d = ImageDraw.Draw(im)
-    d.line(pts, fill=tuple(min(255, c + 60) for c in col) + (255,), width=4 * S, joint="curve")
-    ex, ey = pts[-1]
-    if state == "run":
-        (x1_, y1_), (x2_, y2_) = pts[-3], pts[-1]
-        ang = math.degrees(math.atan2(-(y2_ - y1_), x2_ - x1_)) if (x1_, y1_) != (x2_, y2_) else 8
-        rk = crash_rocket().resize((190, 80), Image.LANCZOS).rotate(ang, expand=True, resample=Image.BICUBIC)
-        _glow(im, lambda g: g.ellipse([ex - 26 * S, ey - 26 * S, ex + 26 * S, ey + 26 * S], fill=(255, 170, 70, 120)), 14 * S)
-        im.alpha_composite(rk, (int(ex - rk.width * 0.6), int(ey - rk.height / 2)))
-    elif state == "crash":
-        rnd = random.Random(int(m * 100))
-        _glow(im, lambda g: g.ellipse([ex - 60 * S, ey - 60 * S, ex + 60 * S, ey + 60 * S], fill=(255, 120, 40, 190)), 18 * S)
-        d = ImageDraw.Draw(im)
-        for rr, a in ((58, 90), (44, 140)):
-            d.ellipse([ex - rr * S, ey - rr * S, ex + rr * S, ey + rr * S], outline=(255, 170, 90, a), width=2 * S)
-        pts2 = []
-        for i in range(28):
-            ang_ = math.pi * 2 * i / 28
-            rr = (34 if i % 2 == 0 else 15) * S
-            pts2.append((ex + math.cos(ang_) * rr, ey + math.sin(ang_) * rr))
-        d.polygon(pts2, fill=(255, 150, 40, 255))
-        d.polygon([(ex + (px - ex) * 0.55, ey + (py - ey) * 0.55) for px, py in pts2], fill=(255, 232, 120, 255))
-        for _ in range(16):
-            a_, r1, r2 = rnd.uniform(0, math.tau), rnd.uniform(40, 52) * S, rnd.uniform(58, 86) * S
-            d.line([(ex + math.cos(a_) * r1, ey + math.sin(a_) * r1), (ex + math.cos(a_) * r2, ey + math.sin(a_) * r2)],
-                   fill=(255, 190, 90, 230), width=2 * S)
-    else:
-        _glow(im, lambda g: g.ellipse([ex - 16 * S, ey - 16 * S, ex + 16 * S, ey + 16 * S], fill=(74, 222, 128, 220)), 9 * S)
-        d = ImageDraw.Draw(im)
-        d.ellipse([ex - 10 * S, ey - 10 * S, ex + 10 * S, ey + 10 * S], fill=(74, 222, 128, 255), outline=(255, 255, 255, 255), width=3 * S)
-    big = {"run": (255, 255, 255), "crash": (255, 99, 99), "cash": (110, 240, 150)}[state]
-    cx, cy = W / 2, H * 0.36
-    _glow(im, lambda g: g.text((cx, cy), f"{m:.2f}x", font=get_font(78 * S), fill=big + (150,), anchor="mm"), 10 * S)
-    d = ImageDraw.Draw(im)
-    d.text((cx + 2 * S, cy + 3 * S), f"{m:.2f}x", font=get_font(78 * S), fill=(0, 0, 0, 120), anchor="mm")
-    d.text((cx, cy), f"{m:.2f}x", font=get_font(78 * S), fill=big + (255,), anchor="mm")
-    if state != "run":
-        d.text((cx, cy + 56 * S), "CRASHED" if state == "crash" else "CASHED OUT", font=get_font(22 * S),
-               fill=big + (255,), anchor="mm")
-    d.rectangle([0, 0, W - 1, H - 1], outline=(255, 255, 255, 38), width=2 * S)
-    buf = io.BytesIO()
-    im.convert("RGB").reduce(S).save(buf, "JPEG", quality=92)
-    return buf.getvalue()
-
-def crash_t(m):
-    return crash_time(m) if m > 1 else 0.0
-
-async def crash_pre(*args):
-    try:
-        return await asyncio.to_thread(render_crash, *args)
-    except Exception:
-        return None
-
-class CrashView(OwnedView):
-    def __init__(self, user, bet, token, crash, auto=None):
-        super().__init__(timeout=180)
-        self.user, self.bet, self.token, self.crash, self.auto = user, bet, token, crash, auto
-        self.message = self.t0 = self.last_name = None
-        self.shown_m = 1.0
-        self.done, self.render_n = False, 0
-        self.edit_lock = asyncio.Lock()
-        self.pre_crash = asyncio.create_task(crash_pre(crash_t(crash), "crash", crash))
-        self.pre_auto = asyncio.create_task(crash_pre(crash_t(auto), "cash", auto)) if auto and auto < crash else None
-
-    def file_of(self, data):
-        self.render_n += 1
-        name = f"crash{self.render_n}.jpg"
-        return discord.File(io.BytesIO(data), name), name
-
-    async def frame(self, t, state, m):
-        return self.file_of(await asyncio.to_thread(render_crash, t, state, m))
-
-    def embed_run(self, m, name):
-        lines = [f"**Bet:** `{fmt(self.bet)}` {cur()}",
-                 f"**Multiplier:** `x{m:.2f}`",
-                 f"**Cashout now:** `{fmt(int(self.bet * m))}` {cur()}"]
-        if self.auto:
-            lines.append(f"**Auto cashout:** `x{self.auto:g}`")
-        e = make_embed(self.user, "\n".join(lines), YELLOW, "🚀 Crash")
-        e.set_image(url=f"attachment://{name}")
-        return e
-
-    async def settle(self, kind, m, interaction=None):
-        if self.done:
-            if interaction is not None and not interaction.response.is_done():
-                await interaction.response.defer()
-            return
-        self.done = True
-        CRASH_LIVE.discard(self.token)
-        pending_done(self.token)
-        returned = int(self.bet * m) if kind == "cash" else 0
-        if returned > self.bet:
-            returned += multi_extra("crash", returned - self.bet)
-        user_data(self.user.id)["cash"] += returned
-        save()
-        net = returned - self.bet
-        log_game(self.user, f"crash (cashed out x{m:.2f})" if kind == "cash" else f"crash (crashed at x{self.crash:.2f})", self.bet, net)
-        BUSY.discard(self.user.id)
-        self.stop()
-        shown = m if kind == "cash" else self.crash
-        extra = f"✅ You cashed out at **x{m:.2f}**\n" if kind == "cash" else f"💥 Crashed at **x{self.crash:.2f}**\n"
-        if net == 0:
-            e = make_embed(self.user, f"{extra}Your bet was returned.\nYou now have {fmt(user_data(self.user.id)['cash'])} {cur()}.", YELLOW, "Result")
-        else:
-            e = result_embed(self.user, net > 0, abs(net), extra)
-        # if a frame upload is still in flight, answer the click right away (defer) so it never shows "interaction failed"
-        quick = interaction is not None and not self.edit_lock.locked()
-        if interaction is not None and not quick:
-            try:
-                await interaction.response.defer()
-            except discord.HTTPException:
-                pass
-        async with self.edit_lock:
-            if quick:
-                if self.last_name:
-                    e.set_image(url=f"attachment://{self.last_name}")
-                try:
-                    await interaction.response.edit_message(embed=e, view=None)
-                except discord.HTTPException:
-                    pass
-            data = None
-            if kind == "crash":
-                data = await self.pre_crash
-            elif self.pre_auto is not None and m == self.auto:
-                data = await self.pre_auto
-            if data is None:
-                data = await asyncio.to_thread(render_crash, crash_t(shown), kind, shown)
-            f, name = self.file_of(data)
-            e.set_image(url=f"attachment://{name}")
-            try:
-                await self.message.edit(embed=e, attachments=[f], view=None)
-            except discord.HTTPException:
-                pass
-
-    @discord.ui.button(label="Cashout", style=discord.ButtonStyle.success)
-    async def cashout(self, interaction, button):
-        if self.done or self.t0 is None:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-            return
-        if time.monotonic() - self.t0 >= crash_time(self.crash) - 0.005:
-            await self.settle("crash", self.crash, interaction)
-        else:
-            await self.settle("cash", max(1.0, self.shown_m), interaction)
-
-    async def run(self):
-        try:
-            tc = crash_time(self.crash)
-            ta = crash_time(self.auto) if self.auto else math.inf
-            nxt = CRASH_TICK
-            while not self.done:
-                target = min(nxt, tc, ta)
-                await asyncio.sleep(max(0.0, self.t0 + target - time.monotonic()))
-                if self.done:
-                    return
-                t = time.monotonic() - self.t0
-                if t >= tc - 0.005:
-                    return await self.settle("crash", self.crash)
-                if t >= ta - 0.005:
-                    return await self.settle("cash", self.auto)
-                m = math.floor(crash_mult(t) * 100) / 100
-                f, name = await self.frame(t, "run", m)
-                async with self.edit_lock:
-                    if self.done:
-                        return
-                    try:
-                        await self.message.edit(embed=self.embed_run(m, name), attachments=[f])
-                        self.last_name = name
-                        self.shown_m = m
-                    except discord.HTTPException:
-                        pass
-                el = time.monotonic() - self.t0
-                nxt = max(nxt + CRASH_TICK, el + 0.3)
-        except Exception as ex:
-            print("Crash failed:", repr(ex))
-            if not self.done:
-                self.done = True
-                CRASH_LIVE.discard(self.token)
-                cancel_game(self.user, self.token, self.bet)
-                try:
-                    await self.message.edit(embed=make_embed(self.user, "Something went wrong, your bet was returned.", RED), attachments=[], view=None)
-                except Exception:
-                    pass
-
-@bot.command(name="crash", usage=CRASH_USAGE)
-async def crash_cmd(ctx, amount: str = None, auto: str = None):
-    auto_m = None
-    if auto is not None:
-        try:
-            auto_m = float(auto.lower().strip("x"))
-        except ValueError:
-            return await reply(ctx, f"Usage: `${CRASH_USAGE}`", RED)
-        if not (CRASH_AUTO_MIN <= auto_m <= CRASH_CAP):
-            return await reply(ctx, f"The auto-cashout must be between x{CRASH_AUTO_MIN:g} and x{CRASH_CAP:g}.", RED)
-    bet = await take_bet(ctx, amount, CRASH_USAGE, track=True)
-    if not bet:
-        return
-    view = CrashView(ctx.author, bet, str(ctx.message.id), crash_point(ctx.author.id), auto_m)
-    CRASH_LIVE.add(view.token)
-    try:
-        f, name = await view.frame(0.0, "run", 1.0)
-        view.message = await ctx.reply(embed=view.embed_run(1.0, name), file=f, view=view, mention_author=False)
-        view.last_name = name
-    except Exception:
-        CRASH_LIVE.discard(view.token)
-        cancel_game(ctx.author, view.token, bet)
-        raise
-    view.t0 = time.monotonic()
-    bg(view.run())
 
 # ================= SCRATCH CARDS ($sc) =================
 try:
@@ -2297,14 +2002,31 @@ def he(text):
     """Hebrew for PIL: reversed only when this Pillow has no RTL support (raqm)."""
     return text if features.check("raqm") else text[::-1]
 
-SC_BANNER_CACHE = {}
+SC_BANNER = {"key": None, "data": None}
+_banner_lock = asyncio.Lock()
 
-def sc_banner():
-    key = tuple(len(sc_stock(k)["left"]) for k in SC_CARDS)
-    if key not in SC_BANNER_CACHE:
-        SC_BANNER_CACHE.clear()
-        SC_BANNER_CACHE[key] = sc_banner_render()
-    return SC_BANNER_CACHE[key]
+def sc_key():
+    return tuple(len(sc_stock(k)["left"]) for k in SC_CARDS)
+
+def sc_banner_build(key):
+    if SC_BANNER["key"] != key:
+        data = sc_banner_render()
+        SC_BANNER["key"], SC_BANNER["data"] = key, data
+    return SC_BANNER["data"]
+
+async def refresh_banner():
+    """Draws the menu picture in the background, so $sc never waits for it."""
+    if not SC_ART:
+        return
+    try:
+        async with _banner_lock:
+            key = sc_key()
+            if SC_BANNER["key"] != key:
+                for k in SC_CARDS:
+                    await asyncio.to_thread(sc_base, k)
+                await asyncio.to_thread(sc_banner_build, key)
+    except Exception as ex:
+        print("Scratch banner failed:", repr(ex))
 
 def sc_banner_render():
     """Menu picture: a lottery-style kiosk (lit sign box, glass window with acrylic card dispensers, price tags, counter).
@@ -2693,6 +2415,7 @@ class AmountModal(discord.ui.Modal):
                 if st["left"][j] > mult:
                     st["left"][j], mult = mult, st["left"][j]
         st["sold"] += 1
+        bg(refresh_banner())
         token = f"scr{interaction.id}"
         DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": price, "scratch": [key, mult], "bank": True}
         BUSY.add(user.id)
@@ -2774,6 +2497,7 @@ async def sc_daily_loop():
             sc_stock(k)
         DB["sc_reset_day"] = today
         save()
+        bg(refresh_banner())
         print("Scratch cards restocked (00:00)")
 
 @bot.command(name="scratch", aliases=["sc"], usage="sc")
@@ -2785,24 +2509,31 @@ async def scratch(ctx, sub: str = None):
         for k in SC_CARDS:
             sc_stock(k)
         save()
+        bg(refresh_banner())
         return await reply(ctx, "🎟️ כל כרטיסי הגירוד אופסו: כל הכרטיסים חזרו למלאי.", GREEN)
     if ctx.author.id in BUSY:
         return await reply(ctx, BUSY_MSG, RED)
     if not SC_ART:
         return await reply(ctx, "scratch_art.py is missing next to the bot file.", RED)
     view = ScratchMenu(ctx.author)
-    try:
-        banner = await asyncio.to_thread(sc_banner)
-    except Exception as ex:
-        import traceback
-        traceback.print_exc()
-        print("Scratch banner failed, sending the menu without the picture:", repr(ex))
-        banner = None
-    if banner:
-        view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(banner), "sc_menu.jpg"),
+    data = SC_BANNER["data"]          # the menu opens instantly with the last picture, a fresh one is drawn in the background
+    if data:
+        view.message = await ctx.reply(embed=view.embed(), file=discord.File(io.BytesIO(data), "sc_menu.jpg"),
                                        view=view, mention_author=False)
     else:
         view.message = await ctx.reply(embed=view.embed(image=False), view=view, mention_author=False)
+    if SC_BANNER["key"] != sc_key():
+        bg(update_menu_picture(view))
+
+async def update_menu_picture(view):
+    await refresh_banner()
+    data = SC_BANNER["data"]
+    if not data or view.chosen or not view.message:
+        return
+    try:
+        await view.message.edit(embed=view.embed(), attachments=[discord.File(io.BytesIO(data), "sc_menu.jpg")])
+    except Exception:
+        pass
 
 # ================= ECONOMY =================
 ID_RE = re.compile(r"<@!?(\d{15,25})>|(\d{15,25})")
@@ -2885,13 +2616,6 @@ async def earn(ctx, text):
 @bot.command(name="crime", cooldown_after_parsing=True)
 @commands.cooldown(1, 120, commands.BucketType.user)
 async def crime(ctx):
-    me = user_data(ctx.author.id)
-    if me["cash"] + me["bank"] > 0 and random.random() < CRIME_CAUGHT:
-        lost = int(me["cash"] * ROB_LOSS)
-        me["cash"] -= lost
-        save()
-        log_game(ctx.author, "crime (got caught)", 0, -lost)
-        return await reply(ctx, f"You got caught and lost {fmt(lost)} {cur()} ({int(ROB_LOSS * 100)}% of your cash)!", RED)
     await earn(ctx, "You successfully committed a crime and got {}!")
 
 @bot.command(name="work", cooldown_after_parsing=True)
@@ -2934,23 +2658,15 @@ async def rob(ctx, target: str = None):
         return await reply(ctx, "You can't rob this user.", RED)
     me, tgt = user_data(ctx.author.id), user_data(member.id)
     loot = {k: int(tgt[k] * ROB_PERCENT) for k in ROB_FROM}
-    if not sum(loot.values()):
+    total = sum(loot.values())
+    if not total:
         return await reply(ctx, f"You tried to rob a poor person and lost 0 {cur()}.", RED)
-    has_money = me["cash"] + me["bank"] > 0
-    if random.random() < (ROB_FAIL_RICH if has_money else ROB_FAIL_BROKE):
-        if not has_money:
-            return await reply(ctx, "You got caught while trying to rob!", RED)
-        lost = int(me["cash"] * ROB_LOSS)
-        me["cash"] -= lost
-        save()
-        log_game(ctx.author, "rob (got caught)", 0, -lost)
-        return await reply(ctx, f"You got caught and lost {fmt(lost)} {cur()} ({int(ROB_LOSS * 100)}% of your cash)!", RED)
     for k, v in loot.items():
         tgt[k] -= v
-    me["cash"] += sum(loot.values())
+    me["cash"] += total
     save()
-    log_game(ctx.author, f"rob {member.name} ({member.id})", 0, sum(loot.values()))
-    await reply(ctx, f"You robbed {fmt(sum(loot.values()))} {cur()} from {member.name}!", GREEN)
+    log_game(ctx.author, "rob", 0, total, detail=f"Robbed {member.name} (`{member.id}`)")
+    await reply(ctx, f"You robbed {fmt(total)} {cur()} from {member.name}!", GREEN)
 
 # ---------- leaderboard ----------
 TOP_MODES = {"bank": lambda d: d["bank"], "total": lambda d: d["cash"] + d["bank"], "cash": lambda d: d["cash"]}
@@ -3052,6 +2768,8 @@ SHOP_ITEMS = [
 async def shop_say(interaction, text):
     await interaction.response.send_message(text, ephemeral=True)
 
+SHOP_BUSY = set()
+
 async def shop_buy(interaction, item):
     name, emoji, role_id, price = item
     member = interaction.user
@@ -3062,27 +2780,29 @@ async def shop_buy(interaction, item):
     role = interaction.guild.get_role(role_id)
     if role is None:
         return await shop_say(interaction, "This role doesn't exist anymore, tell an admin.")
-    owned = DB.setdefault("shop", {}).setdefault(str(member.id), [])
-    if role_id in owned or role in member.roles:
-        return await shop_say(interaction, f"You already own **{name}**. Each role can be bought only once.")
+    if role in member.roles:
+        return await shop_say(interaction, f"You already have **{name}**.")
+    key = (member.id, role_id)
+    if key in SHOP_BUSY:
+        return await shop_say(interaction, "Your purchase is already being processed.")
     u = user_data(member.id)
     if u["bank"] < price:
         return await shop_say(
             interaction,
             f"You need **{fmt(price)}** {cur()} **in your bank** for {role.mention}.\n"
             f"You have {fmt(u['bank'])} {cur()} in the bank. (`$dep` to deposit)")
+    SHOP_BUSY.add(key)
     u["bank"] -= price
-    owned.append(role_id)
     save()
     try:
         await member.add_roles(role, reason="Casino shop")
     except Exception as ex:
         u["bank"] += price
-        if role_id in owned:
-            owned.remove(role_id)
         save()
         print("Shop: add_roles failed:", repr(ex))
         return await shop_say(interaction, "I couldn't give you the role (my role must be above it). You were not charged.")
+    finally:
+        SHOP_BUSY.discard(key)
     log_money(member, "SHOP", f"Bought {name} for {fmt(price)} {cur()}", YELLOW)
     await shop_say(interaction, f"✅ You bought {role.mention} for **{fmt(price)}** {cur()} (from your bank).")
 
@@ -3356,8 +3076,9 @@ async def setlimit(ctx, amount: str = None):
 async def unsetlimit(ctx):
     DB.pop("add_limit", None)
     DB.pop("add_used", None)
+    DB.pop("add_max", None)
     save()
-    await reply(ctx, "The daily add limit was removed.", GREEN)
+    await reply(ctx, "All add-money limits were removed (daily limit and the per-command maximum).", GREEN)
 
 @bot.command(name="multi", usage="multi <game | all> <amount | off> [time: 10m, 2h, 1d]")
 @owner_only
@@ -3561,7 +3282,6 @@ INFO_SECTIONS = [
         ("$hl <bet>", "Higher or lower"),
         ("$ht <bet>", "Heads or tail"),
         ("$cf <bet>", "Chicken fight"),
-        ("$crash <bet> [x2.5]", "Cash out before the rocket crashes"),
     ]),
     ("ROULETTE", [
         ("$roulette <amount> <bet>", "Join the open round, any number of bets"),
