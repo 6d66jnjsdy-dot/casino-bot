@@ -45,15 +45,13 @@ MULT = {"diamond": 3, "urn": 15, "stone": 1.1, "coin": 2, "bag": 4.5, "map": 1}
 MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (never the urn or the bag)
 URN_CHANCE = (3, 10)
 MINES_MULT = [1.1, 1.2, 1.4, 1.9, 2.3, 4.3, 6.1, 8.1]
+# S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
+# (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
     "2x2": (2, 2, 1, [1.3, 2, 3.9]),
-    "4x4": (4, 4, 2, [1.2, 1.3, 1.5, 1.8, 2, 2.1, 2.2, 2.7, 3, 3.4, 3.8, 4.2, 8.6]),
-    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 9.85]),
+    "4x4": (4, 4, 2, [1.2, 1.3, 1.5, 1.8, 2, 2.1, 2.2, 2.7, 3, 3.4, 3.8, 4.2, 8.6, 10.5]),
+    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 9.85, 12, 15]),
 }
-SMINES_NERF_FROM, SMINES_NERF = 3, 0.8
-for _k, (_c, _r, _m, _t) in list(SMINES.items()):
-    if _k != "2x2":
-        SMINES[_k] = (_c, _r, _m, [round(v * SMINES_NERF, 3) if i >= SMINES_NERF_FROM - 1 else v for i, v in enumerate(_t)])
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
@@ -602,6 +600,7 @@ class BoardView(OwnedView):
     game_name = "game"
     multi_key = None
     cash_row = None
+    auto_cash_all = False   # True = when every safe tile is found the game cashes out by itself (so the leftover bombs are never shown as dark/disabled tiles)
 
     def __init__(self, user, bet, token=None):
         super().__init__(timeout=120)
@@ -666,6 +665,8 @@ class BoardView(OwnedView):
             return await self.finish(interaction, True)
         self.after(kind)
         if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
+            if self.auto_cash_all:
+                return await self.finish(interaction, False)
             for i, t in enumerate(self.tiles):
                 if i not in self.revealed:
                     t.disabled = True
@@ -788,6 +789,7 @@ class GoldMines(BoardView):
 class Mines(BoardView):
     cols = 3
     reveal_on_cashout = False
+    auto_cash_all = True
     game_name = "mines"
     multi_key = "mines"
 
@@ -799,6 +801,7 @@ class Mines(BoardView):
 
 class SMines(BoardView):
     reveal_on_cashout = False
+    auto_cash_all = True
     multi_key = "s$mines"
 
     def __init__(self, user, bet, key, token=None):
@@ -811,6 +814,7 @@ class SMines(BoardView):
         return take(self.user.id, f"s{self.key}")
 
     def earn(self, kind):
+        # one multiplier per safe tile, exactly as written in SMINES (no reductions)
         n = min(len(self.revealed), len(self.table))
         self.profit = self.bet * (self.table[n - 1] - 1)
 
