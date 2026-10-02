@@ -754,6 +754,7 @@ class BoardView(OwnedView):
             await self.message.edit(content=self.header, embed=self.embed(False), view=self.final_view(False))
 
 class GoldMines(BoardView):
+    auto_cash_all = True
     game_name = "gm"
     multi_key = "gm"
 
