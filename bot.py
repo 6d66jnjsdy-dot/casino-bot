@@ -1053,6 +1053,11 @@ def get_back():
     im.paste(inner, (m, m), mask)
     return im.resize((SW, SH), Image.LANCZOS)
 
+try:
+    from cards_art import get_card      # real card pictures (cards_art.py next to this file)
+except Exception as _e:
+    print("cards_art.py not loaded, using the drawn cards:", repr(_e))
+
 # --- the 52 cards + the card back become application emojis of the bot (created once, reused after every restart) ---
 CARD_EMOJI = {}
 CARD_BACK = None
@@ -1060,7 +1065,7 @@ CARD_BACK = None
 def _emoji_png(card):
     im = get_back() if card is None else get_card(card)
     buf = io.BytesIO()
-    im.resize((92, 128), Image.LANCZOS).save(buf, "PNG")     # card-shaped emoji, no empty padding
+    im.resize((130, 186), Image.LANCZOS).save(buf, "PNG")    # card-shaped emoji, no empty padding
     return buf.getvalue()
 
 async def setup_card_emojis():
@@ -1071,13 +1076,13 @@ async def setup_card_emojis():
             return
         allem = await bot.fetch_application_emojis()
         for e in allem:
-            if e.name.startswith(("c_", "k_")):  # old square version of the cards: remove it
+            if e.name.startswith(("c_", "k_", "d_")):  # older versions of the cards: remove them
                 try:
                     await e.delete()
                 except Exception:
                     pass
         have = {e.name: e for e in allem}
-        todo = [(None, "d_back")] + [((r, s), f"d_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
+        todo = [(None, "p_back")] + [((r, s), f"p_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
         made = 0
         for card, name in todo:
             e = have.get(name)
