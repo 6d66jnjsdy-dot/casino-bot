@@ -376,16 +376,30 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix=("$", "S$", "s$"), intents=intents, help_command=None, case_insensitive=True)
 
-USER_LOCKS = {}
+USER_LOCKS = {}     # (user id, channel id) -> lock: a user's commands run in order, but only inside the same channel
+USER_PENDING = {}   # (user id, channel id) -> commands waiting or running
+MAX_QUEUE = 3       # spam beyond this many waiting commands in one channel is ignored, so a queue can never build up
+CMD_PREFIXES = ("$", "s$")
 
 @bot.event
 async def on_message(message):
-    # commands of the same user run strictly one after another, in the order they were sent
-    if message.author.bot:
+    if message.author.bot or not message.content.lower().startswith(CMD_PREFIXES):
         return
-    lock = USER_LOCKS.setdefault(message.author.id, asyncio.Lock())
-    async with lock:
-        await bot.process_commands(message)
+    key = (message.author.id, message.channel.id)
+    if USER_PENDING.get(key, 0) >= MAX_QUEUE:
+        return
+    USER_PENDING[key] = USER_PENDING.get(key, 0) + 1
+    try:
+        async with USER_LOCKS.setdefault(key, asyncio.Lock()):
+            try:
+                await bot.process_commands(message)
+            except Exception as ex:
+                print("Command crashed (isolated to this channel):", repr(ex))
+    finally:
+        USER_PENDING[key] -= 1
+        if USER_PENDING[key] <= 0:
+            USER_PENDING.pop(key, None)
+            USER_LOCKS.pop(key, None)
 
 def cmd_key(ctx):
     return "s$mines" if ctx.command.name == "mines" and ctx.prefix.lower() == "s$" else ctx.command.name
@@ -1165,7 +1179,7 @@ def back_text():
 CARD_HEADER = "# "   # cards are written on a heading line so Discord shows the emojis BIG. "## " = smaller, "" = small.
 
 def cards_text(cards):
-    return " ".join(card_text(c) for c in cards)
+    return "".join(card_text(c) for c in cards)
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -1282,7 +1296,7 @@ class BlackjackView(discord.ui.View):
         if self.done:
             dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
         else:
-            dealer_cards, dealer_val = f"{card_text(self.dealer[0])} {back_text()}", card_value(self.dealer[0][0])
+            dealer_cards, dealer_val = f"{card_text(self.dealer[0])}{back_text()}", card_value(self.dealer[0][0])
         lines += ["**Dealer**", CARD_HEADER + dealer_cards, f"Value: **{dealer_val}**"]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
@@ -1773,9 +1787,10 @@ async def cf(ctx, amount: str = None):
     else:
         profit = -bet
         u["chicken"] = strength = CF_MIN
-        e = make_embed(ctx.author, f"Your chicken lost the fight, you lost {fmt(bet)} {c}🐓!", RED)
-    e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
-                value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
+        e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
+    if won:
+        e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
+                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     save()
     log_game(ctx.author, "chicken fight", bet, profit)
     await ctx.reply(embed=e, mention_author=False)
