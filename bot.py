@@ -1078,7 +1078,7 @@ async def setup_card_emojis():
                 except Exception:
                     pass
         have = {e.name: e for e in allem}
-        todo = [(None, "d_back")] + [((r, s), "f"d_{r}{SUIT_LETTER[s]}". )for r in RANKS for s in SUITS]
+        todo = [(None, "d_back")] + [((r, s), f"d_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
         made = 0
         for card, name in todo:
             e = have.get(name)
