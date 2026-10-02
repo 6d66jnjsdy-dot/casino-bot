@@ -1052,6 +1052,7 @@ def get_back():
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, inner.width - 1, inner.height - 1], radius=5 * K, fill=255)
     im.paste(inner, (m, m), mask)
     return im.resize((SW, SH), Image.LANCZOS)
+from cards_art import get_card, get_back
 
 # --- the 52 cards + the card back become application emojis of the bot (created once, reused after every restart) ---
 CARD_EMOJI = {}
@@ -1071,13 +1072,13 @@ async def setup_card_emojis():
             return
         allem = await bot.fetch_application_emojis()
         for e in allem:
-            if e.name.startswith("c_"):          # old square version of the cards: remove it
+        if e.name.startswith(("c_", "k_")):  # old square version of the cards: remove it
                 try:
                     await e.delete()
                 except Exception:
                     pass
         have = {e.name: e for e in allem}
-        todo = [(None, "k_back")] + [((r, s), f"k_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
+        todo = [(None, "d_back")] + [((r, s), "f"d_{r}{SUIT_LETTER[s]}". )for r in RANKS for s in SUITS]
         made = 0
         for card, name in todo:
             e = have.get(name)
