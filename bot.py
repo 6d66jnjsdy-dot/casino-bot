@@ -1,10 +1,19 @@
-import discord, random, json, os, asyncio, io, signal, math, time, base64, re
+import discord, random, json, os, asyncio, io, signal, math, time, base64, re, datetime
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 from discord.ext import commands, tasks
 from aiohttp import web
 
 # ================= CONFIG =================
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo("Asia/Jerusalem")      # "00:00" resets happen at midnight Israel time
+except Exception:
+    LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=3))
+
+def today_key():
+    return datetime.datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
 TOKEN = (os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or "").strip().strip('"').strip("'")
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(HERE, "data"))
@@ -52,10 +61,14 @@ MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", 
 
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1
-ROB_FROM, ROB_PERCENT, ROB_FAIL, ROB_COOLDOWN = ("cash",), 0.8, 0.45, 360
+ROB_FROM, ROB_PERCENT, ROB_COOLDOWN = ("cash",), 0.8, 360
+ROB_FAIL_BROKE, ROB_FAIL_RICH = 0.30, 0.70   # chance to get caught: without money / with money
+ROB_LOSS = 0.70                              # when caught (rob / crime) you lose 70% of your CASH, the bank is safe
+CRIME_CAUGHT = 0.85                          # chance to get caught in $crime when you have money
 SLOTS = ["🍒", "🍋", "🍇", "🔔", "💎", "7️⃣"]
 SLOT_PAY = dict(zip(SLOTS, [3, 4, 5, 8, 15, 30]))
-SLOT_BUFF = 1.065 * 1.15 * 1.15
+SLOT_BUFF = 1.065 * 1.15 * 1.15 * 0.85   # multipliers lowered by 15%
+SLOT_WIN_CUT = 0.10                      # 10% of the winning spins are turned into losses (win chance -10%)
 SLOT_WAIT = 5
 LOAD_BUFFER = 1.5
 SLOTS_BOOST = 0.075
@@ -259,16 +272,27 @@ def bg(coro):
     _log_tasks.add(t)
     t.add_done_callback(_log_tasks.discard)
 
+GAME_NAMES = {"gm": "Gold Mines", "mines": "Mines", "money tower": "Money Tower", "blackjack": "Blackjack",
+              "slots": "Slots", "roulette": "Roulette", "heads or tail": "Heads or Tail",
+              "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower"}
+
+def pretty(text):
+    text = text.strip()
+    return text.title() if text.isupper() else text[:1].upper() + text[1:]
+
 async def send_log(user, title, desc, color, fields):
     try:
         cid = DB.get("log_channel")
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        lines = [f"**{title}** • <@{user.id}>"]
+        head = "  ·  ".join(pretty(p) for p in title.split("|"))
+        lines = [f"**{head}**"]
         if desc:
             lines.append(desc)
         if fields:
-            lines.append(" • ".join(f"{name}: {value}" for name, value in fields))
-        e = discord.Embed(description="\n".join(lines), color=color)
+            lines.append("  ·  ".join(f"{name} **{value}**" for name, value in fields))
+        e = discord.Embed(description="\n".join(lines), color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=user.name, icon_url=user.display_avatar.url)
+        e.set_footer(text=f"ID {user.id}")
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
@@ -291,7 +315,7 @@ def log_game(user, game, bet, net):
         fields.append(("Bet", f"{fmt(bet)} {c}"))
     fields.append(("Result", res))
     fields.append(("Balance", f"{fmt(cash)} {c}"))
-    log_event(user, f"{game.upper()} | {tag}", None, color, fields)
+    log_event(user, f"{GAME_NAMES.get(game, game)} | {tag}", None, color, fields)
 
 def log_money(user, title, desc, color=BLUE):
     u = user_data(user.id)
@@ -438,6 +462,7 @@ async def setup_hook():
     await start_web()
     disk_loop.start()
     backup_loop.start()
+    sc_daily_loop.start()
     bot.add_view(ShopView())
     try:
         await bot.load_extension("extras")
@@ -1105,7 +1130,7 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
-CARD_HEADER = "## "   # cards are written on a heading line so Discord shows the emojis BIG. Use "# " for even bigger, "" for small.
+CARD_HEADER = "# "   # cards are written on a heading line so Discord shows the emojis BIG. "## " = smaller, "" = small.
 
 def cards_text(cards):
     return ", ".join(card_text(c) for c in cards)
@@ -1435,6 +1460,8 @@ async def slots(ctx, amount: str = None):
         final = [random.choice(SLOTS) for _ in range(3)]
         if len(set(final)) == 3 and random.random() < SLOTS_BOOST / (120 / 216):
             final[1] = final[0]
+        if max(final.count(s) for s in SLOTS) >= 2 and random.random() < SLOT_WIN_CUT:
+            final = random.sample(SLOTS, 3)
         for _ in range(luck_attempts(ctx.author.id) - 1):
             if max(final.count(s) for s in SLOTS) >= 2:
                 break
@@ -1584,7 +1611,7 @@ async def run_roulette(cid, rnd):
                 user_data(b["user"].id)["cash"] += b["per"]
         save()
 
-@bot.command(name="roulette", aliases=["rl"], usage=ROUL_USAGE)
+@bot.command(name="roulette", usage=ROUL_USAGE)
 async def roulette(ctx, amount: str = None, *, picks: str = None):
     choices = roul_pick_list(picks)
     if choices is None or amount is None:
@@ -1707,16 +1734,16 @@ async def cf(ctx, amount: str = None):
         profit = bet + multi_extra("cf", bet)
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        desc = (f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
-                f"-# **Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%**\n"
-                f"-# **You now have {fmt(u['cash'])} {c}**")
-        color = GREEN
+        e = make_embed(ctx.author, f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!", GREEN)
+        # embed field = small bold white text (same look as the screenshot)
+        e.add_field(name=f"Your chicken's strength (chance of winning): {strength + CF_HIDDEN}%",
+                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     else:
         u["chicken"] = CF_MIN
-        desc, color = f"Your chicken lost the fight... You lost {fmt(bet)} {c}🐓.", RED
+        e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c}🐓.", RED)
     save()
     log_game(ctx.author, "chicken fight", bet, profit if won else -bet)
-    await reply(ctx, desc, color)
+    await ctx.reply(embed=e, mention_author=False)
 
 # ================= HIGHER OR LOWER =================
 HL_MIN, HL_MAX = 1, 100
@@ -1822,7 +1849,7 @@ async def hl(ctx, amount: str = None):
 # ================= CRASH =================
 CRASH_RATE = 0.1
 CRASH_TICK = 1.0
-CRASH_EDGE = 0.14       # house edge raised from 4% to 14%: P(crash >= x) = 0.86 / x (about 10% fewer wins than before)
+CRASH_EDGE = 0.1615     # P(crash >= x) = 0.8385 / x  (win chance 2.5% lower than with 0.14)
 CRASH_CAP = 100.0
 CRASH_AUTO_MIN = 1.01
 CRASH_USAGE = "crash <amount | half | all> [auto-cashout, e.g. 2.5x]"
@@ -1844,35 +1871,44 @@ def crash_point(uid):
 
 @lru_cache(maxsize=1)
 def crash_bg():
+    """Dark blue night sky with a soft glow and a few stars."""
     W, H = CR_W * CR_S, CR_H * CR_S
-    im = Image.new("RGB", (W, H))
-    d = ImageDraw.Draw(im)
+    top, bot = (11, 15, 32), (27, 22, 56)
+    grad = Image.new("RGB", (1, H))
     for y in range(H):
         k = y / H
-        d.line([(0, y), (W, y)], fill=(int(74 - 34 * k), int(14 - 6 * k), int(30 - 12 * k)))
-    return im.convert("RGBA")
+        grad.putpixel((0, y), tuple(int(a + (b - a) * k) for a, b in zip(top, bot)))
+    im = grad.resize((W, H)).convert("RGBA")
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(glow).ellipse([W * 0.15, H * 0.35, W * 0.95, H * 1.35], fill=(80, 60, 190, 70))
+    im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(70 * CR_S // 2)))
+    rnd = random.Random(11)
+    d = ImageDraw.Draw(im)
+    for _ in range(70):
+        x, y, r = rnd.uniform(W * 0.14, W), rnd.uniform(0, H * 0.85), rnd.choice((1, 1, 1, 2)) * CR_S / 2
+        a = rnd.randint(70, 190)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(220, 225, 255, a))
+    return im
 
 @lru_cache(maxsize=1)
 def crash_rocket():
-    im = Image.new("RGBA", (200, 88), (0, 0, 0, 0))
+    """Small modern rocket pointing right, flame behind it (drawn big, scaled down)."""
+    K = 4
+    im = Image.new("RGBA", (260 * K, 110 * K), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    d.polygon([(6, 44), (48, 28), (48, 60)], fill=(255, 140, 30, 255))
-    d.polygon([(22, 44), (48, 34), (48, 54)], fill=(255, 235, 120, 255))
-    d.polygon([(58, 26), (42, 2), (92, 26)], fill=(200, 35, 50, 255))
-    d.polygon([(58, 62), (42, 86), (92, 62)], fill=(200, 35, 50, 255))
-    d.rounded_rectangle([44, 24, 152, 64], radius=18, fill=(238, 238, 244, 255), outline=(150, 150, 165, 255), width=3)
-    d.polygon([(150, 24), (194, 44), (150, 64)], fill=(220, 40, 50, 255))
-    d.ellipse([100, 33, 124, 55], fill=(90, 200, 255, 255), outline=(40, 110, 170, 255), width=3)
-    return im.resize((150, 66), Image.LANCZOS)
-
-def crash_boom(d, cx, cy, r):
-    pts = []
-    for i in range(24):
-        a = math.pi * 2 * i / 24
-        rr = r if i % 2 == 0 else r * 0.45
-        pts.append((cx + math.cos(a) * rr, cy + math.sin(a) * rr))
-    d.polygon(pts, fill=(255, 150, 30, 255))
-    d.polygon([(cx + (x - cx) * 0.55, cy + (y - cy) * 0.55) for x, y in pts], fill=(255, 235, 110, 255))
+    cy = 55 * K
+    for i, (len_, col) in enumerate(((100, (255, 110, 30, 255)), (72, (255, 190, 50, 255)), (44, (255, 245, 170, 255)))):
+        h = (22 - i * 5) * K
+        d.polygon([(110 * K, cy - h), (110 * K - len_ * K, cy), (110 * K, cy + h)], fill=col)
+    d.polygon([(122 * K, cy - 8 * K), (96 * K, cy - 34 * K), (160 * K, cy - 12 * K)], fill=(190, 40, 60, 255))
+    d.polygon([(122 * K, cy + 8 * K), (96 * K, cy + 34 * K), (160 * K, cy + 12 * K)], fill=(190, 40, 60, 255))
+    d.rounded_rectangle([108 * K, cy - 20 * K, 214 * K, cy + 20 * K], radius=20 * K, fill=(240, 242, 250, 255),
+                        outline=(160, 168, 190, 255), width=2 * K)
+    d.pieslice([170 * K, cy - 20 * K, 250 * K, cy + 20 * K], 270, 90, fill=(225, 55, 70, 255))
+    d.rectangle([108 * K, cy - 4 * K, 190 * K, cy + 4 * K], fill=(215, 220, 235, 255))
+    d.ellipse([150 * K, cy - 11 * K, 174 * K, cy + 11 * K], fill=(70, 170, 255, 255), outline=(30, 90, 150, 255), width=2 * K)
+    d.ellipse([155 * K, cy - 8 * K, 164 * K, cy - 1 * K], fill=(190, 230, 255, 255))
+    return im.resize((130, 55), Image.LANCZOS)
 
 def crash_step(span, target=4):
     raw = span / target
@@ -1881,60 +1917,95 @@ def crash_step(span, target=4):
             return s
     return 100
 
+def _glow(im, draw_fn, radius, passes=1):
+    layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(layer))
+    layer = layer.filter(ImageFilter.GaussianBlur(radius))
+    for _ in range(passes):
+        im.alpha_composite(layer)
+
 def render_crash(t, state, m):
     S = CR_S
     W, H = CR_W * S, CR_H * S
     im = crash_bg().copy()
-    d = ImageDraw.Draw(im)
-    L, R, T, B = 78 * S, W - 26 * S, 26 * S, H - 40 * S
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    L, R, T, B = 86 * S, W - 30 * S, 30 * S, H - 42 * S
     tmax, mmax = max(8.0, t * 1.15), max(2.0, m * 1.2)
-    grid, label = (112, 40, 56, 255), (205, 170, 175, 255)
+    grid, label = (255, 255, 255, 22), (160, 168, 205, 255)
     ystep, k = crash_step(mmax - 1), 0
     while 1 + k * ystep <= mmax:
         val = 1 + k * ystep
         py = B - (val - 1) / (mmax - 1) * (B - T)
         d.line([(L, py), (R, py)], fill=grid, width=S)
-        d.text((L - 8 * S, py), f"x{val:g}", font=get_font(14 * S), fill=label, anchor="rm")
+        d.text((L - 12 * S, py), f"{val:g}x", font=get_font(13 * S), fill=label, anchor="rm")
         k += 1
     xstep, x = crash_step(tmax, 5), 0.0
     while x <= tmax:
         px = L + x / tmax * (R - L)
-        d.line([(px, T), (px, B)], fill=grid, width=S)
-        d.text((px, B + 8 * S), f"{x:g}s", font=get_font(14 * S), fill=label, anchor="mt")
+        d.line([(px, T), (px, B)], fill=(255, 255, 255, 12), width=S)
+        d.text((px, B + 10 * S), f"{x:g}s", font=get_font(13 * S), fill=label, anchor="mt")
         x += xstep
-    col = {"run": (235, 190, 60), "crash": (230, 60, 60), "cash": (90, 255, 120)}[state]
-    N = 70
+    im.alpha_composite(ov)
+    col = {"run": (96, 165, 250), "crash": (248, 82, 82), "cash": (74, 222, 128)}[state]
+    N = 80
     pts = []
     for i in range(N + 1):
         tt = t * i / N
         pts.append((L + tt / tmax * (R - L), B - (crash_mult(tt) - 1) / (mmax - 1) * (B - T)))
-    poly = pts + [(pts[-1][0], B), (pts[0][0], B)]
-    x0, y0 = max(0, int(min(p[0] for p in poly))), max(0, int(min(p[1] for p in poly)))
-    x1, y1 = min(W, int(max(p[0] for p in poly)) + 2), min(H, int(max(p[1] for p in poly)) + 2)
-    ov = Image.new("RGBA", (max(1, x1 - x0), max(1, y1 - y0)), (0, 0, 0, 0))   # only the small area under the curve is blended (much faster)
-    ImageDraw.Draw(ov).polygon([(px - x0, py - y0) for px, py in poly], fill=col + (60,))
-    im.alpha_composite(ov, (x0, y0))
+    # soft area under the curve, fading downwards
+    mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(mask).polygon(pts + [(pts[-1][0], B), (pts[0][0], B)], fill=255)
+    fade = Image.linear_gradient("L").resize((W, H))            # black -> white, top to bottom
+    fade = fade.point(lambda v: int(95 * (1 - v / 255)))
+    alpha = Image.composite(fade, Image.new("L", (W, H), 0), mask)
+    area = Image.new("RGBA", (W, H), col + (0,))
+    area.putalpha(alpha)
+    im.alpha_composite(area)
+    # glowing line
+    _glow(im, lambda g: g.line(pts, fill=col + (200,), width=9 * S, joint="curve"), 7 * S)
     d = ImageDraw.Draw(im)
-    d.line(pts, fill=col + (255,), width=5 * S, joint="curve")
+    d.line(pts, fill=tuple(min(255, c + 60) for c in col) + (255,), width=4 * S, joint="curve")
     ex, ey = pts[-1]
     if state == "run":
-        (x1_, y1_), (x2_, y2_) = pts[-2], pts[-1]
-        ang = math.degrees(math.atan2(-(y2_ - y1_), x2_ - x1_)) if (x1_, y1_) != (x2_, y2_) else 10
-        rk = crash_rocket().rotate(ang, expand=True, resample=Image.BICUBIC)
-        im.paste(rk, (int(ex - rk.width / 2), int(ey - rk.height / 2)), rk)
+        (x1_, y1_), (x2_, y2_) = pts[-3], pts[-1]
+        ang = math.degrees(math.atan2(-(y2_ - y1_), x2_ - x1_)) if (x1_, y1_) != (x2_, y2_) else 8
+        rk = crash_rocket().resize((190, 80), Image.LANCZOS).rotate(ang, expand=True, resample=Image.BICUBIC)
+        _glow(im, lambda g: g.ellipse([ex - 26 * S, ey - 26 * S, ex + 26 * S, ey + 26 * S], fill=(255, 170, 70, 120)), 14 * S)
+        im.alpha_composite(rk, (int(ex - rk.width * 0.6), int(ey - rk.height / 2)))
     elif state == "crash":
-        crash_boom(d, ex, ey, 40 * S)
+        rnd = random.Random(int(m * 100))
+        _glow(im, lambda g: g.ellipse([ex - 60 * S, ey - 60 * S, ex + 60 * S, ey + 60 * S], fill=(255, 120, 40, 190)), 18 * S)
+        d = ImageDraw.Draw(im)
+        for rr, a in ((58, 90), (44, 140)):
+            d.ellipse([ex - rr * S, ey - rr * S, ex + rr * S, ey + rr * S], outline=(255, 170, 90, a), width=2 * S)
+        pts2 = []
+        for i in range(28):
+            ang_ = math.pi * 2 * i / 28
+            rr = (34 if i % 2 == 0 else 15) * S
+            pts2.append((ex + math.cos(ang_) * rr, ey + math.sin(ang_) * rr))
+        d.polygon(pts2, fill=(255, 150, 40, 255))
+        d.polygon([(ex + (px - ex) * 0.55, ey + (py - ey) * 0.55) for px, py in pts2], fill=(255, 232, 120, 255))
+        for _ in range(16):
+            a_, r1, r2 = rnd.uniform(0, math.tau), rnd.uniform(40, 52) * S, rnd.uniform(58, 86) * S
+            d.line([(ex + math.cos(a_) * r1, ey + math.sin(a_) * r1), (ex + math.cos(a_) * r2, ey + math.sin(a_) * r2)],
+                   fill=(255, 190, 90, 230), width=2 * S)
     else:
-        d.ellipse([ex - 9 * S, ey - 9 * S, ex + 9 * S, ey + 9 * S], fill=(90, 255, 120, 255), outline=(255, 255, 255, 255), width=3 * S)
-    big = {"run": (255, 255, 255), "crash": (255, 90, 90), "cash": (110, 255, 140)}[state]
-    d.text((W / 2, H * 0.38), f"x{m:.2f}", font=get_font(70 * S), fill=big + (255,), anchor="mm",
-           stroke_width=4 * S, stroke_fill=(0, 0, 0, 255))
+        _glow(im, lambda g: g.ellipse([ex - 16 * S, ey - 16 * S, ex + 16 * S, ey + 16 * S], fill=(74, 222, 128, 220)), 9 * S)
+        d = ImageDraw.Draw(im)
+        d.ellipse([ex - 10 * S, ey - 10 * S, ex + 10 * S, ey + 10 * S], fill=(74, 222, 128, 255), outline=(255, 255, 255, 255), width=3 * S)
+    big = {"run": (255, 255, 255), "crash": (255, 99, 99), "cash": (110, 240, 150)}[state]
+    cx, cy = W / 2, H * 0.36
+    _glow(im, lambda g: g.text((cx, cy), f"{m:.2f}x", font=get_font(78 * S), fill=big + (150,), anchor="mm"), 10 * S)
+    d = ImageDraw.Draw(im)
+    d.text((cx + 2 * S, cy + 3 * S), f"{m:.2f}x", font=get_font(78 * S), fill=(0, 0, 0, 120), anchor="mm")
+    d.text((cx, cy), f"{m:.2f}x", font=get_font(78 * S), fill=big + (255,), anchor="mm")
     if state != "run":
-        d.text((W / 2, H * 0.38 + 62 * S), "CRASHED" if state == "crash" else "CASHED OUT", font=get_font(26 * S),
-               fill=big + (255,), anchor="mm", stroke_width=2 * S, stroke_fill=(0, 0, 0, 255))
-    d.rectangle([0, 0, W - 1, H - 1], outline=(235, 190, 60, 255), width=4 * S)
+        d.text((cx, cy + 56 * S), "CRASHED" if state == "crash" else "CASHED OUT", font=get_font(22 * S),
+               fill=big + (255,), anchor="mm")
+    d.rectangle([0, 0, W - 1, H - 1], outline=(255, 255, 255, 38), width=2 * S)
     buf = io.BytesIO()
-    im.convert("RGB").reduce(S).save(buf, "JPEG", quality=88)
+    im.convert("RGB").reduce(S).save(buf, "JPEG", quality=92)
     return buf.getvalue()
 
 def crash_t(m):
@@ -2685,6 +2756,24 @@ class ScratchMenu(OwnedView):
         except Exception:
             pass
 
+@tasks.loop(seconds=30)
+async def sc_daily_loop():
+    """Every day at 00:00 all scratch cards go back to the stock."""
+    if loaded is None or not loaded.is_set():
+        return
+    today = today_key()
+    last = DB.get("sc_reset_day")
+    if last is None:
+        DB["sc_reset_day"] = today
+        save()
+    elif last != today:
+        DB["sc_stock"] = {}
+        for k in SC_CARDS:
+            sc_stock(k)
+        DB["sc_reset_day"] = today
+        save()
+        print("Scratch cards restocked (00:00)")
+
 @bot.command(name="scratch", aliases=["sc"], usage="sc")
 async def scratch(ctx, sub: str = None):
     if sub and sub.lower() in ("restart", "reset"):
@@ -2794,6 +2883,13 @@ async def earn(ctx, text):
 @bot.command(name="crime", cooldown_after_parsing=True)
 @commands.cooldown(1, 120, commands.BucketType.user)
 async def crime(ctx):
+    me = user_data(ctx.author.id)
+    if me["cash"] + me["bank"] > 0 and random.random() < CRIME_CAUGHT:
+        lost = int(me["cash"] * ROB_LOSS)
+        me["cash"] -= lost
+        save()
+        log_game(ctx.author, "crime (got caught)", 0, -lost)
+        return await reply(ctx, f"You got caught and lost {fmt(lost)} {cur()} ({int(ROB_LOSS * 100)}% of your cash)!", RED)
     await earn(ctx, "You successfully committed a crime and got {}!")
 
 @bot.command(name="work", cooldown_after_parsing=True)
@@ -2838,12 +2934,15 @@ async def rob(ctx, target: str = None):
     loot = {k: int(tgt[k] * ROB_PERCENT) for k in ROB_FROM}
     if not sum(loot.values()):
         return await reply(ctx, f"You tried to rob a poor person and lost 0 {cur()}.", RED)
-    if me["cash"] + me["bank"] > 0 and random.random() < ROB_FAIL:
-        lost = me["cash"] + me["bank"]
-        me["cash"] = me["bank"] = 0
+    has_money = me["cash"] + me["bank"] > 0
+    if random.random() < (ROB_FAIL_RICH if has_money else ROB_FAIL_BROKE):
+        if not has_money:
+            return await reply(ctx, "You got caught while trying to rob!", RED)
+        lost = int(me["cash"] * ROB_LOSS)
+        me["cash"] -= lost
         save()
         log_game(ctx.author, "rob (got caught)", 0, -lost)
-        return await reply(ctx, "You got caught and lost all your money!", RED)
+        return await reply(ctx, f"You got caught and lost {fmt(lost)} {cur()} ({int(ROB_LOSS * 100)}% of your cash)!", RED)
     for k, v in loot.items():
         tgt[k] -= v
     me["cash"] += sum(loot.values())
@@ -3075,6 +3174,28 @@ async def parse_money_args(ctx, args):
             raise commands.BadArgument()
     return where, member, amount
 
+def _add_used():
+    used = DB.setdefault("add_used", {})
+    if used.get("date") != today_key():          # new day (00:00): counters start from zero
+        used.clear()
+        used["date"] = today_key()
+        used["users"] = {}
+    return used["users"]
+
+def add_limit_error(ctx):
+    cap = DB.get("add_limit")
+    if ctx.author.id == OWNER_ID or not cap:
+        return None
+    if _add_used().get(str(ctx.author.id), 0) >= cap:
+        return "You have used all of your daily additions for today."
+    return None
+
+def add_limit_count(ctx):
+    if ctx.author.id == OWNER_ID or not DB.get("add_limit"):
+        return
+    users = _add_used()
+    users[str(ctx.author.id)] = users.get(str(ctx.author.id), 0) + 1
+
 def add_cap_error(ctx, amt):
     cap = DB.get("add_max")
     if ctx.author.id != OWNER_ID and cap and amt > cap:
@@ -3088,13 +3209,30 @@ async def addmoney(ctx, *args: str):
     amt = parse_amount(amount, 0)
     if where not in ("bank", "cash") or member is None or amt is None or amt <= 0:
         return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
-    err = add_cap_error(ctx, amt)
+    err = add_cap_error(ctx, amt) or add_limit_error(ctx)
     if err:
         return await reply(ctx, err, RED)
+    add_limit_count(ctx)
     user_data(member.id)[where] += amt
     save()
     log_event(ctx.author, "ADD MONEY", f"Added **{fmt(amt)}** {cur()} to the {where} of {member.name} (`{member.id}`)", BLUE)
     await reply(ctx, f"Added {fmt(amt)} {cur()} to {member.name}'s {where}.", GREEN)
+
+@bot.command(name="removemoney", usage="removemoney <bank|cash> @user <amount>")
+@staff_only
+async def removemoney(ctx, *args: str):
+    where, member, amount = await parse_money_args(ctx, args)
+    if where not in ("bank", "cash") or member is None or amount is None:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    u = user_data(member.id)
+    amt = parse_amount(amount, u[where])
+    if amt is None or amt <= 0:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    taken = min(amt, u[where])
+    u[where] -= taken
+    save()
+    log_event(ctx.author, "REMOVE MONEY", f"Removed **{fmt(taken)}** {cur()} from the {where} of {member.name} (`{member.id}`)", BLUE)
+    await reply(ctx, f"Removed {fmt(taken)} {cur()} from {member.name}'s {where}.", GREEN)
 
 @bot.command(name="resetmoney", usage="resetmoney <bank|cash|all> @user [amount]")
 @staff_only
@@ -3120,7 +3258,7 @@ async def addmoneyrole(ctx, where: str, role: discord.Role, amount: str):
     amt = parse_amount(amount, 0)
     if where not in ("bank", "cash") or amt is None or amt <= 0:
         return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
-    err = add_cap_error(ctx, amt)
+    err = add_cap_error(ctx, amt) or add_limit_error(ctx)
     if err:
         return await reply(ctx, err, RED)
     if not ctx.guild.chunked:
@@ -3128,6 +3266,7 @@ async def addmoneyrole(ctx, where: str, role: discord.Role, amount: str):
     members = [m for m in role.members if not m.bot]
     if not members:
         return await reply(ctx, "No members found in that role.", RED)
+    add_limit_count(ctx)
     for m in members:
         user_data(m.id)[where] += amt
     save()
@@ -3197,6 +3336,26 @@ async def setaddmoney(ctx, amount: str = None):
     DB["add_max"] = amt
     save()
     await reply(ctx, f"Staff can now add at most {fmt(amt)} {cur()} per command.", GREEN)
+
+@bot.command(name="setlimit", usage="setlimit <additions per day>")
+@owner_only
+async def setlimit(ctx, amount: str = None):
+    cap = DB.get("add_limit")
+    if amount is None:
+        return await reply(ctx, f"Daily add limit: {cap if cap else 'no limit'}\nSet it with `$setlimit <number>`", BLUE)
+    if not amount.isdigit() or int(amount) < 1:
+        return await reply(ctx, f"Usage: `${ctx.command.usage}`", RED)
+    DB["add_limit"] = int(amount)
+    save()
+    await reply(ctx, f"Each staff member can now use the add-money commands **{int(amount)}** time(s) per day. It resets at 00:00.", GREEN)
+
+@bot.command(name="unsetlimit", usage="unsetlimit")
+@owner_only
+async def unsetlimit(ctx):
+    DB.pop("add_limit", None)
+    DB.pop("add_used", None)
+    save()
+    await reply(ctx, "The daily add limit was removed.", GREEN)
 
 @bot.command(name="multi", usage="multi <game | all> <amount | off> [time: 10m, 2h, 1d]")
 @owner_only
@@ -3403,7 +3562,7 @@ INFO_SECTIONS = [
         ("$crash <bet> [x2.5]", "Cash out before the rocket crashes"),
     ]),
     ("ROULETTE", [
-        ("$roulette <amount> <bet>", "Alias: $rl. Join the open round, any number of bets"),
+        ("$roulette <amount> <bet>", "Join the open round, any number of bets"),
         ("Example", "$roulette 500 red   /   $roulette 150 0,6,odd"),
         ("Picks", "0-36, red, black, even, odd, 1-18, 19-36, 1-12, 13-24, 25-36, 1st, 2nd, 3rd"),
     ]),
@@ -3427,6 +3586,7 @@ AINFO_SECTIONS = [
         ("$addmoney <bank|cash> <user> <amt>", "Add money to a player"),
         ("$addmoneyrole <bank|cash> <role> <amt>", "Add money to every member of a role"),
         ("$resetmoney <bank|cash|all> <user> [amt]", "Set or reset a player's money"),
+        ("$removemoney <bank|cash> <user> <amt>", "Remove money from a player"),
         ("$set-currency <emoji>", "Change the currency symbol"),
     ]),
     ("ADMIN", [
@@ -3438,7 +3598,9 @@ AINFO_SECTIONS = [
         ("$multi <game|all> <1-5|off> [time]", "Profit multiplier on wins"),
         ("$luck <1-10>x [time]", "Luck for every player"),
         ("$unluck", "Turn luck off"),
-        ("$sc restart", "Restock all scratch cards"),
+        ("$setlimit <number>", "Daily limit of add-money uses per staff member"),
+        ("$unsetlimit", "Remove the daily limit"),
+        ("$sc restart", "Restock all scratch cards (they also restock every day at 00:00)"),
         ("$reset-economy", "Reset everyone's money (asks for confirmation)"),
         ("$disable / $undisable <cmd|all>", "Block or unblock a command"),
     ]),
