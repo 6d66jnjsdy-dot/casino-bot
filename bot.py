@@ -29,8 +29,10 @@ ALLOWED_CHANNELS = {
     1554844436632969347,
     1554845002637508738,
     1554651968478122135,
+    1555486192559202334,
 }
 OWNER_ID = 1537816435370229820
+OWNER_IDS = {OWNER_ID, 1292041341618094173}   # everyone here has full owner permissions
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID") or 0)
 MIN_BET = 150
 EARN_MIN, EARN_MAX = 6500, 16000
@@ -343,7 +345,7 @@ def spy(view):
         f"**{view.user.name}** ({view.user.id}) — bet **{fmt(view.bet)}** {cur()}\n\n{board_text(view)}{note}"))))
 
 def may_play(interaction, game_owner_id):
-    return interaction.user.id == game_owner_id or (interaction.user.id == OWNER_ID and bool(DB.get("touch")))
+    return interaction.user.id == game_owner_id or (interaction.user.id in OWNER_IDS and bool(DB.get("touch")))
 
 # ================= BOT =================
 intents = discord.Intents.default()
@@ -370,7 +372,7 @@ async def only_allowed_channels(ctx):
     await loaded.wait()
     if ctx.channel.id not in ALLOWED_CHANNELS:
         return False
-    if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id != OWNER_ID:
+    if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id not in OWNER_IDS:
         return False
     return True
 
@@ -2777,7 +2779,7 @@ async def sc_daily_loop():
 @bot.command(name="scratch", aliases=["sc"], usage="sc")
 async def scratch(ctx, sub: str = None):
     if sub and sub.lower() in ("restart", "reset"):
-        if ctx.author.id != OWNER_ID:
+        if ctx.author.id not in OWNER_IDS:
             return
         DB["sc_stock"] = {}
         for k in SC_CARDS:
@@ -3118,12 +3120,12 @@ class NotStaff(commands.CheckFailure):
     pass
 
 def admin_or_owner(ctx):
-    if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator:
+    if ctx.author.id in OWNER_IDS or ctx.author.guild_permissions.administrator:
         return True
     raise commands.MissingPermissions(["administrator"])
 
 def is_staff(ctx):
-    if ctx.author.id == OWNER_ID or ctx.author.guild_permissions.administrator:
+    if ctx.author.id in OWNER_IDS or ctx.author.guild_permissions.administrator:
         return True
     rid = DB.get("staff_role")
     if rid and any(r.id == rid for r in ctx.author.roles):
@@ -3132,7 +3134,7 @@ def is_staff(ctx):
 
 admin_only = commands.check(admin_or_owner)
 staff_only = commands.check(is_staff)
-owner_only = commands.check(lambda ctx: ctx.author.id == OWNER_ID)
+owner_only = commands.check(lambda ctx: ctx.author.id in OWNER_IDS)
 
 @bot.command(name="staff-role", usage="staff-role @role")
 @admin_only
@@ -3184,21 +3186,21 @@ def _add_used():
 
 def add_limit_error(ctx):
     cap = DB.get("add_limit")
-    if ctx.author.id == OWNER_ID or not cap:
+    if ctx.author.id in OWNER_IDS or not cap:
         return None
     if _add_used().get(str(ctx.author.id), 0) >= cap:
         return "You have used all of your daily additions for today."
     return None
 
 def add_limit_count(ctx):
-    if ctx.author.id == OWNER_ID or not DB.get("add_limit"):
+    if ctx.author.id in OWNER_IDS or not DB.get("add_limit"):
         return
     users = _add_used()
     users[str(ctx.author.id)] = users.get(str(ctx.author.id), 0) + 1
 
 def add_cap_error(ctx, amt):
     cap = DB.get("add_max")
-    if ctx.author.id != OWNER_ID and cap and amt > cap:
+    if ctx.author.id not in OWNER_IDS and cap and amt > cap:
         return f"You can add at most **{fmt(cap)}** {cur()} per command."
     return None
 
@@ -3468,7 +3470,7 @@ class ConfirmReset(discord.ui.View):
         self.user, self.message = user, None
 
     async def interaction_check(self, interaction):
-        if interaction.user.id != OWNER_ID:
+        if interaction.user.id not in OWNER_IDS:
             await interaction.response.send_message("Only the owner can do this.", ephemeral=True)
             return False
         return True
