@@ -304,12 +304,11 @@ async def send_log(user, head, desc, color, fields):
     try:
         cid = DB.get("log_channel")
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        e = discord.Embed(title=head, description=desc or None, color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=user.name, icon_url=user.display_avatar.url)
-        e.set_thumbnail(url=user.display_avatar.url)
-        for name, value in fields or []:
-            e.add_field(name=name, value=value, inline=True)
-        e.set_footer(text=f"{LOG_FOOTER}  •  ID {user.id}")
+        stats = "  ┃  ".join(f"{name} {value}" for name, value in fields or [])
+        body = "\n".join(p for p in (f"**{head}**", desc, stats) if p)
+        e = discord.Embed(description=body, color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=f"{user.name} • {user.id}", icon_url=user.display_avatar.url)
+        e.set_footer(text=LOG_FOOTER)
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
@@ -329,22 +328,21 @@ def log_game(user, game, bet, net, detail=None):
     else:
         tag, color, dot, amt = "PUSH", YELLOW, "🟡", "±0"
     low = game.lower()
-    desc = f"{dot} **{tag}**  ·  `{amt}` {c}" + (f"\n{detail}" if detail else "")
     fields = []
     if bet:
-        fields.append(("💵 Bet", f"`{fmt(bet)}` {c}"))
-    fields.append(("📊 Net", f"`{amt}` {c}"))
+        fields.append(("💵", f"`{fmt(bet)}` {c}"))
+    fields.append(("📊", f"`{amt}` {c}"))
     if low.startswith("scratch"):
-        fields.append(("🏦 Bank", f"`{fmt(u['bank'])}` {c}"))
+        fields.append(("🏦", f"`{fmt(u['bank'])}` {c}"))
     else:
-        fields.append(("💰 Cash", f"`{fmt(u['cash'])}` {c}"))
-    head = f"{game_icon(game)} {GAME_NAMES.get(low) or pretty(game)}"
-    bg(send_log(user, head, desc, color, fields))
+        fields.append(("💰", f"`{fmt(u['cash'])}` {c}"))
+    head = f"{dot} {tag}  •  {game_icon(game)} {GAME_NAMES.get(low) or pretty(game)}"
+    bg(send_log(user, head, detail, color, fields))
 
 def log_money(user, title, desc, color=BLUE):
     u, c = user_data(user.id), cur()
-    log_event(user, title, desc, color, [("💵 Cash", f"`{fmt(u['cash'])}` {c}"), ("🏦 Bank", f"`{fmt(u['bank'])}` {c}"),
-                                         ("💎 Total", f"`{fmt(u['cash'] + u['bank'])}` {c}")])
+    log_event(user, title, desc, color, [("💵", f"`{fmt(u['cash'])}` {c}"), ("🏦", f"`{fmt(u['bank'])}` {c}"),
+                                         ("💎", f"`{fmt(u['cash'] + u['bank'])}` {c}")])
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -2635,7 +2633,9 @@ async def pay(ctx, target: str = None, amount: str = None):
     member = await resolve_target(ctx, target)
     if member is None or amount is None:
         return await reply(ctx, "Usage: `$pay @user | user ID <amount | half | all>` — or reply to a player (ping ON) and type `$pay a <amount>`", RED)
-    if member.bot or member.id == ctx.author.id:
+    if member.bot:
+        return await reply(ctx, "Please enter a valid user.", RED)
+    if member.id == ctx.author.id:
         return await reply(ctx, "You can't pay this user.", RED)
     u = user_data(ctx.author.id)
     amt = parse_amount(amount, u["cash"])
@@ -2660,9 +2660,12 @@ async def rob(ctx, target: str = None):
     if member is None:
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "Usage: `$rob @user | user ID` — or reply to a player (ping ON) and type `$rob a`", RED)
-    if member.bot or member.id == ctx.author.id:
+    if member.bot:
         ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "You can't rob this user.", RED)
+        return await reply(ctx, "Please enter a valid user.", RED)
+    if member.id == ctx.author.id:
+        ctx.command.reset_cooldown(ctx)
+        return await reply(ctx, "You cannot rob yourself.", RED)
     me, tgt = user_data(ctx.author.id), user_data(member.id)
     loot = {k: int(tgt[k] * ROB_PERCENT) for k in ROB_FROM}
     total = sum(loot.values())
@@ -3265,13 +3268,19 @@ for _n, _k, _on, _t in (
 # ================= INFO =================
 INFO_COLOR = 0x1F2A44
 
+SECTION_ICONS = {
+    "BOARD GAMES": "🎯", "CARDS AND LUCK": "🃏", "ROULETTE": "🎡", "SCRATCH CARDS": "🎟️", "ECONOMY": "💰",
+    "STAFF": "🛡️", "ADMIN": "⚙️", "OWNER": "👑", "BANG COMMANDS": "❗",
+}
+
 def info_embed(user, title, description, sections, footer=None):
+    """One tidy message: every command on its own line (command in code, description after it),
+    so nothing gets cut or wrapped badly on mobile like the old wide code blocks did."""
     e = discord.Embed(title=title, description=description, color=INFO_COLOR)
     e.set_author(name=user.name, icon_url=user.display_avatar.url)
     for name, rows in sections:
-        width = max(len(cmd) for cmd, _ in rows)
-        body = "\n".join(f"{cmd.ljust(width)}  {desc}" for cmd, desc in rows)
-        e.add_field(name=name, value=f"```\n{body}\n```", inline=False)
+        body = "\n".join(f"`{cmd}`\n⠀└ {desc}" if len(cmd) + len(desc) > 38 else f"`{cmd}` ┃ {desc}" for cmd, desc in rows)
+        e.add_field(name=f"{SECTION_ICONS.get(name, '▪️')}  {name.title()}", value=body, inline=False)
     if footer:
         e.set_footer(text=footer)
     return e
