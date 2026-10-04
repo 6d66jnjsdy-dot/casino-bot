@@ -1774,8 +1774,9 @@ async def cf(ctx, amount: str = None):
         profit = -bet
         u["chicken"] = strength = CF_MIN
         e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
-    e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
-                value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
+    if won:
+        e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
+                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     save()
     log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
     await ctx.reply(embed=e, mention_author=False)
