@@ -1911,6 +1911,7 @@ async def hl(ctx, amount: str = None):
 GOLD = 0xD4AF37
 HEIST_ORANGE = 0xE67E22
 HEIST_MAX = 3                    # players in one heist
+HEIST_MIN = 2                    # fewer players than this when the sign-up closes = the heist is cancelled and everybody gets the money back
 HEIST_FEE = 2_500_000            # fixed entry fee per player (a heist has expenses), not a bet
 HEIST_JOIN_WAIT = 30             # seconds to join
 HEIST_ROLE_WAIT = 30             # seconds to choose a role
@@ -2119,7 +2120,8 @@ class Heist:
         e = discord.Embed(color=GOLD, title="שוד הבנק")
         if self.phase == "join":
             e.description = ("עד שלושה שחקנים נכנסים לבנק, לכל אחד תפקיד ומשימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
-                             f"דמי הכניסה הם סכום קבוע של **{fmt(self.stake)}** {cur()} לכל שחקן (הוצאות השוד).")
+                             f"דמי הכניסה הם סכום קבוע של **{fmt(self.stake)}** {cur()} לכל שחקן (הוצאות השוד).\n"
+                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן.")
             when = "ההרשמה נסגרת"
         elif self.phase == "roles":
             e.description = "כל אחד בוחר תפקיד אחד. מי שלא בחר יקבל תפקיד אקראי."
@@ -2531,7 +2533,7 @@ class LookoutMission(MissionView):
     COPS = (4, 4, 5, 5, 6, 6)
     CIVS = (5, 5, 6, 6, 7, 7)
     ICONS = {"cop": "👮", "boss": "🕵️", "civ": "🧑‍💼", "empty": "⬛"}
-    SEC_PER_COP = 1.8
+    SEC_PER_COP = 3.0
 
     def __init__(self, h, user, role):
         super().__init__(h, user, role)
@@ -2544,7 +2546,7 @@ class LookoutMission(MissionView):
         self.cops, self.civs = self.COPS[self.round - 1], self.CIVS[self.round - 1]
         self.neut = 0
         self.boss_alive, self.boss_hp = self.round >= 3, 2      # the undercover agent needs two hits
-        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 1.5 + (2 if self.boss_alive else 0)
+        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 4 + (3 if self.boss_alive else 0)
         self.radio = random.choice(HEIST_RADIO)
         self.shuffle_cells()
 
@@ -2556,7 +2558,14 @@ class LookoutMission(MissionView):
         self.cells = cells
 
     def reroll(self):
-        self.setup_round()
+        """'התעלמות' moves straight to the NEXT round (on the last round it just gives a fresh one)."""
+        if self.round < self.ROUNDS:
+            self.round += 1
+            self.setup_round()
+            self.note = f"דילגתם לסבב {self.round}."
+        else:
+            self.setup_round()
+            self.note = "זה הסבב האחרון, קיבלתם לוח חדש."
 
     def rebuild(self):
         self.clear_items()
@@ -2575,12 +2584,12 @@ class LookoutMission(MissionView):
                 "לוחצים על שוטר (👮) כדי לנטרל אותו. פגיעה באזרח (🧑‍💼) היא אזעקה ומאפסת את הסבב.\n"
                 "אחרי כל לחיצה כל הלוח מתערבב. לחיצה על משבצת ריקה גוזלת שתי שניות מהזמן של הסבב.\n"
                 "מסבב 3 יש סוכן חשאי (🕵️) שצריך לפגוע בו פעמיים.\n"
-                "אם הזמן של הסבב נגמר ולחצתם, זו אזעקה והסבב מתחיל מחדש.\n"
-                f"יש {self.ROUNDS} סבבים, ושתי אזעקות מפילות את המשימה. התעלמות מחליפה את הסבב.")
+                "אם הזמן של הסבב נגמר ולחצתם, זו אזעקה והסבב מתחיל מחדש.\nהתעלמות מדלגת ישר לסבב הבא.\n"
+                f"יש {self.ROUNDS} סבבים, ושתי אזעקות מפילות את המשימה.")
 
     def hit(self, i):
         async def cb(interaction):
-            if time.time() > self.round_end:
+            if time.time() > self.round_end + 1.0:      # 1s of network delay is forgiven
                 self.setup_round()
                 self.rebuild()
                 return await self.mistake(interaction, "הזמן נגמר והשוטרים התריעו. סבב חדש.", "השוטרים הקיפו את הבנק.")
@@ -2592,7 +2601,7 @@ class LookoutMission(MissionView):
                 self.rebuild()
                 return await self.mistake(interaction, "פגעתם באזרח והאזעקה הופעלה.", "פגעתם בעוד אזרח והמשטרה הוזעקה.")
             if kind == "empty":
-                self.round_end -= 2
+                self.round_end -= 1
                 self.note = "אין שם כלום, הפסדתם זמן."
             else:
                 if kind == "boss":
@@ -2811,7 +2820,7 @@ async def finish_heist(h):
         e.set_image(url=None)
         await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
 
-async def heist_abort(h):
+async def heist_abort(h, title="הזמן אזל", text="השוד בוטל והכסף חזר למזומן."):
     """Something went wrong: nobody loses anything. Players who were not paid yet get the entry fee back to their cash."""
     h.phase = "done"
     names = []
@@ -2819,11 +2828,11 @@ async def heist_abort(h):
         if DB.get("pending", {}).pop(p["token"], None) is not None:
             user_data(uid)["cash"] += h.stake
             names.append(p["user"].mention)
-            log_money(p["user"], "HEIST | TIMEOUT", f"Time ran out, entry fee of {fmt(h.stake)} {cur()} was returned to cash", YELLOW)
+            log_money(p["user"], "HEIST | CANCELLED", f"Heist cancelled, entry fee of {fmt(h.stake)} {cur()} was returned to cash", YELLOW)
         BUSY.discard(uid)
     save()
-    e = discord.Embed(color=YELLOW, title="הזמן אזל", description=(
-        "השוד בוטל והכסף חזר למזומן."
+    e = discord.Embed(color=YELLOW, title=title, description=(
+        text
         + (f"\n\n{fmt(h.stake)} {cur()} הוחזרו ל: " + ", ".join(names) if names else "")))
     try:
         await h.message.edit(embed=e, view=None, attachments=[])
@@ -2841,6 +2850,10 @@ async def run_heist(h):
             await asyncio.wait_for(h.full.wait(), max(0, h.end - time.time()))
         except asyncio.TimeoutError:
             pass
+        if len(h.players) < HEIST_MIN:
+            heist_unmark(next(iter(h.players)))      # the creator may open a new heist today
+            return await heist_abort(h, "השוד בוטל",
+                                     f"לא הצטרפו מספיק שחקנים בזמן (נדרשים לפחות {HEIST_MIN}). הכסף חזר למזומן.")
         h.phase, h.end = "roles", int(time.time()) + HEIST_ROLE_WAIT
         view.show_roles()
         await h.refresh()
