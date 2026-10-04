@@ -49,15 +49,15 @@ MINES_MULT = [1.1, 1.2, 1.4, 1.9, 2.3, 4.3, 6.1, 8.1]
 # S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
-    "2x2": (2, 2, 1, [1.25, 2.2, 4.2]),
+    "2x2": (2, 2, 1, [1.3, 2, 3.9]),
     "4x4": (4, 4, 2, [1.2, 1.4, 1.6, 1.8, 2, 2.4, 2.76, 3.2, 3.4, 3.7, 4.1, 6.4, 8.6, 10.5]),
-    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 7.62, 9.21, 11,7]),
+    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 9.85, 12, 15]),
 }
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
 MULTI_MAX = 5
-MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch")
+MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch", "heist")
 
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1
@@ -271,10 +271,10 @@ def bg(coro):
 
 GAME_NAMES = {"gm": "Gold Mines", "mines": "Mines", "money tower": "Money Tower", "blackjack": "Blackjack",
               "slots": "Slots", "roulette": "Roulette", "heads or tail": "Heads or Tail",
-              "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower"}
+              "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower", "heist": "Heist"}
 GAME_ICONS = (("s$mines", "💣"), ("mines", "💣"), ("gm", "⛏️"), ("money tower", "🗼"), ("blackjack", "🃏"),
               ("slots", "🎰"), ("roulette", "🎡"), ("heads", "🪙"), ("chicken", "🐓"), ("higher", "🎲"),
-              ("scratch", "🎟️"), ("rob", "🦹"))
+              ("scratch", "🎟️"), ("heist", "🏦"), ("rob", "🦹"))
 LOG_TITLES = {
     "DEP": "🏦 Deposit", "WITH": "🏧 Withdrawal", "WORK": "🔨 Work", "CRIME": "🕵️ Crime", "PAY": "🤝 Transfer",
     "SHOP": "🛒 Shop Purchase", "ADD MONEY": "➕ Money Added", "REMOVE MONEY": "➖ Money Removed",
@@ -1886,6 +1886,629 @@ async def hl(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
         raise
 
+# ================= HEIST ($heist) =================
+HEIST_COLOR = 0x2B2D42
+HEIST_MAX = 3                    # players in one heist
+HEIST_JOIN_WAIT = 30             # seconds to join
+HEIST_ROLE_WAIT = 30             # seconds to choose a role
+HEIST_MISSION_WAIT = 180         # seconds for all the personal missions
+HEIST_MULT = {1: 3.5, 2: 2.2, 3: 1.5}   # all 3 missions done: stake x this (a small crew is riskier, so it pays more)
+HEIST_PART = 0.5                 # only 2 of 3 missions done: this part of the stake comes back
+HEIST_AUTO = 0.5                 # chance that a role nobody took succeeds by itself
+HEIST_SKIPS = 2                  # "התעלמות" = a new task, per player
+HEIST_FUSE = 15                  # seconds the bomber has to run out
+HEIST_GRACE = 1.5                # network delay allowed on the run
+HEIST_ROLES = {                  # key: (name, icon)
+    "lookout": ("מנטרל שוטרים", "👮"),
+    "hacker": ("מפצח קוד", "💻"),
+    "bomber": ("מפוצץ כספות", "💣"),
+}
+HEIST_ROLE_ORDER = ("lookout", "hacker", "bomber")
+HEISTS = {}                      # channel id -> the open heist of that channel
+
+GEM = {"א": 1, "ב": 2, "ג": 3, "ד": 4, "ה": 5, "ו": 6, "ז": 7, "ח": 8, "ט": 9, "י": 10, "כ": 20, "ך": 20, "ל": 30,
+       "מ": 40, "ם": 40, "נ": 50, "ן": 50, "ס": 60, "ע": 70, "פ": 80, "ף": 80, "צ": 90, "ץ": 90, "ק": 100,
+       "ר": 200, "ש": 300, "ת": 400}
+GEM_TABLE = ("א=1 ב=2 ג=3 ד=4 ה=5 ו=6 ז=7 ח=8 ט=9\nי=10 כ=20 ל=30 מ=40 נ=50 ס=60 ע=70 פ=80 צ=90\n"
+             "ק=100 ר=200 ש=300 ת=400\n(אותיות סופיות ךםןףץ שוות לאותיות הרגילות)")
+HEIST_WORDS = ["כסף", "זהב", "בנק", "כספת", "שוד", "מזל", "קוד", "יהלום", "אור", "חיים", "שלום", "אמת", "מפתח", "אבן"]
+HEIST_WALLS = ["צפון", "דרום", "מזרח", "מערב"]
+HEIST_OPP = {"צפון": "דרום", "דרום": "צפון", "מזרח": "מערב", "מערב": "מזרח"}
+HEIST_COLORS = {"🟥": ["דם", "תות", "כבאית"], "🟦": ["שמיים", "ים", "ג'ינס"],
+                "🟩": ["דשא", "עלה", "צפרדע"], "🟨": ["שמש", "לימון", "בננה"]}
+HEIST_RADIO = ["יחידה 4 לכל הכוחות: חשוד נראה ליד הכספת.", "כאן מוקד, שוטרים בדרך למבנה. מהרו!",
+               "דיווח: סיור משטרתי בקומת הכניסה.", "כל היחידות: אזעקה שקטה הופעלה בבנק."]
+
+def gematria(word):
+    return sum(GEM.get(ch, 0) for ch in word)
+
+def heist_puzzle(stage):
+    """A code to crack: returns (text, answer). Stage 2 can also add two words together."""
+    w = random.sample(HEIST_WORDS, 2)
+    kind = random.choice(("gem", "gem2", "calc", "seq", "gemcalc") if stage > 1 else ("gem", "calc", "seq", "gemcalc"))
+    if kind == "gem":
+        return f"מהי הגימטריה של המילה **{w[0]}**?", gematria(w[0])
+    if kind == "gem2":
+        return f"חברו את הגימטריה של **{w[0]}** עם הגימטריה של **{w[1]}**.", gematria(w[0]) + gematria(w[1])
+    if kind == "gemcalc":
+        n = random.randint(2, 5)
+        return f"הגימטריה של **{w[0]}** כפול **{n}** היא?", gematria(w[0]) * n
+    if kind == "calc":
+        a, b, c = random.randint(2, 12), random.randint(2, 12), random.randint(2, 5)
+        return f"חשבו: **({a} + {b}) × {c}**", (a + b) * c
+    start = random.randint(2, 9)
+    if random.random() < 0.5:
+        step = random.randint(2, 7)
+        seq = [start + step * i for i in range(5)]
+    else:
+        ratio = random.choice((2, 3))
+        seq = [start * ratio ** i for i in range(5)]
+    return f"מהו המספר הבא בסדרה?\n**{', '.join(map(str, seq[:4]))}, ?**", seq[4]
+
+class Heist:
+    def __init__(self, channel, stake):
+        self.channel, self.stake = channel, stake
+        self.token = None
+        self.players = {}        # user id -> {"user", "token", "role"}
+        self.phase = "join"      # join -> roles -> mission -> done
+        self.message = self.view = None
+        self.results = {}        # user id -> True / False (his personal mission)
+        self.opened = set()
+        self.full, self.roles_set, self.all_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        self.end = int(time.time()) + HEIST_JOIN_WAIT
+
+    def add_player(self, user, token):
+        self.players[user.id] = {"user": user, "token": token, "role": None}
+        if len(self.players) >= HEIST_MAX:
+            self.full.set()
+
+    def role_of(self, role):
+        for uid, p in self.players.items():
+            if p["role"] == role:
+                return uid
+        return None
+
+    def report(self, uid, ok):
+        if self.phase != "mission" or uid in self.results:
+            return
+        self.results[uid] = ok
+        if len(self.results) >= len(self.players):
+            self.all_done.set()
+        bg(self.refresh())
+
+    def embed(self):
+        crew = []
+        for uid, p in self.players.items():
+            tag = ""
+            if p["role"]:
+                name, icon = HEIST_ROLES[p["role"]]
+                tag = f" — {icon} {name}"
+            if uid in self.results:
+                tag += "  •  ✔️ סיים"
+            crew.append(f"• {p['user'].mention}{tag}")
+        n = len(self.players)
+        text = f"**סכום כניסה:** `{fmt(self.stake)}` {cur()}\n**הצוות ({n}/{HEIST_MAX}):**\n" + "\n".join(crew)
+        if self.phase == "join":
+            text += f"\n\nלחצו על **כניסה למשחק** כדי להצטרף לשוד.\nההרשמה נסגרת <t:{self.end}:R>."
+        elif self.phase == "roles":
+            text += f"\n\nכל אחד בוחר תפקיד אחד. מי שלא בחר יקבל תפקיד אקראי <t:{self.end}:R>."
+        else:
+            text += (f"\n\nלחצו על **המשימה שלי** כדי לקבל הודעה אישית שרק אתם רואים.\n"
+                     f"הזמן נגמר <t:{self.end}:R>.")
+        e = discord.Embed(color=HEIST_COLOR, title="🏦 שוד הבנק", description=text)
+        e.set_footer(text=f"הצלחה מלאה בצוות של {n}: x{HEIST_MULT[n]:g}  •  2 מתוך 3 משימות: מחצית ההימור חוזרת")
+        return e
+
+    async def refresh(self):
+        if not self.message or self.phase == "done":
+            return
+        try:
+            await self.message.edit(embed=self.embed(), view=self.view)
+        except Exception as ex:
+            print("Heist refresh failed:", repr(ex))
+
+async def hz_edit(interaction, **kw):
+    if not interaction.response.is_done():
+        await interaction.response.edit_message(**kw)
+    else:
+        await interaction.edit_original_response(**kw)
+
+class HeistView(discord.ui.View):
+    def __init__(self, h):
+        super().__init__(timeout=None)
+        self.h = h
+        self.show_join()
+
+    def show_join(self):
+        self.clear_items()
+        b = discord.ui.Button(style=discord.ButtonStyle.success, label="כניסה למשחק")
+        b.callback = self.join
+        self.add_item(b)
+
+    def show_roles(self):
+        self.clear_items()
+        for key in HEIST_ROLE_ORDER:
+            name, icon = HEIST_ROLES[key]
+            taken = self.h.role_of(key) is not None
+            b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.primary,
+                                  label=name, emoji=icon, disabled=taken)
+            b.callback = self.pick(key)
+            self.add_item(b)
+
+    def show_mission(self):
+        self.clear_items()
+        b = discord.ui.Button(style=discord.ButtonStyle.primary, label="המשימה שלי", emoji="📩")
+        b.callback = self.mission
+        self.add_item(b)
+
+    async def join(self, interaction):
+        h, user = self.h, interaction.user
+        say = lambda t: interaction.response.send_message(t, ephemeral=True)
+        if h.phase != "join":
+            return await say("ההרשמה לשוד הזה כבר נסגרה.")
+        if user.id in h.players:
+            return await say("אתה כבר בצוות.")
+        if len(h.players) >= HEIST_MAX:
+            return await say("הצוות מלא.")
+        if user.id in BUSY:
+            return await say(BUSY_MSG)
+        u = user_data(user.id)
+        if u["cash"] < h.stake:
+            return await say(f"אין לך מספיק כסף. סכום הכניסה הוא {fmt(h.stake)} {cur()}.")
+        u["cash"] -= h.stake
+        token = f"{h.token}:{user.id}"
+        DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": h.stake}
+        BUSY.add(user.id)
+        save()
+        h.add_player(user, token)
+        await interaction.response.edit_message(embed=h.embed(), view=self)
+
+    def pick(self, role):
+        async def cb(interaction):
+            h = self.h
+            p = h.players.get(interaction.user.id)
+            say = lambda t: interaction.response.send_message(t, ephemeral=True)
+            if p is None:
+                return await say("אינך חלק מהצוות של השוד הזה.")
+            if h.phase != "roles":
+                return await interaction.response.defer()
+            if p["role"]:
+                return await say("כבר בחרת תפקיד.")
+            if h.role_of(role):
+                return await say("התפקיד הזה כבר נתפס, בחר אחר.")
+            p["role"] = role
+            self.show_roles()
+            await interaction.response.edit_message(embed=h.embed(), view=self)
+            if all(q["role"] for q in h.players.values()):
+                h.roles_set.set()
+        return cb
+
+    async def mission(self, interaction):
+        h, uid = self.h, interaction.user.id
+        p = h.players.get(uid)
+        say = lambda t: interaction.response.send_message(t, ephemeral=True)
+        if p is None:
+            return await say("אינך חלק מהצוות של השוד הזה.")
+        if h.phase != "mission":
+            return await interaction.response.defer()
+        if uid in h.opened:
+            return await say("המשימה שלך כבר נשלחה אליך. חפש את ההודעה הפרטית שרק אתה רואה.")
+        h.opened.add(uid)
+        v = MISSIONS[p["role"]](h, interaction.user, p["role"])
+        await interaction.response.send_message(embed=v.embed(), view=v, ephemeral=True)
+
+class MissionView(discord.ui.View):
+    """Personal (ephemeral) mission message. Subclasses: embed(), rebuild(), reroll(), help_text()."""
+
+    def __init__(self, h, user, role):
+        super().__init__(timeout=HEIST_MISSION_WAIT)
+        self.h, self.user, self.role = h, user, role
+        self.done, self.mistakes, self.max_mistakes, self.skips, self.note = False, 0, 3, HEIST_SKIPS, ""
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("זו לא המשימה שלך!", ephemeral=True)
+            return False
+        if self.done or self.h.phase == "done":
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            return False
+        return True
+
+    def card(self, body):
+        name, icon = HEIST_ROLES[self.role]
+        e = discord.Embed(color=HEIST_COLOR, title=f"{icon} {name}", description=body + (f"\n\n{self.note}" if self.note else ""))
+        e.set_footer(text=f"טעויות {self.mistakes}/{self.max_mistakes}  •  התעלמויות שנותרו: {self.skips}")
+        return e
+
+    def add_btn(self, label, cb, style=discord.ButtonStyle.secondary, emoji=None, row=0):
+        b = discord.ui.Button(style=style, label=label, emoji=emoji, row=row)
+        b.callback = cb
+        self.add_item(b)
+
+    def add_common(self, row):
+        self.add_btn("הוראות", self.show_help, emoji="💡", row=row)
+        self.add_btn("התעלמות", self.do_skip, emoji="🔄", row=row)
+
+    def can_skip(self):
+        return True
+
+    async def show_help(self, interaction):
+        await interaction.response.send_message(self.help_text(), ephemeral=True)
+
+    async def do_skip(self, interaction):
+        if not self.can_skip():
+            return await interaction.response.send_message("אי אפשר להתעלם בשלב הזה.", ephemeral=True)
+        if self.skips <= 0:
+            return await interaction.response.send_message("נגמרו ההתעלמויות שלך.", ephemeral=True)
+        self.skips -= 1
+        self.note = "🔄 התעלמת וקיבלת משימה חדשה."
+        self.reroll()
+        self.rebuild()
+        await hz_edit(interaction, embed=self.embed(), view=self)
+
+    async def end(self, interaction, ok, text):
+        self.done = True
+        self.h.report(self.user.id, ok)
+        self.stop()
+        e = discord.Embed(color=GREEN if ok else RED, title="✅ המשימה הושלמה" if ok else "❌ המשימה נכשלה",
+                          description=f"{text}\n\nממתינים לשאר הצוות, התוצאה תתפרסם בהודעה הראשית.")
+        await hz_edit(interaction, embed=e, view=None)
+
+    async def mistake(self, interaction, text, fail_text):
+        self.mistakes += 1
+        if self.mistakes >= self.max_mistakes:
+            return await self.end(interaction, False, fail_text)
+        self.note = f"❌ {text}"
+        await hz_edit(interaction, embed=self.embed(), view=self)
+
+    async def on_timeout(self):
+        if not self.done:
+            self.done = True
+            self.h.report(self.user.id, False)
+
+# ---------- hacker: crack the bank codes (gematria, sums, sequences) ----------
+class CodeModal(discord.ui.Modal):
+    def __init__(self, view):
+        super().__init__(title="הזנת קוד")
+        self.v = view
+        self.code = discord.ui.TextInput(label="הקוד (מספר)", max_length=10)
+        self.add_item(self.code)
+
+    async def on_submit(self, interaction):
+        await self.v.check(interaction, self.code.value.strip())
+
+class HackerMission(MissionView):
+    CODES = 2
+
+    def __init__(self, h, user, role):
+        super().__init__(h, user, role)
+        self.stage = 1
+        self.text, self.answer = heist_puzzle(1)
+        self.rebuild()
+
+    def rebuild(self):
+        self.clear_items()
+        self.add_btn("הזן קוד", self.enter, discord.ButtonStyle.success, "✍️")
+        self.add_common(1)
+
+    def reroll(self):
+        self.text, self.answer = heist_puzzle(self.stage)
+
+    def embed(self):
+        return self.card(f"**פריצה למערכת הבנק** — קוד {self.stage}/{self.CODES}\n\n{self.text}")
+
+    def help_text(self):
+        return ("**איך פורצים?**\nפתרו את החידה והזינו את התשובה כמספר.\n"
+                "גימטריה = סכום הערכים של האותיות במילה:\n"
+                f"```\n{GEM_TABLE}\n```\nלדוגמה: **שוד** = 300 + 6 + 4 = 310.\n"
+                "לא מצליחים? **התעלמות** מביאה חידה חדשה (מספר מוגבל).")
+
+    async def enter(self, interaction):
+        await interaction.response.send_modal(CodeModal(self))
+
+    async def check(self, interaction, text):
+        if self.done:
+            return await interaction.response.defer()
+        try:
+            val = int(text)
+        except ValueError:
+            val = None
+        if val == self.answer:
+            if self.stage >= self.CODES:
+                return await self.end(interaction, True, "🔓 כל הקודים נפרצו! דלתות הבנק נפתחו לצוות.")
+            self.stage += 1
+            self.text, self.answer = heist_puzzle(self.stage)
+            self.note = "✅ הקוד נכון! עוברים לקוד הבא."
+            return await hz_edit(interaction, embed=self.embed(), view=self)
+        await self.mistake(interaction, "קוד שגוי, נסו שוב.", "🔒 המערכת ננעלה והאזעקה הופעלה!")
+
+# ---------- bomber: place, reinforce, ignite, run out before it blows ----------
+class BomberMission(MissionView):
+    def __init__(self, h, user, role):
+        super().__init__(h, user, role)
+        self.max_mistakes = 2
+        self.step, self.fuse_end = "place", 0
+        self.roll_wall()
+        self.roll_colors()
+        self.safe = random.randint(1, 3)
+        self.rebuild()
+
+    def roll_wall(self):
+        self.cam = random.choice(HEIST_WALLS)
+
+    def roll_colors(self):
+        self.order = random.sample(list(HEIST_COLORS), 3)
+        self.words = [random.choice(HEIST_COLORS[c]) for c in self.order]
+        self.pos = 0
+
+    def can_skip(self):
+        return self.step in ("place", "reinforce")
+
+    def reroll(self):
+        self.roll_wall() if self.step == "place" else self.roll_colors()
+
+    def embed(self):
+        if self.step == "place":
+            body = (f"**שלב 1/4 — הנחת המטען**\n🎥 מצלמת האבטחה מכוונת לקיר ה**{self.cam}**.\n"
+                    "הכספת נמצאת בקיר שממול למצלמה. באיזה קיר מניחים את המטען?")
+        elif self.step == "reinforce":
+            w = self.words
+            body = (f"**שלב 2/4 — חיזוק המטען**\nהטכנאי אומר: *״קודם את הצבע של {w[0]}, אחר כך את הצבע של {w[1]}, "
+                    f"ובסוף את הצבע של {w[2]}.״*\n\nהתקדמות: {'▰' * self.pos}{'▱' * (3 - self.pos)}")
+        elif self.step == "ignite":
+            body = (f"**שלב 3/4 — הפעלה**\nהמטען מחובר ומחוזק. ברגע שתלחצו על **הפעל** יידלק פתיל של "
+                    f"**{HEIST_FUSE} שניות**, ואז צריך לברוח מהדלת הפנויה!")
+        else:
+            a, b = [d for d in (1, 2, 3) if d != self.safe]
+            body = (f"**שלב 4/4 — בריחה!**\n🔥 הפתיל דולק, ההתפוצצות <t:{int(self.fuse_end)}:R>\n"
+                    f"🚨 שוטרים חוסמים את דלת **{a}** ואת דלת **{b}**.\nברחו מהדלת הפנויה, מהר!")
+        return self.card(body)
+
+    def rebuild(self):
+        self.clear_items()
+        if self.step == "place":
+            for w in HEIST_WALLS:
+                self.add_btn(f"קיר {w}", self.pick_wall(w), emoji="🧱")
+        elif self.step == "reinforce":
+            for c in HEIST_COLORS:
+                self.add_btn("\u200e", self.pick_color(c), emoji=c)
+        elif self.step == "ignite":
+            self.add_btn("הפעל", self.ignite, discord.ButtonStyle.danger, "⚡")
+        else:
+            for n in (1, 2, 3):
+                self.add_btn(f"דלת {n}", self.door(n), discord.ButtonStyle.primary, "🚪")
+        if self.step != "run":
+            self.add_common(1)
+
+    def help_text(self):
+        return ("**המשימה: לפוצץ את הכספת ולצאת בחיים.**\n"
+                "1️⃣ הניחו את המטען בקיר שממול למצלמה.\n"
+                "2️⃣ חזקו אותו: לחצו על הצבעים לפי הרמז של הטכנאי (שמיים = כחול, דם = אדום, דשא = ירוק, שמש = צהוב).\n"
+                f"3️⃣ הפעילו. יש לכם {HEIST_FUSE} שניות.\n"
+                "4️⃣ ברחו מהדלת היחידה שהשוטרים לא חוסמים.\n"
+                "שתי טעויות והמטען מתפוצץ מוקדם. **התעלמות** מחליפה את החידה בשלב הנוכחי.")
+
+    def pick_wall(self, wall):
+        async def cb(interaction):
+            if wall == HEIST_OPP[self.cam]:
+                self.step, self.note = "reinforce", "✅ המטען הונח במקום הנכון."
+                self.rebuild()
+                return await hz_edit(interaction, embed=self.embed(), view=self)
+            await self.mistake(interaction, "זה לא הקיר הנכון.", "💥 המטען הונח במקום הלא נכון והתפוצץ עליכם!")
+        return cb
+
+    def pick_color(self, color):
+        async def cb(interaction):
+            if color == self.order[self.pos]:
+                self.pos += 1
+                self.note = ""
+                if self.pos >= 3:
+                    self.step, self.note = "ignite", "✅ המטען מחוזק."
+                    self.rebuild()
+                return await hz_edit(interaction, embed=self.embed(), view=self)
+            self.pos = 0
+            await self.mistake(interaction, "צבע לא נכון, ההתקדמות התאפסה.", "💥 החיזוק נכשל והמטען התפוצץ עליכם!")
+        return cb
+
+    async def ignite(self, interaction):
+        self.step, self.note, self.fuse_end = "run", "", time.time() + HEIST_FUSE
+        self.rebuild()
+        await hz_edit(interaction, embed=self.embed(), view=self)
+
+    def door(self, n):
+        async def cb(interaction):
+            if time.time() > self.fuse_end + HEIST_GRACE:
+                return await self.end(interaction, False, "💥 הפתיל נשרף והמטען התפוצץ לפני שיצאתם!")
+            if n != self.safe:
+                return await self.end(interaction, False, f"🚔 יצאתם מדלת {n} ונתפסתם על ידי השוטרים.")
+            await self.end(interaction, True, "💨 יצאתם בזמן והכספות התפוצצו מאחורי הגב!")
+        return cb
+
+# ---------- lookout: neutralize the police on the moving radar, spare the civilians ----------
+class LookoutMission(MissionView):
+    ROUNDS, ROUND_TIME = 4, 15
+    ICONS = {"cop": "👮", "civ": "🧑‍💼", "empty": "⬛"}
+
+    def __init__(self, h, user, role):
+        super().__init__(h, user, role)
+        self.round = 1
+        self.setup_round()
+        self.rebuild()
+
+    def setup_round(self):
+        self.cops = 2 + (self.round - 1) // 2
+        self.civs = 1 + (self.round - 1) // 2
+        self.neut = 0
+        self.deadline = time.time() + self.ROUND_TIME
+        self.radio = random.choice(HEIST_RADIO)
+        self.shuffle_cells()
+
+    def shuffle_cells(self):
+        cells = ["cop"] * (self.cops - self.neut) + ["civ"] * self.civs
+        cells += ["empty"] * (9 - len(cells))
+        random.shuffle(cells)
+        self.cells = cells
+
+    def reroll(self):
+        self.setup_round()
+
+    def rebuild(self):
+        self.clear_items()
+        for i, kind in enumerate(self.cells):
+            self.add_btn("\u200e", self.hit(i), emoji=self.ICONS[kind], row=i // 3)
+        self.add_common(3)
+
+    def embed(self):
+        lives = "❤️" * (self.max_mistakes - self.mistakes) + "🖤" * self.mistakes
+        return self.card(f"**סיור ברחבי הבנק** — סבב {self.round}/{self.ROUNDS}   {lives}\n"
+                         f"📻 *{self.radio}*\n\n"
+                         f"נטרלו את כל השוטרים 👮 ({self.neut}/{self.cops}) לפני שהם מתריעים: <t:{int(self.deadline)}:R>.\n"
+                         "אחרי כל נטרול השאר זזים. ⚠️ אל תפגעו באזרחים 🧑‍💼!")
+
+    def help_text(self):
+        return ("**המשימה: לנטרל את השוטרים בלי להעיר את הבנק.**\n"
+                "👮 לחצו על שוטר כדי לנטרל אותו. 🧑‍💼 פגיעה באזרח = אזעקה (טעות).\n"
+                f"בכל סבב יש {self.ROUND_TIME} שניות. אם הזמן נגמר ולחצתם, זו אזעקה והסבב מתחיל מחדש.\n"
+                f"יש {self.ROUNDS} סבבים, ו-3 אזעקות מפילות את המשימה. **התעלמות** מחליפה את הסבב.")
+
+    def hit(self, i):
+        async def cb(interaction):
+            if time.time() > self.deadline:
+                self.neut = 0
+                self.setup_round()
+                self.rebuild()
+                return await self.mistake(interaction, "⏰ הזמן נגמר והשוטרים התריעו! סבב חדש.", "🚨 השוטרים הקיפו את הבנק!")
+            kind = self.cells[i]
+            if kind == "cop":
+                self.neut += 1
+                self.note = "🎯 שוטר מנוטרל!"
+                if self.neut >= self.cops:
+                    if self.round >= self.ROUNDS:
+                        return await self.end(interaction, True, "🤫 כל השוטרים מנוטרלים. הבנק שקט לגמרי.")
+                    self.round += 1
+                    self.setup_round()
+                    self.note = "✅ הסבב הושלם, ממשיכים!"
+                else:
+                    self.shuffle_cells()
+            elif kind == "civ":
+                self.neut = 0
+                self.shuffle_cells()
+                self.rebuild()
+                return await self.mistake(interaction, "פגעת באזרח! האזעקה הופעלה.", "🚨 פגעתם בעוד אזרח והמשטרה הוזעקה!")
+            else:
+                self.note = "🔍 אין שם כלום, אל תבזבזו זמן."
+            self.rebuild()
+            await hz_edit(interaction, embed=self.embed(), view=self)
+        return cb
+
+MISSIONS = {"lookout": LookoutMission, "hacker": HackerMission, "bomber": BomberMission}
+
+async def finish_heist(h):
+    c = cur()
+    h.phase = "done"
+    for uid in h.players:
+        h.results.setdefault(uid, False)
+    outcome = {}
+    for r in HEIST_ROLE_ORDER:
+        uid = h.role_of(r)
+        outcome[r] = h.results[uid] if uid is not None else any(
+            random.random() < HEIST_AUTO for _ in range(luck_attempts(0)))
+    ok = sum(outcome.values())
+    n = len(h.players)
+    lines = []
+    for uid, p in h.players.items():
+        if ok == 3:
+            win = int(h.stake * HEIST_MULT[n])
+            win += multi_extra("heist", win - h.stake)
+        elif ok == 2:
+            win = int(h.stake * HEIST_PART)
+        else:
+            win = 0
+        DB.get("pending", {}).pop(p["token"], None)
+        BUSY.discard(uid)
+        user_data(uid)["cash"] += win
+        net = win - h.stake
+        log_game(p["user"], "heist", h.stake, net)
+        if net > 0:
+            lines.append(f"🏆 {p['user'].mention} +{fmt(net)} {c}")
+        elif win > 0:
+            lines.append(f"🟡 {p['user'].mention} קיבל בחזרה {fmt(win)} {c}")
+        else:
+            lines.append(f"❌ {p['user'].mention} -{fmt(h.stake)} {c}")
+    save()
+    title, color = (("🏦 השוד הצליח!", GREEN) if ok == 3 else ("🤝 הצלחה חלקית", YELLOW) if ok == 2 else ("🚔 השוד נכשל", RED))
+    roles = []
+    for r in HEIST_ROLE_ORDER:
+        name, icon = HEIST_ROLES[r]
+        uid = h.role_of(r)
+        who = h.players[uid]["user"].mention if uid is not None else "מחליף אוטומטי"
+        roles.append(f"{'✅' if outcome[r] else '❌'} {icon} {name} — {who}")
+    e = discord.Embed(color=color, title=title, description="**המשימות**\n" + "\n".join(roles) + "\n\n**תוצאות**\n" + "\n".join(lines))
+    try:
+        await h.message.edit(embed=e, view=None)
+    except Exception:
+        await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+
+async def run_heist(h):
+    cid = h.channel.id
+    view = h.view
+    try:
+        try:
+            await asyncio.wait_for(h.full.wait(), max(0, h.end - time.time()))
+        except asyncio.TimeoutError:
+            pass
+        h.phase, h.end = "roles", int(time.time()) + HEIST_ROLE_WAIT
+        view.show_roles()
+        await h.refresh()
+        try:
+            await asyncio.wait_for(h.roles_set.wait(), HEIST_ROLE_WAIT)
+        except asyncio.TimeoutError:
+            pass
+        free = [r for r in HEIST_ROLE_ORDER if h.role_of(r) is None]
+        random.shuffle(free)
+        for p in h.players.values():
+            if p["role"] is None:
+                p["role"] = free.pop()
+        h.phase, h.end = "mission", int(time.time()) + HEIST_MISSION_WAIT
+        view.show_mission()
+        await h.refresh()
+        try:
+            await asyncio.wait_for(h.all_done.wait(), HEIST_MISSION_WAIT)
+        except asyncio.TimeoutError:
+            pass
+        await finish_heist(h)
+    except Exception as ex:
+        print("Heist failed:", repr(ex))
+        h.phase = "done"
+        for uid, p in h.players.items():
+            if DB.get("pending", {}).pop(p["token"], None) is not None:
+                user_data(uid)["cash"] += h.stake
+            BUSY.discard(uid)
+        save()
+    finally:
+        HEISTS.pop(cid, None)
+
+@bot.command(name="heist", usage="heist <amount | half | all>")
+async def heist(ctx, amount: str = None):
+    if ctx.channel.id in HEISTS:
+        return await reply(ctx, "יש כבר שוד פתוח בערוץ הזה. לחצו על **כניסה למשחק** כדי להצטרף אליו!", RED)
+    bet = await take_bet(ctx, amount, "heist <amount | half | all>", track=True)
+    if not bet:
+        return
+    h = Heist(ctx.channel, bet)
+    h.token = str(ctx.message.id)
+    h.add_player(ctx.author, h.token)
+    h.view = HeistView(h)
+    HEISTS[ctx.channel.id] = h
+    try:
+        h.message = await ctx.reply(embed=h.embed(), view=h.view, mention_author=False)
+    except Exception:
+        HEISTS.pop(ctx.channel.id, None)
+        cancel_game(ctx.author, h.token, bet)
+        raise
+    bg(run_heist(h))
+
 # ================= SCRATCH CARDS ($sc) =================
 try:
     from scratch_art import ART as SC_ART
@@ -3269,7 +3892,7 @@ for _n, _k, _on, _t in (
 INFO_COLOR = 0x1F2A44
 
 SECTION_ICONS = {
-    "BOARD GAMES": "🎯", "CARDS AND LUCK": "🃏", "ROULETTE": "🎡", "SCRATCH CARDS": "🎟️", "ECONOMY": "💰",
+    "BOARD GAMES": "🎯", "CARDS AND LUCK": "🃏", "ROULETTE": "🎡", "SCRATCH CARDS": "🎟️", "TEAM GAME": "🏦", "ECONOMY": "💰",
     "STAFF": "🛡️", "ADMIN": "⚙️", "OWNER": "👑", "BANG COMMANDS": "❗",
 }
 
@@ -3306,6 +3929,9 @@ INFO_SECTIONS = [
     ]),
     ("SCRATCH CARDS", [
         ("$sc", "Pick a card, enter an amount (bank only) and scratch"),
+    ]),
+    ("TEAM GAME", [
+        ("$heist <bet>", "Bank heist, up to 3 players, each one has a role and a personal mission"),
     ]),
     ("ECONOMY", [
         ("$bal [user]", "Cash and bank balance"),
