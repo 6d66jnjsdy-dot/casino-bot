@@ -1887,15 +1887,16 @@ async def hl(ctx, amount: str = None):
 # ================= HEIST ($heist) =================
 GOLD = 0xD4AF37
 HEIST_ORANGE = 0xE67E22
-HEIST_MAX = 3                    # players in one heist
+HEIST_MAX = 5                    # the biggest crew a heist can have ($heist 5)
+HEIST_DEFAULT = 3                # crew size when nobody writes a number
 HEIST_MIN = 2                    # fewer players than this when the sign-up closes = the heist is cancelled and everybody gets the money back
 HEIST_FEE = 2_500_000            # fixed entry fee per player (a heist has expenses), not a bet
 HEIST_JOIN_WAIT = 30             # seconds to join
 HEIST_ROLE_WAIT = 30             # seconds to choose a role
 HEIST_OPEN_WAIT = 30             # seconds to press "המשימה שלי"
 # time for a mission, counted from the moment the player opens it (we are human: +30 seconds for every role)
-HEIST_TIME = {"hacker": 85, "bomber": 66, "lookout": 72}
-HEIST_MULT = {1: 3.5, 2: 2.2, 3: 1.5}   # all 3 missions done: fee x this (a small crew is riskier, so it pays more)
+HEIST_TIME = {"hacker": 85, "bomber": 66, "lookout": 72, "bodyguard": 80}
+HEIST_MULT = {1: 3.5, 2: 2.2, 3: 1.5, 4: 1.3, 5: 1.2}   # all 3 missions done: fee x this (a small crew is riskier, so it pays more)
 HEIST_PART = 0.5                 # only 2 of 3 missions done: this part of the fee comes back
 HEIST_AUTO = 0.5                 # chance that a role nobody took succeeds by itself
 HEIST_SKIPS = 2                  # "התעלמות" = a new task, per player
@@ -1907,8 +1908,11 @@ HEIST_ROLES = {                  # key: (name, icon)
     "lookout": ("מנטרל שוטרים", "👮"),
     "hacker": ("מפצח קוד", "💻"),
     "bomber": ("מפוצץ כספות", "💣"),
+    "bodyguard": ("שומר ראש", "🔫"),
 }
-HEIST_ROLE_ORDER = ("lookout", "hacker", "bomber")
+HEIST_ROLE_ORDER = ("lookout", "hacker", "bomber", "bodyguard")
+HEIST_CORE = ("lookout", "hacker", "bomber")      # these three always have to be done
+HEIST_ROLE_CAP = {"bodyguard": 2}                 # how many players may take a role (default 1): two bodyguards are allowed
 HEISTS = {}                      # channel id -> the open heist of that channel
 
 # loot inside the drawers: (emoji, name, value in money)
@@ -2055,8 +2059,9 @@ def heist_art(kind):
     return buf.getvalue()
 
 class Heist:
-    def __init__(self, channel, stake):
+    def __init__(self, channel, stake, size=HEIST_DEFAULT):
         self.channel, self.stake = channel, stake
+        self.size = size                           # how many players the crew has when it is full
         self.token = None
         self.creator = None
         self.cancelled = False
@@ -2078,14 +2083,14 @@ class Heist:
 
     def add_player(self, user, token, role=None):
         self.players[user.id] = {"user": user, "token": token, "role": role}
-        if len(self.players) >= HEIST_MAX:
+        if len(self.players) >= self.size:
             self.full.set()
 
-    def role_of(self, role):
-        for uid, p in self.players.items():
-            if p["role"] == role:
-                return uid
-        return None
+    def holders(self, role):
+        return [uid for uid, p in self.players.items() if p["role"] == role]
+
+    def role_free(self, role):
+        return len(self.holders(role)) < HEIST_ROLE_CAP.get(role, 1)
 
     def report(self, uid, ok):
         if self.phase != "mission" or uid in self.results:
@@ -2101,34 +2106,33 @@ class Heist:
         n = len(self.players)
         e = discord.Embed(color=GOLD, title="שוד הבנק")
         if self.phase == "join":
-            e.description = ("לחצו על כניסה כדי להצטרף. עד שלושה שחקנים, לכל אחד תפקיד ומשימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
+            e.description = (f"לחצו על כניסה כדי להצטרף. עד {self.size} שחקנים, לכל אחד משימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
                              f"דמי הכניסה הם סכום קבוע של **{fmt(self.stake)}** {cur()} לכל שחקן (הוצאות השוד).\n"
-                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן. כשיש שלושה, בחירת התפקידים מתחילה מיד.")
+                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן. כשהצוות מלא ({self.size}), בחירת התפקידים מתחילה מיד.")
             when = "ההרשמה נסגרת"
         elif self.phase == "roles":
-            e.description = "כל אחד בוחר תפקיד אחד. מי שלא בחר יקבל תפקיד אקראי."
+            e.description = "כל אחד בוחר תפקיד אחד. שני שחקנים יכולים להיות שומרי ראש. מי שלא בחר יקבל תפקיד פנוי."
             when = "הבחירה נסגרת"
         else:
             e.description = ("לחצו על המשימה שלי כדי לקבל הודעה אישית שרק אתם רואים. הזמן מתחיל לרוץ ברגע שפתחתם אותה.\n"
                              "רק כשכל הצוות מסיים את המשימה בהצלחה, כולם מקבלים הודעה ויכולים לגנוב מהמגירות.")
             when = "אפשר לפתוח עד"
         e.add_field(name="דמי כניסה", value=f"{fmt(self.stake)} {cur()}")
-        e.add_field(name="שחקנים", value=f"{n} מתוך {HEIST_MAX}")
+        e.add_field(name="שחקנים", value=f"{n} מתוך {self.size}")
         e.add_field(name=when, value=f"<t:{self.end}:R>")
         if self.phase == "join":
             e.add_field(name="הצוות", value="\n".join(p["user"].mention for p in self.players.values()), inline=False)
         else:
             for key in HEIST_ROLE_ORDER:
                 name, icon = HEIST_ROLES[key]
-                uid = self.role_of(key)
-                if uid is None:
-                    val = "פנוי"
-                else:
-                    val = self.players[uid]["user"].mention
+                parts = []
+                for uid in self.holders(key):
+                    t = self.players[uid]["user"].mention
                     if self.phase == "mission":
-                        val += "\nסיים" if uid in self.results else "\nבביצוע" if uid in self.opened else "\nממתין"
-                e.add_field(name=f"{icon} {name}", value=val)
-        e.set_footer(text=f"הצלחה מלאה בצוות של {n}: x{HEIST_MULT[n]:g}   |   שתי משימות מתוך שלוש: מחצית מההימור חוזרת")
+                        t += " סיים" if uid in self.results else " בביצוע" if uid in self.opened else " ממתין"
+                    parts.append(t)
+                e.add_field(name=f"{icon} {name}", value="\n".join(parts) or "פנוי")
+        e.set_footer(text=f"הצלחה מלאה בצוות של {n}: x{HEIST_MULT[n]:g}   |   חסרה משימה אחת: מחצית מההימור חוזרת")
         if self.art:
             e.set_image(url="attachment://heist.png")
         return e
@@ -2166,7 +2170,7 @@ class HeistView(discord.ui.View):
         self.clear_items()
         for key in HEIST_ROLE_ORDER:
             name, icon = HEIST_ROLES[key]
-            taken = self.h.role_of(key) is not None
+            taken = not self.h.role_free(key)
             b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.primary,
                                   label=name, emoji=icon, disabled=taken)
             b.callback = self.pick(key)
@@ -2179,7 +2183,7 @@ class HeistView(discord.ui.View):
             return await say("ההרשמה לשוד הזה כבר נסגרה.")
         if user.id in h.players:
             return await say("אתה כבר בצוות.")
-        if len(h.players) >= HEIST_MAX:
+        if len(h.players) >= h.size:
             return await say("הצוות מלא.")
         if user.id in BUSY:
             return await say(BUSY_MSG)
@@ -2207,7 +2211,7 @@ class HeistView(discord.ui.View):
                 return await interaction.response.defer()
             if p["role"]:
                 return await say("כבר בחרת תפקיד.")
-            if h.role_of(role):
+            if not h.role_free(role):
                 return await say("התפקיד הזה כבר נתפס, בחר אחר.")
             p["role"] = role
             self.show_roles()
@@ -2606,7 +2610,42 @@ class LookoutMission(MissionView):
             await hz_edit(interaction, embed=self.embed(), view=self)
         return cb
 
-MISSIONS = {"lookout": LookoutMission, "hacker": HackerMission, "bomber": BomberMission}
+# ---------- bodyguard: protect the crew. shoot the police and the undercover agents, never the civilians ----------
+class BodyguardMission(LookoutMission):
+    label = "אזרחים שנפגעו"
+    COPS = (2, 3, 3)
+    AGENTS = (1, 1, 2)
+    CIVS = (2, 3, 4)
+    ICONS = {"cop": "👮", "agent": "🕵️", "civ": "🧑‍💼", "empty": "⬛"}
+    SEC_PER_COP = 4
+
+    def setup_round(self):
+        self.agents = self.AGENTS[self.round - 1]
+        self.cops = self.COPS[self.round - 1] + self.agents        # all the targets of the round
+        self.civs = self.CIVS[self.round - 1]
+        self.neut = 0
+        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 6
+        self.radio = random.choice(HEIST_RADIO)
+        self.new_board()
+
+    def new_board(self):
+        cells = ["cop"] * (self.cops - self.agents) + ["agent"] * self.agents + ["civ"] * self.civs
+        cells += ["empty"] * (self.SIZE ** 2 - len(cells))
+        random.shuffle(cells)
+        self.cells = cells
+
+    def embed(self):
+        return self.card(f"סבב {self.round} מתוך {self.ROUNDS}",
+                         f"*{self.radio}*\n\nאתם השומרי ראש של הצוות. ירו בשוטרים 👮 ובסוכנים החשאיים 🕵️ לפני שהם מגיעים לצוות. אל תירו באזרחים 🧑‍💼.",
+                         [("זמן לסבב", f"<t:{int(self.round_end)}:R>"), ("מטרות", f"{self.neut} מתוך {self.cops}")])
+
+    def help_text(self):
+        return ("המשימה היא להגן על הצוות.\n"
+                "לוחצים על כל שוטר (👮) וכל סוכן חשאי (🕵️) כדי לחסל אותם. הלוח לא זז.\n"
+                "לחיצה על אזרח (🧑‍💼) מתחילה את הסבב מחדש, ושלוש פגיעות באזרחים מפילות את המשימה.\n"
+                f"יש {self.ROUNDS} סבבים. התעלמות מדלגת ישר לסבב הבא.")
+
+MISSIONS = {"lookout": LookoutMission, "hacker": HackerMission, "bomber": BomberMission, "bodyguard": BodyguardMission}
 
 # ---------- the safes: after the explosion every player opens 2 drawers (3 of 9 are empty) ----------
 def loot_value(amount):
@@ -2731,17 +2770,19 @@ async def finish_heist(h):
         h.results.setdefault(uid, False)
     outcome = {}
     for r in HEIST_ROLE_ORDER:
-        uid = h.role_of(r)
-        outcome[r] = h.results[uid] if uid is not None else any(
-            random.random() < HEIST_AUTO for _ in range(luck_attempts(0)))
-    ok = sum(outcome.values())
+        who = h.holders(r)
+        if who:
+            outcome[r] = all(h.results[u] for u in who)
+        elif r in HEIST_CORE:                 # a core role nobody took may succeed by itself
+            outcome[r] = any(random.random() < HEIST_AUTO for _ in range(luck_attempts(0)))
+    ok, total = sum(outcome.values()), len(outcome)
     n = len(h.players)
     lines, log_lines = [], []
     for uid, p in h.players.items():
-        if ok == 3:
+        if ok == total:
             win = int(h.stake * HEIST_MULT[n])
             win += multi_extra("heist", win - h.stake)
-        elif ok == 2 and h.results.get(uid):
+        elif ok == total - 1 and h.results.get(uid):
             win = int(h.stake * HEIST_PART)      # only a player whose OWN mission worked gets part of the fee back
         else:
             win = 0                              # failing on purpose (or timing out) never gives anything back
@@ -2769,22 +2810,21 @@ async def finish_heist(h):
     for uid, p, net, role, kept in log_lines:
         crew.append(f"**{p['user'].name}** — {role} — {'completed' if h.results.get(uid) else 'failed'}"
                     + (f" — loot {fmt(kept)}" if kept else ""))
-    verdict = {3: "Full success", 2: "Partial success"}.get(ok, "Failed")
+    verdict = "Full success" if ok == total else "Partial success" if ok == total - 1 else "Failed"
     for uid, p, net, role, kept in log_lines:
         log_game(p["user"], "heist", h.stake, net,
-                 detail=f"**{verdict}** | missions {ok}/3 | crew of {n} | entry {fmt(h.stake)}\n" + "\n".join(crew))
-    if ok == 3:
-        title, color, kind, text = "השוד הצליח", GOLD, "win", "שלוש משימות הושלמו והצוות יצא עם הכסף."
-    elif ok == 2:
-        title, color, kind, text = "הצלחה חלקית", HEIST_ORANGE, "vault", "רק שתי משימות הושלמו. הצוות ברח עם חלק מההימור."
+                 detail=f"**{verdict}** | missions {ok}/{total} | crew of {n} | entry {fmt(h.stake)}\n" + "\n".join(crew))
+    if ok == total:
+        title, color, kind, text = "השוד הצליח", GOLD, "win", "כל המשימות הושלמו והצוות יצא עם הכסף."
+    elif ok == total - 1:
+        title, color, kind, text = "הצלחה חלקית", HEIST_ORANGE, "vault", "חסרה משימה אחת. הצוות ברח עם חלק מההימור."
     else:
         title, color, kind, text = "השוד נכשל", RED, "fail", "המשימות נכשלו והמשטרה תפסה את הצוות."
     e = discord.Embed(color=color, title=title, description=text)
-    for r in HEIST_ROLE_ORDER:
+    for r in outcome:
         name, icon = HEIST_ROLES[r]
-        uid = h.role_of(r)
-        who = h.players[uid]["user"].mention if uid is not None else "מחליף אוטומטי"
-        e.add_field(name=f"{icon} {name}", value=f"{who}\n{'הצליח' if outcome[r] else 'נכשל'}")
+        names = ", ".join(h.players[u]["user"].mention for u in h.holders(r)) or "מחליף אוטומטי"
+        e.add_field(name=f"{icon} {name}", value=f"{names}\n{'הצליח' if outcome[r] else 'נכשל'}")
     e.add_field(name="תוצאות", value="\n".join(lines), inline=False)
     kw = {}
     try:
@@ -2842,8 +2882,11 @@ async def run_heist(h):
             await asyncio.wait_for(h.roles_set.wait(), HEIST_ROLE_WAIT)
         except asyncio.TimeoutError:
             pass
-        free = [r for r in HEIST_ROLE_ORDER if h.role_of(r) is None]
+        slots = lambda rs: [r for r in rs for _ in range(HEIST_ROLE_CAP.get(r, 1) - len(h.holders(r)))]
+        free = slots(HEIST_CORE)
         random.shuffle(free)
+        free += slots(r for r in HEIST_ROLE_ORDER if r not in HEIST_CORE)       # core roles are given out first
+        free.reverse()
         for p in h.players.values():
             if p["role"] is None:
                 p["role"] = free.pop()
@@ -2874,8 +2917,13 @@ async def run_heist(h):
     finally:
         HEISTS.pop(cid, None)
 
-@bot.command(name="heist", usage="heist")
-async def heist(ctx, amount: str = None):
+@bot.command(name="heist", usage="heist [2-5]")
+async def heist(ctx, size: str = None):
+    crew = HEIST_DEFAULT
+    if size is not None:
+        if not size.isdigit() or not HEIST_MIN <= int(size) <= HEIST_MAX:
+            return await reply(ctx, f"Usage: `$heist [{HEIST_MIN}-{HEIST_MAX}]` (the number of players)", RED)
+        crew = int(size)
     if ctx.channel.id in HEISTS:
         return await reply(ctx, "יש כבר שוד פתוח בערוץ הזה. לחצו על כניסה למשחק כדי להצטרף אליו.", RED)
     if heist_used_today(ctx.author.id):
@@ -2886,7 +2934,7 @@ async def heist(ctx, amount: str = None):
     if not bet:
         return
     heist_mark(ctx.author.id)
-    h = Heist(ctx.channel, bet)
+    h = Heist(ctx.channel, bet, crew)
     h.token = str(ctx.message.id)
     h.creator = ctx.author.id
     h.add_player(ctx.author, h.token)         # the creator is in; he chooses his role with the buttons like everybody else
@@ -4430,7 +4478,7 @@ INFO_SECTIONS = [
         ("$sc", "Pick a card, enter an amount (bank only) and scratch"),
     ]),
     ("TEAM GAME", [
-        ("$heist", "Bank heist (2.5M entry per player), up to 3 players, one heist per day per creator"),
+        ("$heist [2-5]", "Bank heist (2.5M entry per player), 2 to 5 players, one heist per day per creator"),
     ]),
     ("ECONOMY", [
         ("$bal [user]", "Cash and bank balance"),
