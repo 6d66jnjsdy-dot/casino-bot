@@ -49,9 +49,9 @@ MINES_MULT = [1.1, 1.2, 1.4, 1.9, 2.3, 4.3, 6.1, 8.1]
 # S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
-    "2x2": (2, 2, 1, [1.3, 2, 3.9]),
+    "2x2": (2, 2, 1, [1.25, 2.2, 4.2]),
     "4x4": (4, 4, 2, [1.2, 1.4, 1.6, 1.8, 2, 2.4, 2.76, 3.2, 3.4, 3.7, 4.1, 6.4, 8.6, 10.5]),
-    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 9.85, 12, 15]),
+    "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 7.62, 9.21, 11,7]),
 }
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
