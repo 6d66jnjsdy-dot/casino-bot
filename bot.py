@@ -302,20 +302,26 @@ def log_head(title):
         base = f"{game_icon(low)} {GAME_NAMES.get(low) or pretty(parts[0])}"
     return base + "".join(f"  •  {pretty(p)}" for p in parts[1:])
 
-async def send_log(user, head, desc, color, fields):
-    """One structured embed: title, description, a grid of fields (name, value[, inline]), player card."""
+def receipt(rows):
+    """Aligned 'bank receipt' inside a diff block: a '+' row is green, a '-' row is red, a ' ' row is neutral."""
+    w = max(len(k) for _, k, _ in rows)
+    return "```diff\n" + "\n".join(f"{sign} {k.ljust(w)}   {v}" for sign, k, v in rows) + "\n```"
+
+async def send_log(user, head, desc, color, fields=None, rows=None):
+    """One clean embed: header, player line, optional details, and an aligned receipt."""
     try:
         cid = DB.get("log_channel")
         ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        e = discord.Embed(title=head[:256], description=(desc or None), color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=f"{user.display_name}  (@{user.name})", icon_url=user.display_avatar.url)
-        e.set_thumbnail(url=user.display_avatar.url)
-        for f in fields or []:
-            name, value = f[0], f[1]
-            inline = f[2] if len(f) > 2 else True
-            e.add_field(name=name, value=value, inline=inline)
-        e.add_field(name="🆔 Player", value=f"<@{user.id}>\n`{user.id}`", inline=True)
-        e.set_footer(text=f"{LOG_FOOTER}  •  ID {user.id}")
+        if rows is None and fields:      # old style callers: [(label, value)] -> receipt rows
+            rows = [(" ", re.sub(r"[^\w ]", "", str(f[0])).strip() or "Info", str(f[1]).replace("`", "")) for f in fields]
+        parts = [f"{user.mention}  ·  `{user.id}`"]
+        if desc:
+            parts.append(desc)
+        if rows:
+            parts.append(receipt(rows))
+        e = discord.Embed(title=head[:256], description="\n".join(parts)[:4000], color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+        e.set_footer(text=LOG_FOOTER)
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
@@ -327,43 +333,37 @@ def log_event(user, title, desc, color, fields=None):
 def log_game(user, game, bet, net, detail=None):
     if not DB.get("log_channel"):
         return
-    u, c = user_data(user.id), cur()
+    u = user_data(user.id)
     low = game.lower()
     scratch = low.startswith("scratch")
     after = u["bank"] if scratch else u["cash"]
     before = after - net
     if net > 0:
-        tag, color, dot, sign, diff = "WIN", GREEN, "🟢", "+", "+"
+        tag, color, dot, sign = "WIN", GREEN, "🟢", "+"
     elif net < 0:
-        tag, color, dot, sign, diff = "LOSS", RED, "🔴", "-", "-"
+        tag, color, dot, sign = "LOSS", RED, "🔴", "-"
     else:
-        tag, color, dot, sign, diff = "PUSH", YELLOW, "🟡", "±", " "
+        tag, color, dot, sign = "PUSH", YELLOW, "🟡", " "
     big = abs(net) >= BIG_WIN or (bet and abs(net) >= bet * 5 and abs(net) >= 1_000_000)
-    flag = (" 🔥 BIG WIN" if net > 0 else " 💀 BIG LOSS") if big else ""
-    roi = f"{net / bet * 100:+.0f}%" if bet else "—"
+    flag = ("  ·  🔥 BIG WIN" if net > 0 else "  ·  💀 BIG LOSS") if big else ""
     name = GAME_NAMES.get(low) or pretty(game)
-    head = f"{dot} {tag}  •  {game_icon(game)} {name}{flag}"
-    desc_parts = []
-    if detail:
-        desc_parts.append(detail)
-    desc_parts.append(f"```diff\n{diff} {fmt(abs(net))} {c}\n```")
-    fields = []
+    head = f"{dot} {tag}  ·  {game_icon(game)} {name}{flag}"
+    rows = []
     if bet:
-        fields.append(("💵 Bet", f"`{fmt(bet)}` {c}", True))
-    fields.append(("📊 Net result", f"`{sign}{fmt(abs(net))}` {c}", True))
-    fields.append(("📈 Return", f"`{roi}`", True))
-    where = "🏦 Bank" if scratch else "💰 Cash"
-    fields.append((f"{where} before", f"`{fmt(before)}` {c}", True))
-    fields.append((f"{where} now", f"`{fmt(after)}` {c}", True))
-    fields.append(("💎 Net worth", f"`{fmt(u['cash'] + u['bank'])}` {c}", True))
-    bg(send_log(user, head, "\n".join(desc_parts), color, fields))
+        rows.append((" ", "Bet", fmt(bet)))
+    rows.append((sign, "Result", f"{'+' if net > 0 else '-' if net < 0 else ''}{fmt(abs(net))}"))
+    if bet:
+        rows.append((" ", "Return", f"{net / bet * 100:+.0f}%"))
+    rows.append((" ", "Bank" if scratch else "Cash", f"{fmt(before)} -> {fmt(after)}"))
+    rows.append((" ", "Net worth", fmt(u["cash"] + u["bank"])))
+    bg(send_log(user, head, detail, color, rows=rows))
 
 def log_money(user, title, desc, color=BLUE):
-    u, c = user_data(user.id), cur()
-    log_event(user, title, desc, color, [
-        ("💵 Cash", f"`{fmt(u['cash'])}` {c}", True),
-        ("🏦 Bank", f"`{fmt(u['bank'])}` {c}", True),
-        ("💎 Net worth", f"`{fmt(u['cash'] + u['bank'])}` {c}", True)])
+    u = user_data(user.id)
+    if DB.get("log_channel"):
+        bg(send_log(user, log_head(title), desc, color, rows=[
+            (" ", "Cash", fmt(u["cash"])), (" ", "Bank", fmt(u["bank"])),
+            (" ", "Net worth", fmt(u["cash"] + u["bank"]))]))
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -1933,10 +1933,11 @@ HEIST_ROLES = {                  # key: (name, icon)
 HEIST_ROLE_ORDER = ("lookout", "hacker", "bomber")
 HEISTS = {}                      # channel id -> the open heist of that channel
 
-# loot inside the drawers: (emoji, name, value as a part of the entry fee)
+# loot inside the drawers: (emoji, name, value in money)
 LOOT_ITEMS = [
-    ("💎", "יהלום", 0.50), ("👑", "כתר זהב", 0.80), ("💍", "טבעת יהלום", 0.30), ("⌚", "שעון יוקרה", 0.22),
-    ("💵", "צרור דולרים", 0.15), ("💰", "שק כסף", 0.35), ("🪙", "מטבעות זהב", 0.10),
+    ("👑", "כתר זהב", 75_000_000), ("💎", "יהלום", 25_000_000), ("💰", "שק כסף", 12_500_000),
+    ("💍", "טבעת יהלום", 7_500_000), ("⌚", "שעון יוקרה", 5_000_000), ("💵", "צרור דולרים", 2_500_000),
+    ("🪙", "מטבעות זהב", 1_000_000),
 ]
 LOOT_DRAWERS, LOOT_EMPTY = 9, 3  # 9 drawers for every player, 3 of them are empty
 
@@ -1958,10 +1959,14 @@ def hack_score(code, guess):
     return exact, len(set(code) & set(guess)) - exact
 
 def heist_used_today(uid):
+    if uid in OWNER_IDS:                 # the owners have no daily limit
+        return False
     return DB.get("heist_day", {}).get(str(uid)) == today_key()
 
 def heist_mark(uid):
-    """A player can CREATE one heist per day (no matter who joins). Resets at 00:00."""
+    """A player can CREATE one heist per day (no matter who joins). Resets at 00:00. Owners are exempt."""
+    if uid in OWNER_IDS:
+        return
     today = today_key()
     days = DB.setdefault("heist_day", {})
     for k in [k for k, v in days.items() if v != today]:
@@ -2615,8 +2620,8 @@ class LookoutMission(MissionView):
 MISSIONS = {"lookout": LookoutMission, "hacker": HackerMission, "bomber": BomberMission}
 
 # ---------- the safes: after the explosion every player opens 2 drawers (3 of 9 are empty) ----------
-def loot_value(frac):
-    return int(HEIST_FEE * frac)
+def loot_value(amount):
+    return int(amount)
 
 def loot_short(n):
     return f"{n / 1_000_000:.2f}".rstrip("0").rstrip(".") + "M"
@@ -2647,7 +2652,7 @@ class LootView(discord.ui.View):
                 lines = "יצאתם בידיים ריקות."
             e = discord.Embed(color=GREEN if self.got else RED, title="🔐 השלל שלכם", description=(
                 f"{lines}\n\n**סה\"כ:** {fmt(self.got)} {cur()}\n"
-                f"-# השלל מצטרף לרווח אם לפחות שתי משימות בצוות הצליחו. ממתינים לשאר הצוות."))
+                f"-# השלל מצטרף לרווח רק אם לפחות שתי משימות בצוות הצליחו וגם המשימה שלכם הצליחה. ממתינים לשאר הצוות."))
             return e
         e = discord.Embed(color=GOLD, title="💥 הכספות התפוצצו!", description=(
             f"הדלת נפתחה והמגירות מולכם. פתחו **{left}** מגירות ותגנבו מה שיש בהן.\n"
@@ -2747,12 +2752,12 @@ async def finish_heist(h):
         if ok == 3:
             win = int(h.stake * HEIST_MULT[n])
             win += multi_extra("heist", win - h.stake)
-        elif ok == 2:
-            win = int(h.stake * HEIST_PART)
+        elif ok == 2 and h.results.get(uid):
+            win = int(h.stake * HEIST_PART)      # only a player whose OWN mission worked gets part of the fee back
         else:
-            win = 0
+            win = 0                              # failing on purpose (or timing out) never gives anything back
         loot = h.loot.get(uid, 0)
-        kept = loot if ok >= 2 else 0           # the loot is only kept if the heist did not fail completely
+        kept = loot if (ok >= 2 and h.results.get(uid)) else 0   # the loot is kept only by players whose mission worked
         win += kept
         DB.get("pending", {}).pop(p["token"], None)
         BUSY.discard(uid)
@@ -2771,12 +2776,15 @@ async def finish_heist(h):
         role = HEIST_ROLES[p["role"]][0] if p["role"] else "-"
         log_lines.append((uid, p, net, role, kept))
     save()
-    team = ", ".join(p["user"].name for p in h.players.values())
-    summary = " | ".join(f"{HEIST_ROLES[r][1]} {'✅' if outcome[r] else '❌'}" for r in HEIST_ROLE_ORDER)
+    crew = []
     for uid, p, net, role, kept in log_lines:
-        extra = f"\n🧰 Role: **{role}**" + (f"  ·  💰 Loot kept: **{fmt(kept)}**" if kept else "")
+        ric = HEIST_ROLES[p["role"]][1] if p["role"] else "▪️"
+        crew.append(f"{ric} **{p['user'].name}** · {role} · {'✅' if h.results.get(uid) else '❌'}"
+                    + (f" · loot {fmt(kept)}" if kept else ""))
+    verdict = {3: "Full success", 2: "Partial success"}.get(ok, "Failed")
+    for uid, p, net, role, kept in log_lines:
         log_game(p["user"], "heist", h.stake, net,
-                 detail=f"**Crew:** {team}\n**Missions ({ok}/3):** {summary}{extra}")
+                 detail=f"**{verdict}**  ·  missions {ok}/3  ·  crew of {n}  ·  entry {fmt(h.stake)}\n" + "\n".join(crew))
     if ok == 3:
         title, color, kind, text = "השוד הצליח", GOLD, "win", "שלוש משימות הושלמו והצוות יצא עם הכסף."
     elif ok == 2:
@@ -2802,6 +2810,28 @@ async def finish_heist(h):
     except Exception:
         e.set_image(url=None)
         await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+
+async def heist_abort(h):
+    """Something went wrong: nobody loses anything. Players who were not paid yet get the entry fee back to their cash."""
+    h.phase = "done"
+    names = []
+    for uid, p in h.players.items():
+        if DB.get("pending", {}).pop(p["token"], None) is not None:
+            user_data(uid)["cash"] += h.stake
+            names.append(p["user"].mention)
+            log_money(p["user"], "HEIST | TIMEOUT", f"Time ran out, entry fee of {fmt(h.stake)} {cur()} was returned to cash", YELLOW)
+        BUSY.discard(uid)
+    save()
+    e = discord.Embed(color=YELLOW, title="הזמן אזל", description=(
+        "השוד בוטל והכסף חזר למזומן."
+        + (f"\n\n{fmt(h.stake)} {cur()} הוחזרו ל: " + ", ".join(names) if names else "")))
+    try:
+        await h.message.edit(embed=e, view=None, attachments=[])
+    except Exception:
+        try:
+            await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+        except Exception as ex2:
+            print("Heist abort message failed:", repr(ex2))
 
 async def run_heist(h):
     cid = h.channel.id
@@ -2844,12 +2874,7 @@ async def run_heist(h):
         await finish_heist(h)
     except Exception as ex:
         print("Heist failed:", repr(ex))
-        h.phase = "done"
-        for uid, p in h.players.items():
-            if DB.get("pending", {}).pop(p["token"], None) is not None:
-                user_data(uid)["cash"] += h.stake
-            BUSY.discard(uid)
-        save()
+        await heist_abort(h)
     finally:
         HEISTS.pop(cid, None)
 
