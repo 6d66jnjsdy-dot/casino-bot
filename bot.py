@@ -496,6 +496,7 @@ async def setup_hook():
     disk_loop.start()
     backup_loop.start()
     sc_daily_loop.start()
+    immunity_loop.start()
     bot.add_view(ShopView())
     try:
         await bot.load_extension("extras")
@@ -3905,16 +3906,32 @@ NOLIMIT_WORDS = ("nolimit", "no-limit", "forever", "unlimited", "permanent")
 def immunity_until(member):
     """None = not immune, 0 = immune without a time limit, otherwise the time it ends."""
     rid = DB.get("immunity_role")
-    if rid and any(r.id == rid for r in getattr(member, "roles", [])):
-        return 0
+    has_role = bool(rid) and any(r.id == rid for r in getattr(member, "roles", []))
     rec = DB.get("immunity", {}).get(str(member.id))
-    if rec is None:
-        return None
-    if rec == 0 or rec > time.time():
-        return rec
-    DB["immunity"].pop(str(member.id), None)        # expired
+    if rec is not None:                              # given with $immunity: the time decides, the role only follows it
+        return rec if rec == 0 or rec > time.time() else None
+    return 0 if has_role else None                   # the role was given by hand
+
+@tasks.loop(seconds=20)
+async def immunity_loop():
+    """When a timed immunity ends: the record is deleted and the immunity role is taken back."""
+    if loaded is None or not loaded.is_set():
+        return
+    rec = DB.get("immunity", {})
+    expired = [uid for uid, t in rec.items() if t and t <= time.time()]
+    if not expired:
+        return
+    rid = DB.get("immunity_role")
+    for uid in expired:
+        rec.pop(uid, None)
+        for g in bot.guilds:
+            role, m = g.get_role(rid or 0), g.get_member(int(uid))
+            if role and m and role in m.roles:
+                try:
+                    await m.remove_roles(role, reason="Immunity ended")
+                except Exception as ex:
+                    print("Immunity role removal failed:", repr(ex))
     save()
-    return None
 
 @bot.command(name="setimmunity", usage="setimmunity @role | off")
 @staff_only
@@ -3940,7 +3957,7 @@ async def setimmunity(ctx, role: str = None):
 async def immunity(ctx, target: str = None, duration: str = None):
     member = await resolve_target(ctx, target) if target else None
     if member is None or duration is None:
-        return await reply(ctx, "Usage: `$immunity @user | user ID <time | nolimit>` — for example `$immunity @a 2h` (s, m, h, d)", RED)
+        return await reply(ctx, "Usage: `$immunity <user> <time | nolimit>`", RED)
     if member.bot:
         return await reply(ctx, "Please enter a valid user.", RED)
     if duration.lower() in NOLIMIT_WORDS:
@@ -3948,24 +3965,37 @@ async def immunity(ctx, target: str = None, duration: str = None):
     else:
         secs = parse_duration(duration)
         if secs is None:
-            return await reply(ctx, "Invalid time. Use for example `30m`, `2h`, `1d` or `nolimit`.", RED)
+            return await reply(ctx, "Invalid time. Use `30m`, `2h`, `1d` or `nolimit`.", RED)
         until = int(time.time()) + secs
     DB.setdefault("immunity", {})[str(member.id)] = until
     save()
-    await reply(ctx, f"{member.name} is now immune from robbery ({fmt_left(until)}).", GREEN)
+    note = ""
+    role = ctx.guild.get_role(DB.get("immunity_role") or 0)
+    if role and role not in member.roles:
+        try:
+            await member.add_roles(role, reason=f"Immunity by {ctx.author}")
+            note = f"\n{member.name} received {role.mention}."
+        except discord.Forbidden:
+            note = "\nI could not give the immunity role (my role must be above it). The immunity still works."
+    await reply(ctx, f"{member.name} is now immune from robbery ({fmt_left(until)}).{note}", GREEN)
 
 @bot.command(name="rimmunity", usage="rimmunity <user>")
 @staff_only
 async def rimmunity(ctx, target: str = None):
     member = await resolve_target(ctx, target) if target else None
     if member is None:
-        return await reply(ctx, "Usage: `$rimmunity @user | user ID`", RED)
-    if DB.get("immunity", {}).pop(str(member.id), None) is None:
-        rid = DB.get("immunity_role")
-        if rid and any(r.id == rid for r in member.roles):
-            return await reply(ctx, f"{member.name} is immune because of the immunity role. Remove the role from him instead.", RED)
+        return await reply(ctx, "Usage: `$rimmunity <user>`", RED)
+    rec = DB.get("immunity", {}).pop(str(member.id), None)
+    role = ctx.guild.get_role(DB.get("immunity_role") or 0)
+    had_role = bool(role) and role in member.roles
+    if rec is None and not had_role:
         return await reply(ctx, f"{member.name} has no immunity.", RED)
     save()
+    if had_role:
+        try:
+            await member.remove_roles(role, reason=f"Immunity removed by {ctx.author}")
+        except discord.Forbidden:
+            return await reply(ctx, "I could not take the immunity role (my role must be above it). Remove it by hand.", RED)
     await reply(ctx, f"The immunity of {member.name} was removed.", GREEN)
 
 @bot.command(name="setgamelogs", usage="setgamelogs #channel")
