@@ -220,7 +220,8 @@ async def take_bet(ctx, amount, usage, track=False):
     if bet is None:
         return await reply(ctx, f"Usage: `${usage}` (min {MIN_BET})", RED)
     if bet < MIN_BET:
-        return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
+        await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
+        return None
     if bet > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
     u["cash"] -= bet
@@ -1659,7 +1660,7 @@ async def roulette(ctx, amount: str = None, *, picks: str = None):
         return await reply(ctx, f"Usage: `${ROUL_USAGE}` (min {MIN_BET})", RED)
     per = total // n if amount.lower() in ("all", "half") else total
     if per < MIN_BET:
-        return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
+        return await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
     if per * n > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
     u["cash"] -= per * n
@@ -3685,6 +3686,9 @@ async def rob(ctx, target: str = None):
     if member.id == ctx.author.id:
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "You cannot rob yourself.", RED)
+    if immunity_until(member) is not None:
+        ctx.command.reset_cooldown(ctx)
+        return await reply(ctx, f"{member.name} is immune.", RED)
     me, tgt = user_data(ctx.author.id), user_data(member.id)
     loot = {k: int(tgt[k] * ROB_PERCENT) for k in ROB_FROM}
     total = sum(loot.values())
@@ -3894,6 +3898,75 @@ async def staff_role(ctx, role: discord.Role = None):
     DB["staff_role"] = role.id
     save()
     await reply(ctx, f"Staff role set to {role.mention}. Members with this role can now use the staff commands.", GREEN)
+
+# ---------- immunity (nobody can rob an immune player) ----------
+NOLIMIT_WORDS = ("nolimit", "no-limit", "forever", "unlimited", "permanent")
+
+def immunity_until(member):
+    """None = not immune, 0 = immune without a time limit, otherwise the time it ends."""
+    rid = DB.get("immunity_role")
+    if rid and any(r.id == rid for r in getattr(member, "roles", [])):
+        return 0
+    rec = DB.get("immunity", {}).get(str(member.id))
+    if rec is None:
+        return None
+    if rec == 0 or rec > time.time():
+        return rec
+    DB["immunity"].pop(str(member.id), None)        # expired
+    save()
+    return None
+
+@bot.command(name="setimmunity", usage="setimmunity @role | off")
+@staff_only
+async def setimmunity(ctx, role: str = None):
+    current = ctx.guild.get_role(DB.get("immunity_role") or 0)
+    if role is None:
+        return await reply(ctx, f"Immunity role: {current.mention if current else 'not set'}\n"
+                                f"Everyone with this role cannot be robbed.\nSet it with `$setimmunity @role` (or `$setimmunity off`).", BLUE)
+    if role.lower() in ("off", "none", "remove"):
+        DB.pop("immunity_role", None)
+        save()
+        return await reply(ctx, "The immunity role was removed.", GREEN)
+    try:
+        r = await commands.RoleConverter().convert(ctx, role)
+    except commands.BadArgument:
+        return await reply(ctx, "Usage: `$setimmunity @role | off`", RED)
+    DB["immunity_role"] = r.id
+    save()
+    await reply(ctx, f"Immunity role set to {r.mention}. Members with this role cannot be robbed.", GREEN)
+
+@bot.command(name="immunity", usage="immunity <user> <time | nolimit>")
+@staff_only
+async def immunity(ctx, target: str = None, duration: str = None):
+    member = await resolve_target(ctx, target) if target else None
+    if member is None or duration is None:
+        return await reply(ctx, "Usage: `$immunity @user | user ID <time | nolimit>` — for example `$immunity @a 2h` (s, m, h, d)", RED)
+    if member.bot:
+        return await reply(ctx, "Please enter a valid user.", RED)
+    if duration.lower() in NOLIMIT_WORDS:
+        until = 0
+    else:
+        secs = parse_duration(duration)
+        if secs is None:
+            return await reply(ctx, "Invalid time. Use for example `30m`, `2h`, `1d` or `nolimit`.", RED)
+        until = int(time.time()) + secs
+    DB.setdefault("immunity", {})[str(member.id)] = until
+    save()
+    await reply(ctx, f"{member.name} is now immune from robbery ({fmt_left(until)}).", GREEN)
+
+@bot.command(name="rimmunity", usage="rimmunity <user>")
+@staff_only
+async def rimmunity(ctx, target: str = None):
+    member = await resolve_target(ctx, target) if target else None
+    if member is None:
+        return await reply(ctx, "Usage: `$rimmunity @user | user ID`", RED)
+    if DB.get("immunity", {}).pop(str(member.id), None) is None:
+        rid = DB.get("immunity_role")
+        if rid and any(r.id == rid for r in member.roles):
+            return await reply(ctx, f"{member.name} is immune because of the immunity role. Remove the role from him instead.", RED)
+        return await reply(ctx, f"{member.name} has no immunity.", RED)
+    save()
+    await reply(ctx, f"The immunity of {member.name} was removed.", GREEN)
 
 @bot.command(name="setgamelogs", usage="setgamelogs #channel")
 @admin_only
@@ -4348,6 +4421,9 @@ AINFO_SECTIONS = [
         ("$resetmoney <bank|cash|all> <user> [amt]", "Set or reset a player's money"),
         ("$removemoney <bank|cash> <user> <amt>", "Remove money from a player"),
         ("$set-currency <emoji>", "Change the currency symbol"),
+        ("$setimmunity <role|off>", "Members of this role cannot be robbed"),
+        ("$immunity <user> <time|nolimit>", "Make a player immune from robbery"),
+        ("$rimmunity <user>", "Remove a player's immunity"),
     ]),
     ("ADMIN", [
         ("$staff-role <role>", "Set which role counts as staff"),
