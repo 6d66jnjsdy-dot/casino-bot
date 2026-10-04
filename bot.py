@@ -274,96 +274,71 @@ GAME_NAMES = {"gm": "Gold Mines", "mines": "Mines", "money tower": "Money Tower"
               "slots": "Slots", "roulette": "Roulette", "heads or tail": "Heads or Tail",
               "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower", "heist": "Bank Heist",
               "rob": "Rob"}
-GAME_ICONS = (("s$mines", "💣"), ("mines", "💣"), ("gm", "⛏️"), ("money tower", "🗼"), ("blackjack", "🃏"),
-              ("slots", "🎰"), ("roulette", "🎡"), ("heads", "🪙"), ("chicken", "🐓"), ("higher", "🎲"),
-              ("scratch", "🎟️"), ("heist", "🏦"), ("rob", "🦹"))
 LOG_TITLES = {
-    "DEP": "🏦 Deposit", "WITH": "🏧 Withdrawal", "WORK": "🔨 Work", "CRIME": "🕵️ Crime", "PAY": "🤝 Transfer",
-    "SHOP": "🛒 Shop Purchase", "ADD MONEY": "➕ Money Added", "REMOVE MONEY": "➖ Money Removed",
-    "RESET MONEY": "♻️ Money Reset", "ADD MONEY TO ROLE": "👥 Money Added To Role", "LOG CHANNEL SET": "📋 Log Channel Set",
+    "DEP": "Deposit", "WITH": "Withdrawal", "WORK": "Work", "CRIME": "Crime", "PAY": "Transfer",
+    "SHOP": "Shop Purchase", "ADD MONEY": "Money Added", "REMOVE MONEY": "Money Removed",
+    "RESET MONEY": "Money Reset", "ADD MONEY TO ROLE": "Money Added To Role", "LOG CHANNEL SET": "Log Channel Set",
 }
 
 def pretty(text):
     text = text.strip()
     return text.title() if text.isupper() else text[:1].upper() + text[1:]
 
-def game_icon(game):
-    g = game.lower()
-    for key, icon in GAME_ICONS:
-        if g.startswith(key):
-            return icon
-    return "🎮"
-
 def log_head(title):
     parts = [p.strip() for p in title.split("|")]
-    base = LOG_TITLES.get(parts[0].upper())
-    if base is None:
-        low = parts[0].lower()
-        base = f"{game_icon(low)} {GAME_NAMES.get(low) or pretty(parts[0])}"
-    return base + "".join(f"  •  {pretty(p)}" for p in parts[1:])
+    base = LOG_TITLES.get(parts[0].upper()) or GAME_NAMES.get(parts[0].lower()) or pretty(parts[0])
+    return " — ".join([base] + [pretty(p) for p in parts[1:]])
 
-def receipt(rows):
-    """Aligned 'bank receipt' inside a diff block: a '+' row is green, a '-' row is red, a ' ' row is neutral."""
-    w = max(len(k) for _, k, _ in rows)
-    return "```diff\n" + "\n".join(f"{sign} {k.ljust(w)}   {v}" for sign, k, v in rows) + "\n```"
+async def log_channel():
+    cid = DB.get("log_channel")
+    return bot.get_channel(cid) or await bot.fetch_channel(cid)
 
-async def send_log(user, head, desc, color, fields=None, rows=None):
-    """One clean embed: header, player line, optional details, and an aligned receipt."""
+async def send_log(user, head, desc, color, fields=None, footer=None):
+    """Log entry in the same style as the casino messages: author line, a sentence, two bold lines, small footer."""
     try:
-        cid = DB.get("log_channel")
-        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
-        if rows is None and fields:      # old style callers: [(label, value)] -> receipt rows
-            rows = [(" ", re.sub(r"[^\w ]", "", str(f[0])).strip() or "Info", str(f[1]).replace("`", "")) for f in fields]
-        parts = [f"{user.mention}  ·  `{user.id}`"]
-        if desc:
-            parts.append(desc)
-        if rows:
-            parts.append(receipt(rows))
-        e = discord.Embed(title=head[:256], description="\n".join(parts)[:4000], color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        e.set_footer(text=LOG_FOOTER)
+        ch = await log_channel()
+        e = discord.Embed(description=desc or None, color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=user.name, icon_url=user.display_avatar.url)
+        for f in fields or []:
+            e.add_field(name=f[0], value=f[1], inline=f[2] if len(f) > 2 else False)
+        e.set_footer(text=footer or f"{LOG_FOOTER}  |  ID {user.id}")
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
 
 def log_event(user, title, desc, color, fields=None):
     if DB.get("log_channel"):
-        bg(send_log(user, log_head(title), desc, color, fields))
+        bg(send_log(user, "", f"**{log_head(title)}**\n{desc}", color, fields))
 
 def log_game(user, game, bet, net, detail=None):
     if not DB.get("log_channel"):
         return
-    u = user_data(user.id)
+    u, c = user_data(user.id), cur()
     low = game.lower()
     scratch = low.startswith("scratch")
     after = u["bank"] if scratch else u["cash"]
     before = after - net
-    if net > 0:
-        tag, color, dot, sign = "WIN", GREEN, "🟢", "+"
-    elif net < 0:
-        tag, color, dot, sign = "LOSS", RED, "🔴", "-"
-    else:
-        tag, color, dot, sign = "PUSH", YELLOW, "🟡", " "
+    verb, color = ("won", GREEN) if net > 0 else ("lost", RED) if net < 0 else ("pushed", YELLOW)
     big = abs(net) >= BIG_WIN or (bet and abs(net) >= bet * 5 and abs(net) >= 1_000_000)
-    flag = ("  ·  🔥 BIG WIN" if net > 0 else "  ·  💀 BIG LOSS") if big else ""
     name = GAME_NAMES.get(low) or pretty(game)
-    head = f"{dot} {tag}  ·  {game_icon(game)} {name}{flag}"
-    rows = []
+    line = f"**{name}**: {user.name} {verb}" if net else f"**{name}**: {user.name} got the bet back"
+    if net:
+        line += f" **{fmt(abs(net))}** {c}"
     if bet:
-        rows.append((" ", "Bet", fmt(bet)))
-    rows.append((sign, "Result", f"{'+' if net > 0 else '-' if net < 0 else ''}{fmt(abs(net))}"))
-    if bet:
-        rows.append((" ", "Return", f"{net / bet * 100:+.0f}%"))
-    rows.append((" ", "Bank" if scratch else "Cash", f"{fmt(before)} -> {fmt(after)}"))
-    rows.append((" ", "Net worth", fmt(u["cash"] + u["bank"])))
-    bg(send_log(user, head, detail, color, rows=rows))
+        line += f" (bet {fmt(bet)} {c}, {net / bet * 100:+.0f}%)"
+    if detail:
+        line += f"\n{detail}"
+    where = "Bank" if scratch else "Cash"
+    fields = [(f"{where}: {fmt(before)} → {fmt(after)} {c}", f"**Net worth: {fmt(u['cash'] + u['bank'])} {c}**")]
+    foot = f"{LOG_FOOTER}  |  ID {user.id}" + ("  |  High stakes" if big else "")
+    bg(send_log(user, "", line, color, fields, foot))
 
 def log_money(user, title, desc, color=BLUE):
-    u = user_data(user.id)
-    if DB.get("log_channel"):
-        bg(send_log(user, log_head(title), desc, color, rows=[
-            (" ", "Cash", fmt(u["cash"])), (" ", "Bank", fmt(u["bank"])),
-            (" ", "Net worth", fmt(u["cash"] + u["bank"]))]))
+    if not DB.get("log_channel"):
+        return
+    u, c = user_data(user.id), cur()
+    bg(send_log(user, "", f"**{log_head(title)}**\n{desc}", color,
+                [(f"Cash: {fmt(u['cash'])} {c}", f"**Bank: {fmt(u['bank'])} {c}**")]))
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -1799,11 +1774,10 @@ async def cf(ctx, amount: str = None):
         profit = -bet
         u["chicken"] = strength = CF_MIN
         e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
-    if won:
-        e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
-                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
+    e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
+                value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     save()
-    log_game(ctx.author, "chicken fight", bet, profit)
+    log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
     await ctx.reply(embed=e, mention_author=False)
 
 # ================= HIGHER OR LOWER =================
@@ -1922,7 +1896,7 @@ HEIST_MULT = {1: 3.5, 2: 2.2, 3: 1.5}   # all 3 missions done: fee x this (a sma
 HEIST_PART = 0.5                 # only 2 of 3 missions done: this part of the fee comes back
 HEIST_AUTO = 0.5                 # chance that a role nobody took succeeds by itself
 HEIST_SKIPS = 2                  # "התעלמות" = a new task, per player
-HEIST_FUSE = 14                  # seconds the bomber has to run out
+HEIST_FUSE = 20                  # seconds the bomber has to run out
 HEIST_GRACE = 1.5                # network delay allowed on the run
 HEIST_LOOT_PICKS = 2             # drawers every player may open after the safes blow up
 HEIST_LOOT_WAIT = 45             # seconds to open the drawers
@@ -1949,7 +1923,7 @@ HEIST_COLORS = {"🟥": ["דם", "תות", "כבאית"], "🟦": ["שמיים",
 HEIST_RADIO = ["יחידה 4 לכל הכוחות, חשוד נראה ליד הכספת.", "כאן מוקד, ניידות בדרך אל המבנה.",
                "דיווח על סיור משטרתי בקומת הכניסה.", "אזעקה שקטה הופעלה בבנק, כל היחידות לאזור."]
 
-HACK_DIGITS, HACK_LEN, HACK_TRIES = "123456789", 4, 10
+HACK_DIGITS, HACK_LEN, HACK_TRIES = "123456789", 3, 10
 
 def hack_new():
     return "".join(random.sample(HACK_DIGITS, HACK_LEN))
@@ -2091,6 +2065,7 @@ class Heist:
         self.opened = set()
         self.interactions = {}   # user id -> the interaction of his mission message (used to send him the loot drawers)
         self.vault_open = False
+        self.vault_task = None
         self.loot = {}           # user id -> money stolen from the drawers
         self.loot_items = {}     # user id -> list of (emoji, name)
         self.loot_pending = set()
@@ -2114,6 +2089,8 @@ class Heist:
             return
         self.results[uid] = ok
         if len(self.results) >= len(self.players):
+            if all(self.results.values()) and self.vault_task is None:     # everybody succeeded: the safes open for all, at once
+                self.vault_task = asyncio.create_task(vault_blown(self))
             self.all_done.set()
         bg(self.refresh())
 
@@ -2121,33 +2098,33 @@ class Heist:
         n = len(self.players)
         e = discord.Embed(color=GOLD, title="שוד הבנק")
         if self.phase == "join":
-            e.description = ("לחצו על התפקיד שאתם רוצים כדי להצטרף. עד שלושה שחקנים, לכל אחד תפקיד ומשימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
+            e.description = ("לחצו על כניסה כדי להצטרף. עד שלושה שחקנים, לכל אחד תפקיד ומשימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
                              f"דמי הכניסה הם סכום קבוע של **{fmt(self.stake)}** {cur()} לכל שחקן (הוצאות השוד).\n"
-                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן. כשיש שלושה השוד מתחיל מיד.")
+                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן. כשיש שלושה, בחירת התפקידים מתחילה מיד.")
             when = "ההרשמה נסגרת"
         elif self.phase == "roles":
             e.description = "כל אחד בוחר תפקיד אחד. מי שלא בחר יקבל תפקיד אקראי."
             when = "הבחירה נסגרת"
         else:
             e.description = ("לחצו על המשימה שלי כדי לקבל הודעה אישית שרק אתם רואים. הזמן מתחיל לרוץ ברגע שפתחתם אותה.\n"
-                             "כשהכספות מתפוצצות, כל הצוות מקבל הודעה ויכול לגנוב מהמגירות.")
+                             "רק כשכל הצוות מסיים את המשימה בהצלחה, כולם מקבלים הודעה ויכולים לגנוב מהמגירות.")
             when = "אפשר לפתוח עד"
         e.add_field(name="דמי כניסה", value=f"{fmt(self.stake)} {cur()}")
         e.add_field(name="שחקנים", value=f"{n} מתוך {HEIST_MAX}")
         e.add_field(name=when, value=f"<t:{self.end}:R>")
-        for key in HEIST_ROLE_ORDER:
-            name, icon = HEIST_ROLES[key]
-            uid = self.role_of(key)
-            if uid is None:
-                val = "פנוי"
-            else:
-                val = self.players[uid]["user"].mention
-                if self.phase == "mission":
-                    val += "\nסיים" if uid in self.results else "\nבביצוע" if uid in self.opened else "\nממתין"
-            e.add_field(name=f"{icon} {name}", value=val)
-        waiting = [p["user"].mention for p in self.players.values() if not p["role"]]
-        if self.phase == "join" and waiting:
-            e.add_field(name="עוד לא בחרו תפקיד", value="\n".join(waiting), inline=False)
+        if self.phase == "join":
+            e.add_field(name="הצוות", value="\n".join(p["user"].mention for p in self.players.values()), inline=False)
+        else:
+            for key in HEIST_ROLE_ORDER:
+                name, icon = HEIST_ROLES[key]
+                uid = self.role_of(key)
+                if uid is None:
+                    val = "פנוי"
+                else:
+                    val = self.players[uid]["user"].mention
+                    if self.phase == "mission":
+                        val += "\nסיים" if uid in self.results else "\nבביצוע" if uid in self.opened else "\nממתין"
+                e.add_field(name=f"{icon} {name}", value=val)
         e.set_footer(text=f"הצלחה מלאה בצוות של {n}: x{HEIST_MULT[n]:g}   |   שתי משימות מתוך שלוש: מחצית מההימור חוזרת")
         if self.art:
             e.set_image(url="attachment://heist.png")
@@ -2175,16 +2152,66 @@ class HeistView(discord.ui.View):
 
     def show_join(self):
         self.clear_items()
-        for key in HEIST_ROLE_ORDER:
-            name, icon = HEIST_ROLES[key]
-            taken = self.h.role_of(key) is not None
-            b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.success,
-                                  label=name, emoji=icon, disabled=taken)
-            b.callback = self.pick(key)
-            self.add_item(b)
+        b = discord.ui.Button(style=discord.ButtonStyle.success, label=f"כניסה למשחק ({fmt(self.h.stake)})")
+        b.callback = self.join
+        self.add_item(b)
         b = discord.ui.Button(style=discord.ButtonStyle.danger, label="יציאה", emoji="🚪")
         b.callback = self.leave
         self.add_item(b)
+
+    def show_roles(self):
+        self.clear_items()
+        for key in HEIST_ROLE_ORDER:
+            name, icon = HEIST_ROLES[key]
+            taken = self.h.role_of(key) is not None
+            b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.primary,
+                                  label=name, emoji=icon, disabled=taken)
+            b.callback = self.pick(key)
+            self.add_item(b)
+
+    async def join(self, interaction):
+        h, user = self.h, interaction.user
+        say = lambda t: interaction.response.send_message(t, ephemeral=True)
+        if h.phase != "join":
+            return await say("ההרשמה לשוד הזה כבר נסגרה.")
+        if user.id in h.players:
+            return await say("אתה כבר בצוות.")
+        if len(h.players) >= HEIST_MAX:
+            return await say("הצוות מלא.")
+        if user.id in BUSY:
+            return await say(BUSY_MSG)
+        u = user_data(user.id)
+        if u["cash"] < h.stake:
+            return await say(f"אין לך מספיק כסף. דמי הכניסה הם {fmt(h.stake)} {cur()}.")
+        u["cash"] -= h.stake
+        token = f"{h.token}:{user.id}"
+        DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": h.stake}
+        BUSY.add(user.id)
+        save()
+        h.add_player(user, token)
+        if h.full.is_set():                   # 3 players: the role choice starts right now, run_heist updates the message
+            return await interaction.response.defer()
+        await interaction.response.edit_message(embed=h.embed(), view=self)
+
+    def pick(self, role):
+        async def cb(interaction):
+            h = self.h
+            p = h.players.get(interaction.user.id)
+            say = lambda t: interaction.response.send_message(t, ephemeral=True)
+            if p is None:
+                return await say("אינך חלק מהצוות של השוד הזה.")
+            if h.phase != "roles":
+                return await interaction.response.defer()
+            if p["role"]:
+                return await say("כבר בחרת תפקיד.")
+            if h.role_of(role):
+                return await say("התפקיד הזה כבר נתפס, בחר אחר.")
+            p["role"] = role
+            self.show_roles()
+            await interaction.response.edit_message(embed=h.embed(), view=self)
+            if all(q["role"] for q in h.players.values()):
+                h.roles_set.set()
+        return cb
 
     async def leave(self, interaction):
         """Only while the sign-up is open: the player is removed and his entry fee goes back to cash."""
@@ -2216,39 +2243,6 @@ class HeistView(discord.ui.View):
         b = discord.ui.Button(style=discord.ButtonStyle.primary, label="המשימה שלי", emoji="📩")
         b.callback = self.mission
         self.add_item(b)
-
-    def pick(self, role):
-        """One button = join the heist AS this role (or switch to it if you are already in)."""
-        async def cb(interaction):
-            h, user = self.h, interaction.user
-            say = lambda t: interaction.response.send_message(t, ephemeral=True)
-            if h.phase != "join":
-                return await say("ההרשמה לשוד הזה כבר נסגרה.")
-            holder = h.role_of(role)
-            if holder is not None and holder != user.id:
-                return await say("התפקיד הזה כבר נתפס, בחר תפקיד אחר.")
-            p = h.players.get(user.id)
-            if p is None:
-                if len(h.players) >= HEIST_MAX:
-                    return await say("הצוות מלא.")
-                if user.id in BUSY:
-                    return await say(BUSY_MSG)
-                u = user_data(user.id)
-                if u["cash"] < h.stake:
-                    return await say(f"אין לך מספיק כסף. דמי הכניסה הם {fmt(h.stake)} {cur()}.")
-                u["cash"] -= h.stake
-                token = f"{h.token}:{user.id}"
-                DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": h.stake}
-                BUSY.add(user.id)
-                save()
-                h.add_player(user, token, role)
-            else:
-                p["role"] = role
-            if h.full.is_set():               # 3 players: the heist starts right now, run_heist updates the message
-                return await interaction.response.defer()
-            self.show_join()
-            await interaction.response.edit_message(embed=h.embed(), view=self)
-        return cb
 
     async def mission(self, interaction):
         h, uid = self.h, interaction.user.id
@@ -2374,7 +2368,7 @@ class CodeModal(discord.ui.Modal):
         super().__init__(title="ניסיון פריצה")
         self.v = view
         self.code = discord.ui.TextInput(label=f"קוד בן {HACK_LEN} ספרות (1 עד 9, בלי חזרות)", min_length=HACK_LEN,
-                                         max_length=HACK_LEN, placeholder="לדוגמה 3142")
+                                         max_length=HACK_LEN, placeholder="לדוגמה 314")
         self.add_item(self.code)
 
     async def on_submit(self, interaction):
@@ -2431,13 +2425,13 @@ class HackerMission(MissionView):
         self.history.append((text, x, c))
         await self.mistake(interaction, "", f"נגמרו הניסיונות והמערכת ננעלה. הקוד היה {self.code}.")
 
-# ---------- bomber: place, reinforce, ignite, run out before it blows ----------
+# ---------- bomber: 3 easy steps. place the charge, press the colors, run to the free door ----------
 class BomberMission(MissionView):
-    DOORS = 4
+    DOORS = 3
 
     def __init__(self, h, user, role):
         super().__init__(h, user, role)
-        self.max_mistakes = 3
+        self.max_mistakes = 4
         self.step, self.fuse_end = "place", 0
         self.roll_wall()
         self.roll_colors()
@@ -2445,15 +2439,14 @@ class BomberMission(MissionView):
         self.rebuild()
 
     def roll_wall(self):
-        self.cam = random.choice(HEIST_WALLS)
+        self.wall = random.choice(HEIST_WALLS)
 
     def roll_colors(self):
-        self.order = random.sample(list(HEIST_COLORS), 4)
-        self.words = [random.choice(HEIST_COLORS[c]) for c in self.order]
+        self.seq = random.sample(list(HEIST_COLORS), 3)
         self.pos = 0
 
     def can_skip(self):
-        return self.step in ("place", "reinforce")
+        return self.step in ("place", "colors")
 
     def reroll(self):
         if self.step == "place":
@@ -2463,31 +2456,25 @@ class BomberMission(MissionView):
 
     def embed(self):
         if self.step == "place":
-            return self.card("שלב 1 מתוך 4, הנחת המטען",
-                             f"מצלמת האבטחה מכוונת אל הקיר ה{self.cam}. הכספת נמצאת בקיר שממול למצלמה. איפה מניחים את המטען?")
-        if self.step == "reinforce":
-            w = self.words
-            return self.card("שלב 2 מתוך 4, חיזוק המטען",
-                             f"הטכנאי מסביר: קודם הצבע של {w[0]}, אחריו הצבע של {w[1]}, אחריו הצבע של {w[2]} ולבסוף הצבע של {w[3]}.\n\n"
-                             f"{'▰' * self.pos}{'▱' * (4 - self.pos)}")
-        if self.step == "ignite":
-            return self.card("שלב 3 מתוך 4, הפעלה",
-                             f"המטען במקום ומחוזק. ברגע שתפעילו, הפתיל נשרף ב{HEIST_FUSE} שניות. תבחרו דלת ותברחו.")
+            return self.card("שלב 1 מתוך 3, הנחת המטען",
+                             f"הכספת נמצאת בקיר ה**{self.wall}**. לחצו על הקיר הזה כדי להניח שם את המטען.")
+        if self.step == "colors":
+            return self.card("שלב 2 מתוך 3, חיזוק המטען",
+                             "לחצו על הצבעים לפי הסדר:\n\n# " + "  ".join(self.seq) +
+                             f"\n\n{'▰' * self.pos}{'▱' * (3 - self.pos)}")
         blocked = [d for d in range(1, self.DOORS + 1) if d != self.safe]
-        names = ", ".join(map(str, blocked[:-1])) + f" ו-{blocked[-1]}"
-        return self.card("שלב 4 מתוך 4, בריחה",
-                         f"הפתיל דולק, ההתפוצצות <t:{int(self.fuse_end)}:R>.\nשוטרים חוסמים את דלתות {names}. רוצו לדלת הפנויה.")
+        return self.card("שלב 3 מתוך 3, בריחה",
+                         f"הפתיל דולק, ההתפוצצות <t:{int(self.fuse_end)}:R>.\n"
+                         f"השוטרים חוסמים את דלת {blocked[0]} ואת דלת {blocked[1]}. רוצו לדלת השלישית.")
 
     def rebuild(self):
         self.clear_items()
         if self.step == "place":
             for w in HEIST_WALLS:
                 self.add_btn(w, self.pick_wall(w))
-        elif self.step == "reinforce":
+        elif self.step == "colors":
             for c in HEIST_COLORS:
                 self.add_btn("\u200e", self.pick_color(c), emoji=c)
-        elif self.step == "ignite":
-            self.add_btn("הפעל", self.ignite, discord.ButtonStyle.danger, "⚡")
         else:
             for n in range(1, self.DOORS + 1):
                 self.add_btn(f"דלת {n}", self.door(n), discord.ButtonStyle.primary)
@@ -2495,19 +2482,16 @@ class BomberMission(MissionView):
             self.add_common(1)
 
     def help_text(self):
-        return ("המשימה היא לפוצץ את הכספת ולצאת בחיים.\n"
-                "1. מניחים את המטען בקיר שממול למצלמה.\n"
-                "2. מחזקים אותו: לוחצים על כל ארבעת הצבעים לפי הסדר שהטכנאי אמר "
-                "(שמיים הם כחול, דם הוא אדום, דשא הוא ירוק, שמש היא צהוב).\n"
-                f"3. מפעילים. הפתיל נשרף ב{HEIST_FUSE} שניות.\n"
-                "4. בורחים מהדלת היחידה שהשוטרים לא חוסמים.\n"
-                "אחרי הפיצוץ כל הצוות מקבל הודעה וגונב מהמגירות.\n"
-                "שלוש טעויות והמטען מתפוצץ מוקדם. התעלמות מחליפה את החידה בשלב הנוכחי.")
+        return ("המשימה היא לפוצץ את הכספת ולברוח, בשלושה שלבים קלים.\n"
+                "1. מניחים את המטען בקיר שבו נמצאת הכספת.\n"
+                "2. לוחצים על הצבעים לפי הסדר שמוצג.\n"
+                f"3. הפתיל נשרף ({HEIST_FUSE} שניות), בורחים מהדלת היחידה שהשוטרים לא חוסמים.\n"
+                "ארבע טעויות והמטען מתפוצץ מוקדם. התעלמות מחליפה את השלב הנוכחי.")
 
     def pick_wall(self, wall):
         async def cb(interaction):
-            if wall == HEIST_OPP[self.cam]:
-                self.step, self.note = "reinforce", "המטען הונח במקום הנכון."
+            if wall == self.wall:
+                self.step, self.note = "colors", "המטען הונח במקום הנכון."
                 self.rebuild()
                 return await hz_edit(interaction, embed=self.embed(), view=self)
             await self.mistake(interaction, "זה לא הקיר הנכון.", "המטען הונח במקום הלא נכון והתפוצץ עליכם.")
@@ -2515,21 +2499,16 @@ class BomberMission(MissionView):
 
     def pick_color(self, color):
         async def cb(interaction):
-            if color == self.order[self.pos]:
+            if color == self.seq[self.pos]:
                 self.pos += 1
                 self.note = ""
-                if self.pos >= 4:
-                    self.step, self.note = "ignite", "המטען מחוזק."
+                if self.pos >= 3:
+                    self.step, self.note, self.fuse_end = "run", "המטען מחוזק והפתיל דולק!", time.time() + HEIST_FUSE
                     self.rebuild()
                 return await hz_edit(interaction, embed=self.embed(), view=self)
             self.pos = 0
-            await self.mistake(interaction, "צבע לא נכון, החיזוק מתחיל מחדש.", "החיזוק נכשל והמטען התפוצץ עליכם.")
+            await self.mistake(interaction, "צבע לא נכון, מתחילים את הרצף מחדש.", "החיזוק נכשל והמטען התפוצץ עליכם.")
         return cb
-
-    async def ignite(self, interaction):
-        self.step, self.note, self.fuse_end = "run", "", time.time() + HEIST_FUSE
-        self.rebuild()
-        await hz_edit(interaction, embed=self.embed(), view=self)
 
     def door(self, n):
         async def cb(interaction):
@@ -2537,22 +2516,21 @@ class BomberMission(MissionView):
                 return await self.end(interaction, False, "הפתיל נשרף והמטען התפוצץ לפני שיצאתם.")
             if n != self.safe:
                 return await self.end(interaction, False, f"יצאתם מדלת {n} ונתפסתם על ידי השוטרים.")
-            bg(vault_blown(self.h))          # the safes are open: everybody gets the drawers message right now
-            await self.end(interaction, True, "יצאתם בזמן והכספות התפוצצו מאחורי הגב.")
+            await self.end(interaction, True, "יצאתם בזמן והכספות התפוצצו. כשכל הצוות יסיים, תקבלו את המגירות.")
         return cb
 
-# ---------- lookout: neutralize the police on the moving radar, spare the civilians ----------
+# ---------- lookout: 3 rounds, the board stays still. press the police, never the civilians ----------
 class LookoutMission(MissionView):
     label = "אזעקות"
-    ROUNDS, SIZE = 6, 4
-    COPS = (4, 4, 5, 5, 6, 6)
-    CIVS = (5, 5, 6, 6, 7, 7)
-    ICONS = {"cop": "👮", "boss": "🕵️", "civ": "🧑‍💼", "empty": "⬛"}
-    SEC_PER_COP = 3.0
+    ROUNDS, SIZE = 3, 4
+    COPS = (3, 4, 5)
+    CIVS = (2, 3, 3)
+    ICONS = {"cop": "👮", "civ": "🧑‍💼", "empty": "⬛"}
+    SEC_PER_COP = 5
 
     def __init__(self, h, user, role):
         super().__init__(h, user, role)
-        self.max_mistakes = 2
+        self.max_mistakes = 3
         self.round = 1
         self.setup_round()
         self.rebuild()
@@ -2560,20 +2538,18 @@ class LookoutMission(MissionView):
     def setup_round(self):
         self.cops, self.civs = self.COPS[self.round - 1], self.CIVS[self.round - 1]
         self.neut = 0
-        self.boss_alive, self.boss_hp = self.round >= 3, 2      # the undercover agent needs two hits
-        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 4 + (3 if self.boss_alive else 0)
+        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 6
         self.radio = random.choice(HEIST_RADIO)
-        self.shuffle_cells()
+        self.new_board()
 
-    def shuffle_cells(self):
-        left = self.cops - self.neut
-        cells = ["cop"] * (left - self.boss_alive) + (["boss"] if self.boss_alive else []) + ["civ"] * self.civs
+    def new_board(self):
+        cells = ["cop"] * self.cops + ["civ"] * self.civs
         cells += ["empty"] * (self.SIZE ** 2 - len(cells))
         random.shuffle(cells)
         self.cells = cells
 
     def reroll(self):
-        """'התעלמות' moves straight to the NEXT round (on the last round it just gives a fresh one)."""
+        """'התעלמות' moves straight to the next round (on the last round it gives a new board)."""
         if self.round < self.ROUNDS:
             self.round += 1
             self.setup_round()
@@ -2589,54 +2565,40 @@ class LookoutMission(MissionView):
         self.add_common(self.SIZE)
 
     def embed(self):
-        extra = " הסוכן החשאי 🕵️ צריך שתי פגיעות." if self.boss_alive else ""
         return self.card(f"סבב {self.round} מתוך {self.ROUNDS}",
-                         f"*{self.radio}*\n\nנטרלו את כל השוטרים לפני שהם מתריעים. אחרי כל לחיצה הכול זז, ואסור לפגוע באזרחים.{extra}",
+                         f"*{self.radio}*\n\nלחצו על כל השוטרים 👮 כדי לנטרל אותם. אל תלחצו על אזרחים 🧑‍💼.",
                          [("זמן לסבב", f"<t:{int(self.round_end)}:R>"), ("שוטרים", f"{self.neut} מתוך {self.cops}")])
 
     def help_text(self):
         return ("המשימה היא לנטרל את השוטרים בלי להעיר את הבנק.\n"
-                "לוחצים על שוטר (👮) כדי לנטרל אותו. פגיעה באזרח (🧑‍💼) היא אזעקה ומאפסת את הסבב.\n"
-                "אחרי כל לחיצה כל הלוח מתערבב. לחיצה על משבצת ריקה גוזלת שתי שניות מהזמן של הסבב.\n"
-                "מסבב 3 יש סוכן חשאי (🕵️) שצריך לפגוע בו פעמיים.\n"
-                "אם הזמן של הסבב נגמר ולחצתם, זו אזעקה והסבב מתחיל מחדש.\nהתעלמות מדלגת ישר לסבב הבא.\n"
-                f"יש {self.ROUNDS} סבבים, ושתי אזעקות מפילות את המשימה.")
+                "לוחצים על כל שוטר (👮). הלוח לא זז.\n"
+                "לחיצה על אזרח (🧑‍💼) היא אזעקה והסבב מתחיל מחדש. שלוש אזעקות והמשימה נכשלת.\n"
+                f"יש {self.ROUNDS} סבבים. התעלמות מדלגת ישר לסבב הבא.")
 
     def hit(self, i):
         async def cb(interaction):
-            if time.time() > self.round_end + 1.0:      # 1s of network delay is forgiven
+            if time.time() > self.round_end + 1.0:
                 self.setup_round()
                 self.rebuild()
                 return await self.mistake(interaction, "הזמן נגמר והשוטרים התריעו. סבב חדש.", "השוטרים הקיפו את הבנק.")
             kind = self.cells[i]
             if kind == "civ":
                 self.neut = 0
-                self.boss_alive, self.boss_hp = self.round >= 3, 2
-                self.shuffle_cells()
+                self.new_board()
                 self.rebuild()
-                return await self.mistake(interaction, "פגעתם באזרח והאזעקה הופעלה.", "פגעתם בעוד אזרח והמשטרה הוזעקה.")
+                return await self.mistake(interaction, "לחצתם על אזרח והאזעקה הופעלה. הסבב מתחיל מחדש.", "פגעתם בעוד אזרח והמשטרה הוזעקה.")
             if kind == "empty":
-                self.round_end -= 1
-                self.note = "אין שם כלום, הפסדתם זמן."
+                self.note = "אין שם כלום."
             else:
-                if kind == "boss":
-                    self.boss_hp -= 1
-                    if self.boss_hp > 0:
-                        self.note = "הסוכן נפגע, צריך עוד פגיעה אחת."
-                    else:
-                        self.boss_alive = False
-                        self.neut += 1
-                        self.note = "הסוכן החשאי מנוטרל."
-                else:
-                    self.neut += 1
-                    self.note = "שוטר מנוטרל."
+                self.cells[i] = "empty"
+                self.neut += 1
+                self.note = "שוטר מנוטרל."
                 if self.neut >= self.cops:
                     if self.round >= self.ROUNDS:
                         return await self.end(interaction, True, "כל השוטרים מנוטרלים והבנק שקט לגמרי.")
                     self.round += 1
                     self.setup_round()
                     self.note = "הסבב הושלם, ממשיכים."
-            self.shuffle_cells()
             self.rebuild()
             await hz_edit(interaction, embed=self.embed(), view=self)
         return cb
@@ -2723,7 +2685,7 @@ class LootView(discord.ui.View):
         self.done = True
         uid = self.user.id
         self.h.loot[uid] = self.got
-        self.h.loot_items[uid] = [(ic, nm) for ic, nm, _ in self.items]
+        self.h.loot_items[uid] = list(self.items)
         self.h.loot_pending.discard(uid)
         if not self.h.loot_pending:
             self.h.loot_done.set()
@@ -2751,7 +2713,7 @@ async def vault_blown(h):
         v = LootView(h, p["user"])
         try:
             v.message = await h.interactions[uid].followup.send(
-                content="-# 💥 הכספות התפוצצו! יש לכם רגע לגנוב מהמגירות.",
+                content="-# 💥 כל הצוות הצליח והכספות התפוצצו! יש לכם רגע לגנוב מהמגירות.",
                 embed=v.embed(), view=v, ephemeral=True, wait=True)
         except Exception as ex:
             print("Heist loot send failed:", repr(ex))
@@ -2781,7 +2743,7 @@ async def finish_heist(h):
         else:
             win = 0                              # failing on purpose (or timing out) never gives anything back
         loot = h.loot.get(uid, 0)
-        kept = loot if (ok >= 2 and h.results.get(uid)) else 0   # the loot is kept only by players whose mission worked
+        kept = loot                              # the loot is only handed out when the whole crew succeeded, so it is always paid
         win += kept
         DB.get("pending", {}).pop(p["token"], None)
         BUSY.discard(uid)
@@ -2789,7 +2751,7 @@ async def finish_heist(h):
         net = win - h.stake
         loot_txt = ""
         if loot:
-            icons = "".join(ic for ic, _ in h.loot_items.get(uid, []))
+            icons = "".join(ic for ic, _, _ in h.loot_items.get(uid, []))
             loot_txt = f"  {icons} שלל {fmt(loot)}" + ("" if kept else " (אבד)")
         if net > 0:
             lines.append(f"{p['user'].mention}  +{fmt(net)} {c}{loot_txt}")
@@ -2802,13 +2764,12 @@ async def finish_heist(h):
     save()
     crew = []
     for uid, p, net, role, kept in log_lines:
-        ric = HEIST_ROLES[p["role"]][1] if p["role"] else "▪️"
-        crew.append(f"{ric} **{p['user'].name}** · {role} · {'✅' if h.results.get(uid) else '❌'}"
-                    + (f" · loot {fmt(kept)}" if kept else ""))
+        crew.append(f"**{p['user'].name}** — {role} — {'completed' if h.results.get(uid) else 'failed'}"
+                    + (f" — loot {fmt(kept)}" if kept else ""))
     verdict = {3: "Full success", 2: "Partial success"}.get(ok, "Failed")
     for uid, p, net, role, kept in log_lines:
         log_game(p["user"], "heist", h.stake, net,
-                 detail=f"**{verdict}**  ·  missions {ok}/3  ·  crew of {n}  ·  entry {fmt(h.stake)}\n" + "\n".join(crew))
+                 detail=f"**{verdict}** | missions {ok}/3 | crew of {n} | entry {fmt(h.stake)}\n" + "\n".join(crew))
     if ok == 3:
         title, color, kind, text = "השוד הצליח", GOLD, "win", "שלוש משימות הושלמו והצוות יצא עם הכסף."
     elif ok == 2:
@@ -2871,12 +2832,19 @@ async def run_heist(h):
             heist_unmark(h.creator)                  # the creator may open a new heist today
             return await heist_abort(h, "השוד בוטל",
                                      f"לא הצטרפו מספיק שחקנים בזמן (נדרשים לפחות {HEIST_MIN}). הכסף חזר לבנק, בלי הפסד.", to="bank")
+        h.phase, h.end = "roles", int(time.time()) + HEIST_ROLE_WAIT
+        view.show_roles()
+        await h.refresh()
+        try:
+            await asyncio.wait_for(h.roles_set.wait(), HEIST_ROLE_WAIT)
+        except asyncio.TimeoutError:
+            pass
         free = [r for r in HEIST_ROLE_ORDER if h.role_of(r) is None]
         random.shuffle(free)
         for p in h.players.values():
             if p["role"] is None:
                 p["role"] = free.pop()
-        h.phase, h.end = "mission", int(time.time()) + HEIST_OPEN_WAIT      # roles are final: whoever did not choose gets a free one
+        h.phase, h.end = "mission", int(time.time()) + HEIST_OPEN_WAIT      # whoever did not choose in time got a free role
         view.show_mission()
         await h.refresh()
         try:
@@ -2889,7 +2857,9 @@ async def run_heist(h):
             await asyncio.wait_for(h.all_done.wait(), max(HEIST_TIME.values()) + 5)
         except asyncio.TimeoutError:
             pass
-        if h.vault_open and h.loot_pending:     # let everybody finish opening the drawers
+        if h.vault_task is not None:            # the drawers were sent: wait until everybody opened them
+            await h.vault_task
+        if h.vault_open and h.loot_pending:
             try:
                 await asyncio.wait_for(h.loot_done.wait(), HEIST_LOOT_WAIT + 3)
             except asyncio.TimeoutError:
