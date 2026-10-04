@@ -1903,7 +1903,7 @@ HEIST_SKIPS = 2                  # "התעלמות" = a new task, per player
 HEIST_FUSE = 20                  # seconds the bomber has to run out
 HEIST_GRACE = 1.5                # network delay allowed on the run
 HEIST_LOOT_PICKS = 2             # drawers every player may open after the safes blow up
-HEIST_LOOT_WAIT = 45             # seconds to open the drawers
+HEIST_LOOT_WAIT = 90             # seconds to open the drawers (the message can be sent again by a button until then)
 HEIST_ROLES = {                  # key: (name, icon)
     "lookout": ("מנטרל שוטרים", "👮"),
     "hacker": ("מפצח קוד", "💻"),
@@ -2077,6 +2077,8 @@ class Heist:
         self.loot = {}           # user id -> money stolen from the drawers
         self.loot_items = {}     # user id -> list of (emoji, name)
         self.loot_pending = set()
+        self.loot_views = {}     # user id -> his current drawers view
+        self.loot_deadline = 0
         self.full, self.roles_set, self.all_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
         self.loot_done = asyncio.Event()
         self.end = int(time.time()) + HEIST_JOIN_WAIT
@@ -2117,6 +2119,9 @@ class Heist:
             e.description = ("לחצו על המשימה שלי כדי לקבל הודעה אישית שרק אתם רואים. הזמן מתחיל לרוץ ברגע שפתחתם אותה.\n"
                              "רק כשכל הצוות מסיים את המשימה בהצלחה, כולם מקבלים הודעה ויכולים לגנוב מהמגירות.")
             when = "אפשר לפתוח עד"
+            if self.vault_open:
+                e.description = ("💥 כל הצוות הצליח והכספות התפוצצו! המגירות נשלחו לכולם.\n"
+                                 "אם ההודעה הפרטית נעלמה, לחצו על \"המגירות שלי\" כדי לקבל אותה שוב.")
         e.add_field(name="דמי כניסה", value=f"{fmt(self.stake)} {cur()}")
         e.add_field(name="שחקנים", value=f"{n} מתוך {self.size}")
         e.add_field(name=when, value=f"<t:{self.end}:R>")
@@ -2244,6 +2249,27 @@ class HeistView(discord.ui.View):
             return await interaction.response.edit_message(embed=e, view=None, attachments=[])
         self.show_join()
         await interaction.response.edit_message(embed=h.embed(), view=self)
+
+    def show_loot(self):
+        self.clear_items()
+        b = discord.ui.Button(style=discord.ButtonStyle.primary, label="המגירות שלי", emoji="🔐")
+        b.callback = self.reopen
+        self.add_item(b)
+
+    async def reopen(self, interaction):
+        """The drawers message was dismissed or lost: send it again, with everything the player already opened."""
+        h, uid = self.h, interaction.user.id
+        say = lambda t: interaction.response.send_message(t, ephemeral=True)
+        if uid not in h.players or not h.vault_open:
+            return await say("אין לך מגירות בשוד הזה.")
+        old = h.loot_views.get(uid)
+        if old is None or old.done or uid in h.loot:
+            return await say("כבר סיימת לפתוח את המגירות.")
+        v = LootView(h, interaction.user, src=old)
+        old.stop()
+        h.loot_views[uid] = v
+        await interaction.response.send_message(embed=v.embed(), view=v, ephemeral=True)
+        v.message = await interaction.original_response()
 
     def show_mission(self):
         self.clear_items()
@@ -2657,19 +2683,34 @@ def loot_short(n):
 class LootView(discord.ui.View):
     """Personal (ephemeral) safe: a 3x3 wall of locked drawers. Each drawer holds jewels / dollars / cash, or nothing."""
 
-    def __init__(self, h, user):
-        super().__init__(timeout=HEIST_LOOT_WAIT)
+    def __init__(self, h, user, src=None):
+        super().__init__(timeout=max(5, h.loot_deadline - time.time()))
         self.h, self.user = h, user
-        self.drawers = [random.choice(LOOT_ITEMS) for _ in range(LOOT_DRAWERS - LOOT_EMPTY)] + [None] * LOOT_EMPTY
-        random.shuffle(self.drawers)
-        self.picks, self.got, self.items, self.done = 0, 0, [], False
         self.message = None
         self.btns = []
+        self.opened = set()
+        if src is None:
+            self.drawers = [random.choice(LOOT_ITEMS) for _ in range(LOOT_DRAWERS - LOOT_EMPTY)] + [None] * LOOT_EMPTY
+            random.shuffle(self.drawers)
+            self.picks, self.got, self.items, self.done = 0, 0, [], False
+        else:                                   # the same drawers again (the player lost his message): keep what he opened
+            self.drawers, self.picks, self.got, self.items, self.done = src.drawers, src.picks, src.got, list(src.items), False
         for i in range(LOOT_DRAWERS):
             b = discord.ui.Button(style=discord.ButtonStyle.secondary, label=f"{i + 1}", emoji="🔒", row=i // 3)
             b.callback = self.opener(i)
             self.btns.append(b)
             self.add_item(b)
+        for i in (src.opened if src else ()):
+            self.show_open(i)
+
+    def show_open(self, i):
+        item, b = self.drawers[i], self.btns[i]
+        self.opened.add(i)
+        b.disabled = True
+        if item is None:
+            b.emoji, b.label, b.style = "🕸️", "ריק", discord.ButtonStyle.danger
+        else:
+            b.emoji, b.label, b.style = item[0], loot_short(loot_value(item[2])), discord.ButtonStyle.success
 
     def embed(self, final=False):
         left = HEIST_LOOT_PICKS - self.picks
@@ -2680,12 +2721,12 @@ class LootView(discord.ui.View):
                 lines = "יצאתם בידיים ריקות."
             e = discord.Embed(color=GREEN if self.got else RED, title="🔐 השלל שלכם", description=(
                 f"{lines}\n\n**סה\"כ:** {fmt(self.got)} {cur()}\n"
-                f"-# השלל מצטרף לרווח רק אם לפחות שתי משימות בצוות הצליחו וגם המשימה שלכם הצליחה. ממתינים לשאר הצוות."))
+                f"-# השלל נוסף ליתרה שלכם כשהשוד מסתיים. ממתינים לשאר הצוות."))
             return e
         e = discord.Embed(color=GOLD, title="💥 הכספות התפוצצו!", description=(
             f"הדלת נפתחה והמגירות מולכם. פתחו **{left}** מגירות ותגנבו מה שיש בהן.\n"
             f"ב-{LOOT_EMPTY} מתוך {LOOT_DRAWERS} מגירות אין כלום, אז תבחרו חכם.\n"
-            f"יש לכם {HEIST_LOOT_WAIT} שניות.\n"
+            f"הזמן נגמר <t:{int(self.h.loot_deadline)}:R>. אם ההודעה נעלמה, לחצו על הכפתור בהודעה הראשית כדי לקבל אותה שוב.\n"
             + (f"\nעד עכשיו: **{fmt(self.got)}** {cur()}" if self.picks else "")))
         e.set_footer(text="🔒 נעול   ·   🕸️ ריק   ·   💎👑💍⌚💵💰🪙 שלל")
         return e
@@ -2695,16 +2736,12 @@ class LootView(discord.ui.View):
             if self.done or self.btns[i].disabled:
                 return await interaction.response.defer()
             item = self.drawers[i]
-            b = self.btns[i]
-            b.disabled = True
-            if item is None:
-                b.emoji, b.label, b.style = "🕸️", "ריק", discord.ButtonStyle.danger
-            else:
-                ic, nm, frac = item
-                val = loot_value(frac)
+            if item is not None:
+                ic, nm, amount = item
+                val = loot_value(amount)
                 self.got += val
                 self.items.append((ic, nm, val))
-                b.emoji, b.label, b.style = ic, loot_short(val), discord.ButtonStyle.success
+            self.show_open(i)
             self.picks += 1
             if self.picks >= HEIST_LOOT_PICKS:
                 self.finish()
@@ -2749,10 +2786,12 @@ async def vault_blown(h):
     if h.vault_open:
         return
     h.vault_open = True
+    h.loot_deadline = time.time() + HEIST_LOOT_WAIT
     targets = [(uid, p) for uid, p in h.players.items() if uid in h.interactions]
     h.loot_pending = {uid for uid, _ in targets}
     for uid, p in targets:
         v = LootView(h, p["user"])
+        h.loot_views[uid] = v
         try:
             v.message = await h.interactions[uid].followup.send(
                 content="-# 💥 כל הצוות הצליח והכספות התפוצצו! יש לכם רגע לגנוב מהמגירות.",
@@ -2762,6 +2801,9 @@ async def vault_blown(h):
             h.loot_pending.discard(uid)
     if not h.loot_pending:
         h.loot_done.set()
+    else:
+        h.view.show_loot()
+        await h.refresh()
 
 async def finish_heist(h):
     c = cur()
