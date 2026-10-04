@@ -1949,7 +1949,7 @@ HEIST_COLORS = {"🟥": ["דם", "תות", "כבאית"], "🟦": ["שמיים",
 HEIST_RADIO = ["יחידה 4 לכל הכוחות, חשוד נראה ליד הכספת.", "כאן מוקד, ניידות בדרך אל המבנה.",
                "דיווח על סיור משטרתי בקומת הכניסה.", "אזעקה שקטה הופעלה בבנק, כל היחידות לאזור."]
 
-HACK_DIGITS, HACK_LEN, HACK_TRIES = "123456789", 5, 8
+HACK_DIGITS, HACK_LEN, HACK_TRIES = "123456789", 4, 10
 
 def hack_new():
     return "".join(random.sample(HACK_DIGITS, HACK_LEN))
@@ -2081,6 +2081,8 @@ class Heist:
     def __init__(self, channel, stake):
         self.channel, self.stake = channel, stake
         self.token = None
+        self.creator = None
+        self.cancelled = False
         self.players = {}        # user id -> {"user", "token", "role"}
         self.phase = "join"      # join -> roles -> mission -> done
         self.message = self.view = None
@@ -2096,8 +2098,8 @@ class Heist:
         self.loot_done = asyncio.Event()
         self.end = int(time.time()) + HEIST_JOIN_WAIT
 
-    def add_player(self, user, token):
-        self.players[user.id] = {"user": user, "token": token, "role": None}
+    def add_player(self, user, token, role=None):
+        self.players[user.id] = {"user": user, "token": token, "role": role}
         if len(self.players) >= HEIST_MAX:
             self.full.set()
 
@@ -2119,9 +2121,9 @@ class Heist:
         n = len(self.players)
         e = discord.Embed(color=GOLD, title="שוד הבנק")
         if self.phase == "join":
-            e.description = ("עד שלושה שחקנים נכנסים לבנק, לכל אחד תפקיד ומשימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
+            e.description = ("לחצו על התפקיד שאתם רוצים כדי להצטרף. עד שלושה שחקנים, לכל אחד תפקיד ומשימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
                              f"דמי הכניסה הם סכום קבוע של **{fmt(self.stake)}** {cur()} לכל שחקן (הוצאות השוד).\n"
-                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן.")
+                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן. כשיש שלושה השוד מתחיל מיד.")
             when = "ההרשמה נסגרת"
         elif self.phase == "roles":
             e.description = "כל אחד בוחר תפקיד אחד. מי שלא בחר יקבל תפקיד אקראי."
@@ -2133,19 +2135,19 @@ class Heist:
         e.add_field(name="דמי כניסה", value=f"{fmt(self.stake)} {cur()}")
         e.add_field(name="שחקנים", value=f"{n} מתוך {HEIST_MAX}")
         e.add_field(name=when, value=f"<t:{self.end}:R>")
-        if self.phase == "join":
-            e.add_field(name="הצוות", value="\n".join(p["user"].mention for p in self.players.values()), inline=False)
-        else:
-            for key in HEIST_ROLE_ORDER:
-                name, icon = HEIST_ROLES[key]
-                uid = self.role_of(key)
-                if uid is None:
-                    val = "פנוי"
-                else:
-                    val = self.players[uid]["user"].mention
-                    if self.phase == "mission":
-                        val += "\nסיים" if uid in self.results else "\nבביצוע" if uid in self.opened else "\nממתין"
-                e.add_field(name=f"{icon} {name}", value=val)
+        for key in HEIST_ROLE_ORDER:
+            name, icon = HEIST_ROLES[key]
+            uid = self.role_of(key)
+            if uid is None:
+                val = "פנוי"
+            else:
+                val = self.players[uid]["user"].mention
+                if self.phase == "mission":
+                    val += "\nסיים" if uid in self.results else "\nבביצוע" if uid in self.opened else "\nממתין"
+            e.add_field(name=f"{icon} {name}", value=val)
+        waiting = [p["user"].mention for p in self.players.values() if not p["role"]]
+        if self.phase == "join" and waiting:
+            e.add_field(name="עוד לא בחרו תפקיד", value="\n".join(waiting), inline=False)
         e.set_footer(text=f"הצלחה מלאה בצוות של {n}: x{HEIST_MULT[n]:g}   |   שתי משימות מתוך שלוש: מחצית מההימור חוזרת")
         if self.art:
             e.set_image(url="attachment://heist.png")
@@ -2173,19 +2175,41 @@ class HeistView(discord.ui.View):
 
     def show_join(self):
         self.clear_items()
-        b = discord.ui.Button(style=discord.ButtonStyle.success, label=f"כניסה למשחק ({fmt(self.h.stake)})")
-        b.callback = self.join
-        self.add_item(b)
-
-    def show_roles(self):
-        self.clear_items()
         for key in HEIST_ROLE_ORDER:
             name, icon = HEIST_ROLES[key]
             taken = self.h.role_of(key) is not None
-            b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.primary,
+            b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.success,
                                   label=name, emoji=icon, disabled=taken)
             b.callback = self.pick(key)
             self.add_item(b)
+        b = discord.ui.Button(style=discord.ButtonStyle.danger, label="יציאה", emoji="🚪")
+        b.callback = self.leave
+        self.add_item(b)
+
+    async def leave(self, interaction):
+        """Only while the sign-up is open: the player is removed and his entry fee goes back to cash."""
+        h, user = self.h, interaction.user
+        say = lambda t: interaction.response.send_message(t, ephemeral=True)
+        p = h.players.get(user.id)
+        if p is None:
+            return await say("אינך בצוות של השוד הזה.")
+        if h.phase != "join" or h.full.is_set():
+            return await say("אי אפשר לצאת אחרי שהשוד התחיל.")
+        h.players.pop(user.id)
+        if DB.get("pending", {}).pop(p["token"], None) is not None:
+            user_data(user.id)["cash"] += h.stake
+        BUSY.discard(user.id)
+        if user.id == h.creator:
+            heist_unmark(user.id)
+        save()
+        log_money(user, "HEIST | LEFT", f"Left the heist, entry fee of {fmt(h.stake)} {cur()} was returned to cash", YELLOW)
+        if not h.players:                      # everybody left: the heist is cancelled right now
+            h.cancelled, h.phase = True, "done"
+            h.full.set()
+            e = discord.Embed(color=YELLOW, title="השוד בוטל", description="כל השחקנים יצאו והכסף חזר למזומן.")
+            return await interaction.response.edit_message(embed=e, view=None, attachments=[])
+        self.show_join()
+        await interaction.response.edit_message(embed=h.embed(), view=self)
 
     def show_mission(self):
         self.clear_items()
@@ -2193,46 +2217,37 @@ class HeistView(discord.ui.View):
         b.callback = self.mission
         self.add_item(b)
 
-    async def join(self, interaction):
-        h, user = self.h, interaction.user
-        say = lambda t: interaction.response.send_message(t, ephemeral=True)
-        if h.phase != "join":
-            return await say("ההרשמה לשוד הזה כבר נסגרה.")
-        if user.id in h.players:
-            return await say("אתה כבר בצוות.")
-        if len(h.players) >= HEIST_MAX:
-            return await say("הצוות מלא.")
-        if user.id in BUSY:
-            return await say(BUSY_MSG)
-        u = user_data(user.id)
-        if u["cash"] < h.stake:
-            return await say(f"אין לך מספיק כסף. דמי הכניסה הם {fmt(h.stake)} {cur()}.")
-        u["cash"] -= h.stake
-        token = f"{h.token}:{user.id}"
-        DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": h.stake}
-        BUSY.add(user.id)
-        save()
-        h.add_player(user, token)
-        await interaction.response.edit_message(embed=h.embed(), view=self)
-
     def pick(self, role):
+        """One button = join the heist AS this role (or switch to it if you are already in)."""
         async def cb(interaction):
-            h = self.h
-            p = h.players.get(interaction.user.id)
+            h, user = self.h, interaction.user
             say = lambda t: interaction.response.send_message(t, ephemeral=True)
+            if h.phase != "join":
+                return await say("ההרשמה לשוד הזה כבר נסגרה.")
+            holder = h.role_of(role)
+            if holder is not None and holder != user.id:
+                return await say("התפקיד הזה כבר נתפס, בחר תפקיד אחר.")
+            p = h.players.get(user.id)
             if p is None:
-                return await say("אינך חלק מהצוות של השוד הזה.")
-            if h.phase != "roles":
+                if len(h.players) >= HEIST_MAX:
+                    return await say("הצוות מלא.")
+                if user.id in BUSY:
+                    return await say(BUSY_MSG)
+                u = user_data(user.id)
+                if u["cash"] < h.stake:
+                    return await say(f"אין לך מספיק כסף. דמי הכניסה הם {fmt(h.stake)} {cur()}.")
+                u["cash"] -= h.stake
+                token = f"{h.token}:{user.id}"
+                DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": h.stake}
+                BUSY.add(user.id)
+                save()
+                h.add_player(user, token, role)
+            else:
+                p["role"] = role
+            if h.full.is_set():               # 3 players: the heist starts right now, run_heist updates the message
                 return await interaction.response.defer()
-            if p["role"]:
-                return await say("כבר בחרת תפקיד.")
-            if h.role_of(role):
-                return await say("התפקיד הזה כבר נתפס, בחר אחר.")
-            p["role"] = role
-            self.show_roles()
+            self.show_join()
             await interaction.response.edit_message(embed=h.embed(), view=self)
-            if all(q["role"] for q in h.players.values()):
-                h.roles_set.set()
         return cb
 
     async def mission(self, interaction):
@@ -2359,7 +2374,7 @@ class CodeModal(discord.ui.Modal):
         super().__init__(title="ניסיון פריצה")
         self.v = view
         self.code = discord.ui.TextInput(label=f"קוד בן {HACK_LEN} ספרות (1 עד 9, בלי חזרות)", min_length=HACK_LEN,
-                                         max_length=HACK_LEN, placeholder="לדוגמה 31429")
+                                         max_length=HACK_LEN, placeholder="לדוגמה 3142")
         self.add_item(self.code)
 
     async def on_submit(self, interaction):
@@ -2820,15 +2835,15 @@ async def finish_heist(h):
         e.set_image(url=None)
         await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
 
-async def heist_abort(h, title="הזמן אזל", text="השוד בוטל והכסף חזר למזומן."):
+async def heist_abort(h, title="הזמן אזל", text="השוד בוטל והכסף חזר למזומן.", to="cash"):
     """Something went wrong: nobody loses anything. Players who were not paid yet get the entry fee back to their cash."""
     h.phase = "done"
     names = []
     for uid, p in h.players.items():
         if DB.get("pending", {}).pop(p["token"], None) is not None:
-            user_data(uid)["cash"] += h.stake
+            user_data(uid)[to] += h.stake
             names.append(p["user"].mention)
-            log_money(p["user"], "HEIST | CANCELLED", f"Heist cancelled, entry fee of {fmt(h.stake)} {cur()} was returned to cash", YELLOW)
+            log_money(p["user"], "HEIST | CANCELLED", f"Heist cancelled, entry fee of {fmt(h.stake)} {cur()} was returned to {to}", YELLOW)
         BUSY.discard(uid)
     save()
     e = discord.Embed(color=YELLOW, title=title, description=(
@@ -2850,23 +2865,18 @@ async def run_heist(h):
             await asyncio.wait_for(h.full.wait(), max(0, h.end - time.time()))
         except asyncio.TimeoutError:
             pass
+        if h.cancelled:
+            return
         if len(h.players) < HEIST_MIN:
-            heist_unmark(next(iter(h.players)))      # the creator may open a new heist today
+            heist_unmark(h.creator)                  # the creator may open a new heist today
             return await heist_abort(h, "השוד בוטל",
-                                     f"לא הצטרפו מספיק שחקנים בזמן (נדרשים לפחות {HEIST_MIN}). הכסף חזר למזומן.")
-        h.phase, h.end = "roles", int(time.time()) + HEIST_ROLE_WAIT
-        view.show_roles()
-        await h.refresh()
-        try:
-            await asyncio.wait_for(h.roles_set.wait(), HEIST_ROLE_WAIT)
-        except asyncio.TimeoutError:
-            pass
+                                     f"לא הצטרפו מספיק שחקנים בזמן (נדרשים לפחות {HEIST_MIN}). הכסף חזר לבנק, בלי הפסד.", to="bank")
         free = [r for r in HEIST_ROLE_ORDER if h.role_of(r) is None]
         random.shuffle(free)
         for p in h.players.values():
             if p["role"] is None:
                 p["role"] = free.pop()
-        h.phase, h.end = "mission", int(time.time()) + HEIST_OPEN_WAIT
+        h.phase, h.end = "mission", int(time.time()) + HEIST_OPEN_WAIT      # roles are final: whoever did not choose gets a free one
         view.show_mission()
         await h.refresh()
         try:
@@ -2905,7 +2915,8 @@ async def heist(ctx, amount: str = None):
     heist_mark(ctx.author.id)
     h = Heist(ctx.channel, bet)
     h.token = str(ctx.message.id)
-    h.add_player(ctx.author, h.token)
+    h.creator = ctx.author.id
+    h.add_player(ctx.author, h.token)         # the creator is in; he chooses his role with the buttons like everybody else
     h.view = HeistView(h)
     HEISTS[ctx.channel.id] = h
     kw = {}
