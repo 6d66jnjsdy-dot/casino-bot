@@ -1786,11 +1786,11 @@ async def cf(ctx, amount: str = None):
     await ctx.reply(embed=e, mention_author=False)
 
 # ================= HIGHER OR LOWER =================
-HL_MIN, HL_MAX = 1, 100
+HL_MIN, HL_MAX = 1, 10
 HL_RTP = 0.95
 HL_FLOOR = 1.05
 HL_CAP = 25
-HL_SAME = 25
+HL_SAME = 8
 HL_COLOR = 0x9B8CD6
 
 def hl_mult(first, choice):
