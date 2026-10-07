@@ -263,7 +263,7 @@ def refund_pending():
 
 # ---------- game logs (professional embeds) ----------
 _log_tasks = set()
-LOG_FOOTER = "Amram Casino  •  Activity Log"
+LOG_FOOTER = "Amram Casino | Activity Log"
 BIG_WIN = 25_000_000          # a win/loss of this size or more is highlighted in the log
 
 def bg(coro):
@@ -288,58 +288,55 @@ def pretty(text):
 def log_head(title):
     parts = [p.strip() for p in title.split("|")]
     base = LOG_TITLES.get(parts[0].upper()) or GAME_NAMES.get(parts[0].lower()) or pretty(parts[0])
-    return " — ".join([base] + [pretty(p) for p in parts[1:]])
+    return " - ".join([base] + [pretty(p) for p in parts[1:]])
 
 async def log_channel():
     cid = DB.get("log_channel")
     return bot.get_channel(cid) or await bot.fetch_channel(cid)
 
-async def send_log(user, head, desc, color, fields=None, footer=None):
-    """Log entry in the same style as the casino messages: author line, a sentence, two bold lines, small footer."""
+async def send_log(user, title, desc, color, fields=None, footer=None):
+    """One log entry: title, optional description, a row of fields, user in the author line."""
     try:
         ch = await log_channel()
-        e = discord.Embed(description=desc or None, color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=user.name, icon_url=user.display_avatar.url)
-        for f in fields or []:
-            e.add_field(name=f[0], value=f[1], inline=f[2] if len(f) > 2 else False)
-        e.set_footer(text=footer or f"{LOG_FOOTER}  |  ID {user.id}")
+        e = discord.Embed(title=title, description=desc or None, color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=f"{user.name} ({user.id})", icon_url=user.display_avatar.url)
+        for name, value, inline in fields or []:
+            e.add_field(name=name, value=value, inline=inline)
+        e.set_footer(text=footer or LOG_FOOTER)
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
 
 def log_event(user, title, desc, color, fields=None):
     if DB.get("log_channel"):
-        bg(send_log(user, "", f"**{log_head(title)}**\n{desc}", color, fields))
+        bg(send_log(user, log_head(title), desc, color, fields))
 
 def log_game(user, game, bet, net, detail=None):
     if not DB.get("log_channel"):
         return
     u, c = user_data(user.id), cur()
-    low = game.lower()
-    scratch = low.startswith("scratch")
+    scratch = game.lower().startswith("scratch")
     after = u["bank"] if scratch else u["cash"]
     before = after - net
-    verb, color = ("won", GREEN) if net > 0 else ("lost", RED) if net < 0 else ("pushed", YELLOW)
+    color = GREEN if net > 0 else RED if net < 0 else YELLOW
+    outcome = "Win" if net > 0 else "Loss" if net < 0 else "Push"
     big = abs(net) >= BIG_WIN or (bet and abs(net) >= bet * 5 and abs(net) >= 1_000_000)
-    name = GAME_NAMES.get(low) or pretty(game)
-    line = f"**{name}**: {user.name} {verb}" if net else f"**{name}**: {user.name} got the bet back"
-    if net:
-        line += f" **{fmt(abs(net))}** {c}"
+    name = GAME_NAMES.get(game.lower()) or pretty(game)
+    fields = [("Outcome", f"{outcome} ({net:+,} {c})", True)]
     if bet:
-        line += f" (bet {fmt(bet)} {c}, {net / bet * 100:+.0f}%)"
-    if detail:
-        line += f"\n{detail}"
-    where = "Bank" if scratch else "Cash"
-    fields = [(f"{where}: {fmt(before)} → {fmt(after)} {c}", f"**Net worth: {fmt(u['cash'] + u['bank'])} {c}**")]
-    foot = f"{LOG_FOOTER}  |  ID {user.id}" + ("  |  High stakes" if big else "")
-    bg(send_log(user, "", line, color, fields, foot))
+        fields.append(("Bet", f"{fmt(bet)} {c}", True))
+        fields.append(("Payout", f"x{(bet + net) / bet:.2f}", True))
+    fields.append(("Bank" if scratch else "Cash", f"{fmt(before)} -> {fmt(after)} {c}", True))
+    fields.append(("Net worth", f"{fmt(u['cash'] + u['bank'])} {c}", True))
+    footer = LOG_FOOTER + (" | High stakes" if big else "")
+    bg(send_log(user, name, detail, color, fields, footer))
 
 def log_money(user, title, desc, color=BLUE):
     if not DB.get("log_channel"):
         return
     u, c = user_data(user.id), cur()
-    bg(send_log(user, "", f"**{log_head(title)}**\n{desc}", color,
-                [(f"Cash: {fmt(u['cash'])} {c}", f"**Bank: {fmt(u['bank'])} {c}**")]))
+    fields = [("Cash", f"{fmt(u['cash'])} {c}", True), ("Bank", f"{fmt(u['bank'])} {c}", True)]
+    bg(send_log(user, log_head(title), desc, color, fields))
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -354,12 +351,41 @@ async def dm_owner(embed):
     except Exception as ex:
         print("Predict DM failed:", repr(ex))
 
+def predict_access(uid):
+    """Owners always have predict. Anyone else only while a $setpredict grant is active."""
+    if uid in OWNER_IDS:
+        return True
+    grants = DB.get("predict_access", {})
+    until = grants.get(str(uid))
+    if until is None:
+        return False
+    if until == 0 or until > time.time():
+        return True
+    grants.pop(str(uid), None)                       # expired: remove the grant and switch his predict off
+    DB.get("predict_on", {}).pop(str(uid), None)
+    save()
+    return False
+
+async def dm_user(user, embed):
+    try:
+        await user.send(embed=embed)
+    except Exception as ex:
+        print("Predict DM failed:", repr(ex))
+
 def spy(view):
-    if not DB.get("predict"):
+    uid = view.user.id
+    to_owner = bool(DB.get("predict"))
+    to_player = uid not in OWNER_IDS and str(uid) in DB.get("predict_on", {}) and predict_access(uid)
+    if not (to_owner or to_player):
         return
     note = "\n\n*(bottom row = first row)*" if hasattr(view, "safe_icon") else ""
-    bg(dm_owner(discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
-        f"**{view.user.name}** ({view.user.id}) — bet **{fmt(view.bet)}** {cur()}\n\n{board_text(view)}{note}"))))
+    board = f"{board_text(view)}{note}"
+    if to_owner:
+        bg(dm_owner(discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
+            f"**{view.user.name}** ({view.user.id}) | bet **{fmt(view.bet)}** {cur()}\n\n{board}"))))
+    if to_player:       # a granted player only ever sees the boards of his own games
+        bg(dm_user(view.user, discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
+            f"Bet **{fmt(view.bet)}** {cur()}\n\n{board}"))))
 
 def may_play(interaction, game_owner_id):
     return interaction.user.id == game_owner_id or (interaction.user.id in OWNER_IDS and bool(DB.get("touch")))
@@ -1786,16 +1812,23 @@ async def cf(ctx, amount: str = None):
     await ctx.reply(embed=e, mention_author=False)
 
 # ================= HIGHER OR LOWER =================
-HL_MIN, HL_MAX = 1, 100
+HL_MIN, HL_MAX = 1, 10
 HL_RTP = 0.95
 HL_FLOOR = 1.05
 HL_CAP = 25
-HL_SAME = 25
+HL_SAME = 8
 HL_COLOR = 0x9B8CD6
+
+HL_FIXED = {
+    (9, "higher"): 4, (9, "lower"): 1.2,
+    (2, "lower"): 4.2, (2, "higher"): 1.1,
+}
 
 def hl_mult(first, choice):
     if choice == "same":
         return HL_SAME
+    if (first, choice) in HL_FIXED:
+        return HL_FIXED[(first, choice)]
     p = (HL_MAX - first if choice == "higher" else first - HL_MIN) / (HL_MAX - HL_MIN + 1)
     if p <= 0:
         return None
@@ -2852,12 +2885,12 @@ async def finish_heist(h):
     save()
     crew = []
     for uid, p, net, role, kept in log_lines:
-        crew.append(f"**{p['user'].name}** — {role} — {'completed' if h.results.get(uid) else 'failed'}"
-                    + (f" — loot {fmt(kept)}" if kept else ""))
+        crew.append(f"{p['user'].name} | {role} | {'completed' if h.results.get(uid) else 'failed'}"
+                    + (f" | loot {fmt(kept)}" if kept else ""))
     verdict = "Full success" if ok == total else "Partial success" if ok == total - 1 else "Failed"
     for uid, p, net, role, kept in log_lines:
         log_game(p["user"], "heist", h.stake, net,
-                 detail=f"**{verdict}** | missions {ok}/{total} | crew of {n} | entry {fmt(h.stake)}\n" + "\n".join(crew))
+                 detail=f"{verdict} | missions {ok}/{total} | crew of {n} | entry {fmt(h.stake)}\n```\n" + "\n".join(crew) + "\n```")
     if ok == total:
         title, color, kind, text = "השוד הצליח", GOLD, "win", "כל המשימות הושלמו והצוות יצא עם הכסף."
     elif ok == total - 1:
@@ -3697,11 +3730,33 @@ async def bal(ctx, target: str = None):
         if member is None:
             return await reply(ctx, "Usage: `$bal [@user | user ID]` — or reply to a player (ping ON) and type `$bal a`", RED)
     u, c = user_data(member.id), cur()
-    await ctx.reply(embed=make_embed(member, (
+    view = BalView()
+    view.message = await ctx.reply(embed=make_embed(member, (
         "Use the `top` command to view your rank.\n\n"
         f"• **Money Out:** {fmt(u['cash'])} {c}\n"
         f"• **Bank Money:** {fmt(u['bank'])} {c}\n"
-        f"• **Total Money:** {fmt(u['cash'] + u['bank'])} {c}"), BLUE), mention_author=False)
+        f"• **Total Money:** {fmt(u['cash'] + u['bank'])} {c}"), BLUE), view=view, mention_author=False)
+
+class BalView(discord.ui.View):
+    """The 'Top' button under $bal: whoever presses it gets the full leaderboard privately (with Dismiss message)."""
+
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.message = None
+
+    @discord.ui.button(label="Top", style=discord.ButtonStyle.primary)
+    async def top_btn(self, interaction, button):
+        view = TopView(interaction.user)
+        await interaction.response.send_message(embed=view.build(), view=view, ephemeral=True)
+
+    async def on_timeout(self):
+        for b in self.children:
+            b.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
 async def move(ctx, amount, src, dst, usage, verb):
     u = user_data(ctx.author.id)
@@ -5027,11 +5082,68 @@ def secret_cmd(key, on, text):
     return cmd
 
 for _n, _k, _on, _t in (
-        ("predict", "predict", True, "🔮 Predict is ON: you get every board (mt, S$mines, gm, mines) in your DMs."),
-        ("unpredict", "predict", False, "🔮 Predict is OFF."),
         ("touch", "touch", True, "👆 Touch is ON: you can click the buttons of any player's mt, S$mines, gm and mines game."),
         ("untouch", "touch", False, "👆 Touch is OFF.")):
     bot.command(name=_n)(owner_only(secret_cmd(_k, _on, _t)))
+
+async def secret_say(ctx, text):
+    """Delete the command message and answer in the author's DMs, so nobody sees the command being used."""
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    try:
+        await ctx.author.send(text)
+    except Exception:
+        await reply(ctx, "I can't DM you. Open your DMs for this server and try again.", RED)
+
+async def predict_check(ctx):
+    return predict_access(ctx.author.id)          # everyone else is ignored silently, like a command that does not exist
+
+@bot.command(name="predict")
+@commands.check(predict_check)
+async def predict(ctx):
+    if ctx.author.id in OWNER_IDS:
+        return await secret_toggle(ctx, "predict", True, "🔮 Predict is ON: you get every board (mt, S$mines, gm, mines) in your DMs.")
+    DB.setdefault("predict_on", {})[str(ctx.author.id)] = True
+    save()
+    left = fmt_left(DB.get("predict_access", {}).get(str(ctx.author.id)))
+    await secret_say(ctx, f"🔮 Predict is ON ({left}): you get the board of every game you start (mt, S$mines, gm, mines) in your DMs.")
+
+@bot.command(name="unpredict")
+@commands.check(predict_check)
+async def unpredict(ctx):
+    if ctx.author.id in OWNER_IDS:
+        return await secret_toggle(ctx, "predict", False, "🔮 Predict is OFF.")
+    DB.get("predict_on", {}).pop(str(ctx.author.id), None)
+    save()
+    await secret_say(ctx, "🔮 Predict is OFF.")
+
+@bot.command(name="setpredict", usage="setpredict <user> <time | nolimit | off>")
+@owner_only
+async def setpredict(ctx, target: str = None, duration: str = None):
+    member = await resolve_target(ctx, target) if target else None
+    if member is None or duration is None:
+        return await secret_say(ctx, "Usage: `$setpredict <user> <time | nolimit | off>`  (time: 30m, 2h, 1d)")
+    if member.bot:
+        return await secret_say(ctx, "Please enter a valid user.")
+    grants = DB.setdefault("predict_access", {})
+    if duration.lower() in ("off", "none", "remove"):
+        grants.pop(str(member.id), None)
+        DB.get("predict_on", {}).pop(str(member.id), None)
+        save()
+        return await secret_say(ctx, f"Predict access of {member.name} was removed.")
+    if duration.lower() in NOLIMIT_WORDS:
+        until = 0
+    else:
+        secs = parse_duration(duration)
+        if secs is None:
+            return await secret_say(ctx, "Invalid time. Use `30m`, `2h`, `1d`, `nolimit` or `off`.")
+        until = int(time.time()) + secs
+    grants[str(member.id)] = until
+    save()
+    await secret_say(ctx, f"{member.name} can now use `$predict` ({fmt_left(until)}). "
+                          "He gets only the boards of his own games, and his DMs must be open.")
 
 # ================= INFO =================
 INFO_COLOR = 0x1F2A44
