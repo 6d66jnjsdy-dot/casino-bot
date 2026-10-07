@@ -216,6 +216,9 @@ async def take_bet(ctx, amount, usage, track=False):
     if ctx.author.id in BUSY:
         return await reply(ctx, BUSY_MSG, RED)
     u = user_data(ctx.author.id)
+    if amount is None:              # just "$bj" with no amount: same answer as a bet that is too small
+        await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
+        return None
     bet = parse_amount(amount, u["cash"])
     if bet is None:
         return await reply(ctx, f"Usage: `${usage}` (min {MIN_BET})", RED)
@@ -1680,7 +1683,9 @@ async def run_roulette(cid, rnd):
 @bot.command(name="roulette", usage=ROUL_USAGE)
 async def roulette(ctx, amount: str = None, *, picks: str = None):
     choices = roul_pick_list(picks)
-    if choices is None or amount is None:
+    if amount is None:
+        return await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
+    if choices is None:
         return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
     u = user_data(ctx.author.id)
     n = len(choices)
