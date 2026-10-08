@@ -1,4 +1,4 @@
-import discord, random, json, os, asyncio, io, signal, math, time, base64, re, datetime
+import shutil, discord, random, json, os, asyncio, io, signal, math, time, base64, re, datetime
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 from discord.ext import commands, tasks
@@ -29,7 +29,6 @@ ALLOWED_CHANNELS = {
     1554844436632969347,
     1554845002637508738,
     1554651968478122135,
-    1555486192559202334,
 }
 OWNER_ID = 1537816435370229820
 OWNER_IDS = {OWNER_ID, 1292041341618094173}   # everyone here has full owner permissions
@@ -45,19 +44,19 @@ EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "s
 MULT = {"diamond": 3, "urn": 15, "stone": 1.1, "coin": 2, "bag": 4.5, "map": 1}
 MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (never the urn or the bag)
 URN_CHANCE = (3, 10)
-MINES_MULT = [1.1, 1.3, 1.6, 1.85, 2.2, 4.3, 6.2, 8.35]
+MINES_MULT = [1.1, 1.2, 1.4, 1.9, 2.3, 4.3, 6.1, 8.1]
 # S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
     "2x2": (2, 2, 1, [1.3, 2, 3.9]),
-    "4x4": (4, 4, 2, [1.2, 1.4, 1.6, 1.8, 2, 2.4, 2.76, 3.2, 3.4, 3.7, 4.1, 6.4, 8.6, 10.5]),
+    "4x4": (4, 4, 2, [1.2, 1.3, 1.5, 1.8, 2, 2.1, 2.2, 2.7, 3, 3.4, 3.8, 4.2, 8.6, 10.5]),
     "5x4": (5, 4, 3, [1.2, 1.5, 1.8, 2, 2.3, 2.4, 2.6, 3, 3.2, 3.4, 3.9, 4, 4.2, 5.4, 9.85, 12, 15]),
 }
 MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
 MULTI_MAX = 5
-MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch", "heist")
+MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch")
 
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1
@@ -76,7 +75,14 @@ def load():
     try:
         with open(DB_FILE) as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return {"currency": "💸", "users": {}}
+    except Exception as e:
+        print("economy.json is unreadable, keeping a copy as economy.corrupt.json:", repr(e))
+        try:
+            shutil.copy(DB_FILE, DB_FILE.replace(".json", ".corrupt.json"))
+        except Exception:
+            pass
         return {"currency": "💸", "users": {}}
 
 DB = load()
@@ -216,15 +222,11 @@ async def take_bet(ctx, amount, usage, track=False):
     if ctx.author.id in BUSY:
         return await reply(ctx, BUSY_MSG, RED)
     u = user_data(ctx.author.id)
-    if amount is None:              # just "$bj" with no amount: same answer as a bet that is too small
-        await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
-        return None
     bet = parse_amount(amount, u["cash"])
     if bet is None:
         return await reply(ctx, f"Usage: `${usage}` (min {MIN_BET})", RED)
     if bet < MIN_BET:
-        await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
-        return None
+        return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
     if bet > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
     u["cash"] -= bet
@@ -266,8 +268,7 @@ def refund_pending():
 
 # ---------- game logs (professional embeds) ----------
 _log_tasks = set()
-LOG_FOOTER = "Amram Casino | Activity Log"
-BIG_WIN = 25_000_000          # a win/loss of this size or more is highlighted in the log
+LOG_FOOTER = "Amram Casino  •  Activity Log"
 
 def bg(coro):
     t = asyncio.create_task(coro)
@@ -276,36 +277,45 @@ def bg(coro):
 
 GAME_NAMES = {"gm": "Gold Mines", "mines": "Mines", "money tower": "Money Tower", "blackjack": "Blackjack",
               "slots": "Slots", "roulette": "Roulette", "heads or tail": "Heads or Tail",
-              "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower", "heist": "Bank Heist",
-              "rob": "Rob"}
+              "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower"}
+GAME_ICONS = (("s$mines", "💣"), ("mines", "💣"), ("gm", "⛏️"), ("money tower", "🗼"), ("blackjack", "🃏"),
+              ("slots", "🎰"), ("roulette", "🎡"), ("heads", "🪙"), ("chicken", "🐓"), ("higher", "🎲"),
+              ("scratch", "🎟️"), ("rob", "🦹"))
 LOG_TITLES = {
-    "DEP": "Deposit", "WITH": "Withdrawal", "WORK": "Work", "CRIME": "Crime", "PAY": "Transfer",
-    "SHOP": "Shop Purchase", "ADD MONEY": "Money Added", "REMOVE MONEY": "Money Removed",
-    "RESET MONEY": "Money Reset", "ADD MONEY TO ROLE": "Money Added To Role", "LOG CHANNEL SET": "Log Channel Set",
+    "DEP": "🏦 Deposit", "WITH": "🏧 Withdrawal", "WORK": "🔨 Work", "CRIME": "🕵️ Crime", "PAY": "🤝 Transfer",
+    "SHOP": "🛒 Shop Purchase", "ADD MONEY": "➕ Money Added", "REMOVE MONEY": "➖ Money Removed",
+    "RESET MONEY": "♻️ Money Reset", "ADD MONEY TO ROLE": "👥 Money Added To Role", "LOG CHANNEL SET": "📋 Log Channel Set",
 }
 
 def pretty(text):
     text = text.strip()
     return text.title() if text.isupper() else text[:1].upper() + text[1:]
 
+def game_icon(game):
+    g = game.lower()
+    for key, icon in GAME_ICONS:
+        if g.startswith(key):
+            return icon
+    return "🎮"
+
 def log_head(title):
     parts = [p.strip() for p in title.split("|")]
-    base = LOG_TITLES.get(parts[0].upper()) or GAME_NAMES.get(parts[0].lower()) or pretty(parts[0])
-    return " - ".join([base] + [pretty(p) for p in parts[1:]])
+    base = LOG_TITLES.get(parts[0].upper())
+    if base is None:
+        low = parts[0].lower()
+        base = f"{game_icon(low)} {GAME_NAMES.get(low) or pretty(parts[0])}"
+    return base + "".join(f"  •  {pretty(p)}" for p in parts[1:])
 
-async def log_channel():
-    cid = DB.get("log_channel")
-    return bot.get_channel(cid) or await bot.fetch_channel(cid)
-
-async def send_log(user, title, desc, color, fields=None, footer=None):
-    """One log entry: title, optional description, a row of fields, user in the author line."""
+async def send_log(user, head, desc, color, fields):
     try:
-        ch = await log_channel()
-        e = discord.Embed(title=title, description=desc or None, color=color, timestamp=discord.utils.utcnow())
-        e.set_author(name=f"{user.name} ({user.id})", icon_url=user.display_avatar.url)
-        for name, value, inline in fields or []:
-            e.add_field(name=name, value=value, inline=inline)
-        e.set_footer(text=footer or LOG_FOOTER)
+        cid = DB.get("log_channel")
+        ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        e = discord.Embed(title=head, description=desc or None, color=color, timestamp=discord.utils.utcnow())
+        e.set_author(name=user.name, icon_url=user.display_avatar.url)
+        e.set_thumbnail(url=user.display_avatar.url)
+        for name, value in fields or []:
+            e.add_field(name=name, value=value, inline=True)
+        e.set_footer(text=f"{LOG_FOOTER}  •  ID {user.id}")
         await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
     except Exception as ex:
         print("Log failed:", repr(ex))
@@ -318,28 +328,29 @@ def log_game(user, game, bet, net, detail=None):
     if not DB.get("log_channel"):
         return
     u, c = user_data(user.id), cur()
-    scratch = game.lower().startswith("scratch")
-    after = u["bank"] if scratch else u["cash"]
-    before = after - net
-    color = GREEN if net > 0 else RED if net < 0 else YELLOW
-    outcome = "Win" if net > 0 else "Loss" if net < 0 else "Push"
-    big = abs(net) >= BIG_WIN or (bet and abs(net) >= bet * 5 and abs(net) >= 1_000_000)
-    name = GAME_NAMES.get(game.lower()) or pretty(game)
-    fields = [("Outcome", f"{outcome} ({net:+,} {c})", True)]
+    if net > 0:
+        tag, color, dot, amt = "WIN", GREEN, "🟢", f"+{fmt(net)}"
+    elif net < 0:
+        tag, color, dot, amt = "LOSS", RED, "🔴", f"-{fmt(-net)}"
+    else:
+        tag, color, dot, amt = "PUSH", YELLOW, "🟡", "±0"
+    low = game.lower()
+    desc = f"{dot} **{tag}**  ·  `{amt}` {c}" + (f"\n{detail}" if detail else "")
+    fields = []
     if bet:
-        fields.append(("Bet", f"{fmt(bet)} {c}", True))
-        fields.append(("Payout", f"x{(bet + net) / bet:.2f}", True))
-    fields.append(("Bank" if scratch else "Cash", f"{fmt(before)} -> {fmt(after)} {c}", True))
-    fields.append(("Net worth", f"{fmt(u['cash'] + u['bank'])} {c}", True))
-    footer = LOG_FOOTER + (" | High stakes" if big else "")
-    bg(send_log(user, name, detail, color, fields, footer))
+        fields.append(("💵 Bet", f"`{fmt(bet)}` {c}"))
+    fields.append(("📊 Net", f"`{amt}` {c}"))
+    if low.startswith("scratch"):
+        fields.append(("🏦 Bank", f"`{fmt(u['bank'])}` {c}"))
+    else:
+        fields.append(("💰 Cash", f"`{fmt(u['cash'])}` {c}"))
+    head = f"{game_icon(game)} {GAME_NAMES.get(low) or pretty(game)}"
+    bg(send_log(user, head, desc, color, fields))
 
 def log_money(user, title, desc, color=BLUE):
-    if not DB.get("log_channel"):
-        return
     u, c = user_data(user.id), cur()
-    fields = [("Cash", f"{fmt(u['cash'])} {c}", True), ("Bank", f"{fmt(u['bank'])} {c}", True)]
-    bg(send_log(user, log_head(title), desc, color, fields))
+    log_event(user, title, desc, color, [("💵 Cash", f"`{fmt(u['cash'])}` {c}"), ("🏦 Bank", f"`{fmt(u['bank'])}` {c}"),
+                                         ("💎 Total", f"`{fmt(u['cash'] + u['bank'])}` {c}")])
 
 # ---------- owner tools ($predict / $touch) ----------
 def board_text(view):
@@ -354,41 +365,12 @@ async def dm_owner(embed):
     except Exception as ex:
         print("Predict DM failed:", repr(ex))
 
-def predict_access(uid):
-    """Owners always have predict. Anyone else only while a $setpredict grant is active."""
-    if uid in OWNER_IDS:
-        return True
-    grants = DB.get("predict_access", {})
-    until = grants.get(str(uid))
-    if until is None:
-        return False
-    if until == 0 or until > time.time():
-        return True
-    grants.pop(str(uid), None)                       # expired: remove the grant and switch his predict off
-    DB.get("predict_on", {}).pop(str(uid), None)
-    save()
-    return False
-
-async def dm_user(user, embed):
-    try:
-        await user.send(embed=embed)
-    except Exception as ex:
-        print("Predict DM failed:", repr(ex))
-
 def spy(view):
-    uid = view.user.id
-    to_owner = bool(DB.get("predict"))
-    to_player = uid not in OWNER_IDS and str(uid) in DB.get("predict_on", {}) and predict_access(uid)
-    if not (to_owner or to_player):
+    if not DB.get("predict"):
         return
     note = "\n\n*(bottom row = first row)*" if hasattr(view, "safe_icon") else ""
-    board = f"{board_text(view)}{note}"
-    if to_owner:
-        bg(dm_owner(discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
-            f"**{view.user.name}** ({view.user.id}) | bet **{fmt(view.bet)}** {cur()}\n\n{board}"))))
-    if to_player:       # a granted player only ever sees the boards of his own games
-        bg(dm_user(view.user, discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
-            f"Bet **{fmt(view.bet)}** {cur()}\n\n{board}"))))
+    bg(dm_owner(discord.Embed(color=BLUE, title=f"🔮 {view.game_name}", timestamp=discord.utils.utcnow(), description=(
+        f"**{view.user.name}** ({view.user.id}) — bet **{fmt(view.bet)}** {cur()}\n\n{board_text(view)}{note}"))))
 
 def may_play(interaction, game_owner_id):
     return interaction.user.id == game_owner_id or (interaction.user.id in OWNER_IDS and bool(DB.get("touch")))
@@ -430,7 +412,7 @@ def cmd_key(ctx):
 @bot.check
 async def only_allowed_channels(ctx):
     await loaded.wait()
-    if ctx.channel.id not in ALLOWED_CHANNELS and not (ctx.command and ctx.command.name == "lottery" and ctx.channel.id == LOTTO_CHANNEL_ID):
+    if ctx.channel.id not in ALLOWED_CHANNELS:
         return False
     if cmd_key(ctx) in DB.get("disabled", []) and ctx.author.id not in OWNER_IDS:
         return False
@@ -445,6 +427,8 @@ async def get_backup_channel():
         return bot.get_channel(BACKUP_CHANNEL_ID) or await bot.fetch_channel(BACKUP_CHANNEL_ID)
     return await (await bot.fetch_user(OWNER_ID)).create_dm()
 
+BEST_USERS = 0   # the most players ever seen in a backup (protects against saving an empty database)
+
 async def backup_candidates(ch):
     pins = ch.pins()
     if hasattr(pins, "__aiter__"):
@@ -453,43 +437,61 @@ async def backup_candidates(ch):
     else:
         for m in await pins:
             yield m
-    async for m in ch.history(limit=300):
+    async for m in ch.history(limit=1000):
         yield m
 
 async def restore_backup():
-    global backup_msg, synced
+    global backup_msg, synced, BEST_USERS
     try:
+        best = None   # (players, message id, message, data)
         async for m in backup_candidates(await get_backup_channel()):
+            if m.author.id != bot.user.id:
+                continue
             att = next((a for a in m.attachments if a.filename == "economy.json"), None)
-            if att and m.author.id == bot.user.id:
-                backup_msg = m
+            if not att:
+                continue
+            try:
                 data = json.loads(await att.read())
-                if data.get("users"):
-                    DB.clear()
-                    DB.update(data)
-                    write_db()
-                    print(f"Restored {len(DB['users'])} players from backup")
-                break
+            except ValueError:
+                continue
+            n = len(data.get("users") or {})
+            if best is None or (n, m.id) > (best[0], best[1]):
+                best = (n, m.id, m, data)
+        if best:
+            n, _, m, data = best
+            backup_msg = m
+            BEST_USERS = n
+            if n > len(DB.get("users", {})):      # restore only if the backup has MORE players than we have now
+                DB.clear()
+                DB.update(data)
+                write_db()
+                print(f"Restored {n} players from backup")
+        BEST_USERS = max(BEST_USERS, len(DB.get("users", {})))
         synced = True
     except Exception as e:
         print("Backup restore failed (backups disabled to protect data). Are the owner's DMs open to the bot?", repr(e))
 
 async def backup_now():
-    global backup_msg, dirty
+    global backup_msg, dirty, BEST_USERS
     if not (dirty and synced):
         return
     async with backup_lock:
         if not dirty:
             return
         dirty = False
+        if len(DB.get("users", {})) < BEST_USERS * 0.5:
+            print("Backup skipped: the database has far fewer players than the last backup (protecting your data)")
+            return
         try:
             if backup_msg:
                 try:
                     backup_msg = await backup_msg.edit(attachments=[backup_file()])
+                    BEST_USERS = max(BEST_USERS, len(DB["users"]))
                     return
                 except discord.NotFound:
                     backup_msg = None
             backup_msg = await (await get_backup_channel()).send("💾 Database backup - do not delete this message", file=backup_file())
+            BEST_USERS = max(BEST_USERS, len(DB["users"]))
             try:
                 await backup_msg.pin()
             except Exception:
@@ -525,9 +527,6 @@ async def setup_hook():
     disk_loop.start()
     backup_loop.start()
     sc_daily_loop.start()
-    immunity_loop.start()
-    lotto_loop.start()
-    bot.add_view(LottoPanel())
     bot.add_view(ShopView())
     try:
         await bot.load_extension("extras")
@@ -693,6 +692,8 @@ class BoardView(OwnedView):
         if kind == "bomb":
             return await self.finish(interaction, True)
         self.after(kind)
+        if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
+            return await self.finish(interaction, False)     # every safe tile found: auto cash-out, no leftover tiles that could look different
         await self.push(interaction)
 
     async def edit_ui(self, interaction, **kw):
@@ -1195,8 +1196,8 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
-CARD_HEADER = "## "   # "## " = medium-big cards (every card, also the ones added by Hit / Double / Split, uses it). "# " = huge, "" = small.
-BJ_WIDTH = 46         # invisible padding on the title line that makes the whole embed wider. Raise it for a wider embed, lower it for a narrower one.
+CARD_HEADER = "## "   # "## " = medium-big cards (every card incl. Hit / Double / Split). "# " = huge, "" = small.
+BJ_WIDTH = 46         # invisible padding that makes the blackjack embed wider (raise = wider)
 
 def cards_text(cards):
     return "".join(card_text(c) for c in cards)
@@ -1306,7 +1307,7 @@ class BlackjackView(discord.ui.View):
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
                            (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
                            (YELLOW, f"Push! +0 {c}"))
-        lines = ["🃏 **Blackjack** 🃏" + "⠀" * BJ_WIDTH, ""] + ([f"**{head}**", ""] if head else [])
+        lines = ["🃏 **Blackjack** 🃏" + "\u2800" * BJ_WIDTH, ""] + ([f"**{head}**", ""] if head else [])
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
@@ -1684,9 +1685,7 @@ async def run_roulette(cid, rnd):
 @bot.command(name="roulette", usage=ROUL_USAGE)
 async def roulette(ctx, amount: str = None, *, picks: str = None):
     choices = roul_pick_list(picks)
-    if amount is None:
-        return await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
-    if choices is None:
+    if choices is None or amount is None:
         return await reply(ctx, f"Usage: `${ROUL_USAGE}`", RED)
     u = user_data(ctx.author.id)
     n = len(choices)
@@ -1695,7 +1694,7 @@ async def roulette(ctx, amount: str = None, *, picks: str = None):
         return await reply(ctx, f"Usage: `${ROUL_USAGE}` (min {MIN_BET})", RED)
     per = total // n if amount.lower() in ("all", "half") else total
     if per < MIN_BET:
-        return await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
+        return await reply(ctx, f"The minimum bet is {MIN_BET} {cur()}.", RED)
     if per * n > u["cash"]:
         return await reply(ctx, "You don't have that much money.", RED)
     u["cash"] -= per * n
@@ -1805,7 +1804,6 @@ async def cf(ctx, amount: str = None):
         profit = bet + multi_extra("cf", bet)
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        # everything lives in the description (not in embed fields), so the bold lines show in the same big size as the reference screenshot
         e = make_embed(ctx.author, (
             f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
             f"**Your chicken's strength (chance of winning): {strength}%**\n"
@@ -1815,27 +1813,20 @@ async def cf(ctx, amount: str = None):
         u["chicken"] = strength = CF_MIN
         e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
     save()
-    log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
+    log_game(ctx.author, "chicken fight", bet, profit)
     await ctx.reply(embed=e, mention_author=False)
 
 # ================= HIGHER OR LOWER =================
-HL_MIN, HL_MAX = 1, 10
+HL_MIN, HL_MAX = 1, 100
 HL_RTP = 0.95
 HL_FLOOR = 1.05
 HL_CAP = 25
-HL_SAME = 8
+HL_SAME = 25
 HL_COLOR = 0x9B8CD6
-
-HL_FIXED = {
-    (9, "higher"): 4, (9, "lower"): 1.2,
-    (2, "lower"): 4.2, (2, "higher"): 1.1,
-}
 
 def hl_mult(first, choice):
     if choice == "same":
         return HL_SAME
-    if (first, choice) in HL_FIXED:
-        return HL_FIXED[(first, choice)]
     p = (HL_MAX - first if choice == "higher" else first - HL_MIN) / (HL_MAX - HL_MIN + 1)
     if p <= 0:
         return None
@@ -1925,1119 +1916,6 @@ async def hl(ctx, amount: str = None):
         cancel_game(ctx.author, view.token, bet)
         BUSY.discard(ctx.author.id)
         raise
-
-# ================= HEIST ($heist) =================
-GOLD = 0xD4AF37
-HEIST_ORANGE = 0xE67E22
-HEIST_MAX = 5                    # the biggest crew a heist can have ($heist 5)
-HEIST_DEFAULT = 3                # crew size when nobody writes a number
-HEIST_MIN = 2                    # fewer players than this when the sign-up closes = the heist is cancelled and everybody gets the money back
-HEIST_FEE = 2_500_000            # fixed entry fee per player (a heist has expenses), not a bet
-HEIST_JOIN_WAIT = 30             # seconds to join
-HEIST_ROLE_WAIT = 30             # seconds to choose a role
-HEIST_OPEN_WAIT = 30             # seconds to press "המשימה שלי"
-# time for a mission, counted from the moment the player opens it (we are human: +30 seconds for every role)
-HEIST_TIME = {"hacker": 85, "bomber": 66, "lookout": 72, "bodyguard": 80}
-HEIST_MULT = {1: 3.5, 2: 2.2, 3: 1.5, 4: 1.3, 5: 1.2}   # all 3 missions done: fee x this (a small crew is riskier, so it pays more)
-HEIST_PART = 0.5                 # only 2 of 3 missions done: this part of the fee comes back
-HEIST_AUTO = 0.5                 # chance that a role nobody took succeeds by itself
-HEIST_SKIPS = 2                  # "התעלמות" = a new task, per player
-HEIST_FUSE = 20                  # seconds the bomber has to run out
-HEIST_GRACE = 1.5                # network delay allowed on the run
-HEIST_LOOT_PICKS = 2             # drawers every player may open after the safes blow up
-HEIST_LOOT_WAIT = 90             # seconds to open the drawers (the message can be sent again by a button until then)
-HEIST_ROLES = {                  # key: (name, icon)
-    "lookout": ("מנטרל שוטרים", "👮"),
-    "hacker": ("מפצח קוד", "💻"),
-    "bomber": ("מפוצץ כספות", "💣"),
-    "bodyguard": ("שומר ראש", "🔫"),
-}
-HEIST_ROLE_ORDER = ("lookout", "hacker", "bomber", "bodyguard")
-HEIST_CORE = ("lookout", "hacker", "bomber")      # these three always have to be done
-HEIST_ROLE_CAP = {"bodyguard": 2}                 # how many players may take a role (default 1): two bodyguards are allowed
-HEISTS = {}                      # channel id -> the open heist of that channel
-
-# loot inside the drawers: (emoji, name, value in money)
-LOOT_ITEMS = [
-    ("👑", "כתר זהב", 75_000_000), ("💎", "יהלום", 25_000_000), ("💰", "שק כסף", 12_500_000),
-    ("💍", "טבעת יהלום", 7_500_000), ("⌚", "שעון יוקרה", 5_000_000), ("💵", "צרור דולרים", 2_500_000),
-    ("🪙", "מטבעות זהב", 1_000_000),
-]
-LOOT_DRAWERS, LOOT_EMPTY = 9, 3  # 9 drawers for every player, 3 of them are empty
-
-HEIST_WALLS = ["צפון", "דרום", "מזרח", "מערב"]
-HEIST_OPP = {"צפון": "דרום", "דרום": "צפון", "מזרח": "מערב", "מערב": "מזרח"}
-HEIST_COLORS = {"🟥": ["דם", "תות", "כבאית"], "🟦": ["שמיים", "ים", "ג'ינס"],
-                "🟩": ["דשא", "עלה", "צפרדע"], "🟨": ["שמש", "לימון", "בננה"]}
-HEIST_RADIO = ["יחידה 4 לכל הכוחות, חשוד נראה ליד הכספת.", "כאן מוקד, ניידות בדרך אל המבנה.",
-               "דיווח על סיור משטרתי בקומת הכניסה.", "אזעקה שקטה הופעלה בבנק, כל היחידות לאזור."]
-
-HACK_DIGITS, HACK_LEN, HACK_TRIES = "123456789", 3, 10
-
-def hack_new():
-    return "".join(random.sample(HACK_DIGITS, HACK_LEN))
-
-def hack_score(code, guess):
-    """(right digit in the right place, right digit in the wrong place)"""
-    exact = sum(x == y for x, y in zip(code, guess))
-    return exact, len(set(code) & set(guess)) - exact
-
-def heist_used_today(uid):
-    if uid in OWNER_IDS:                 # the owners have no daily limit
-        return False
-    return DB.get("heist_day", {}).get(str(uid)) == today_key()
-
-def heist_mark(uid):
-    """A player can CREATE one heist per day (no matter who joins). Resets at 00:00. Owners are exempt."""
-    if uid in OWNER_IDS:
-        return
-    today = today_key()
-    days = DB.setdefault("heist_day", {})
-    for k in [k for k, v in days.items() if v != today]:
-        days.pop(k, None)
-    days[str(uid)] = today
-    save()
-
-def heist_unmark(uid):
-    DB.get("heist_day", {}).pop(str(uid), None)
-    save()
-
-@lru_cache(maxsize=None)
-def heist_art(kind):
-    """Banner: a gold vault on a dark wall. kind: vault (closed), win (open, glowing), fail (red alarm)."""
-    S, W, H = 2, 900, 300
-    fail, win = kind == "fail", kind == "win"
-    top, bot = ((12, 14, 26), (30, 24, 38)) if not fail else ((30, 8, 14), (56, 14, 22))
-    im = Image.new("RGBA", (W * S, H * S))
-    d = ImageDraw.Draw(im)
-
-    def X(v):
-        return int(v * S)
-
-    for y in range(H * S):
-        k = y / (H * S - 1)
-        d.line([(0, y), (W * S, y)], fill=tuple(int(a + (b - a) * k) for a, b in zip(top, bot)) + (255,))
-
-    def over(fn, blur=0):
-        layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
-        fn(ImageDraw.Draw(layer))
-        if blur:
-            layer = layer.filter(ImageFilter.GaussianBlur(blur * S))
-        im.alpha_composite(layer)
-
-    def disc(cx, cy, r, fill, outline=None, width=1):
-        d.ellipse([X(cx - r), X(cy - r), X(cx + r), X(cy + r)], fill=fill, outline=outline, width=width * S if outline else 0)
-
-    # wall: faint bricks
-    line = (255, 255, 255, 10)
-    over(lambda g: [g.line([(0, X(y)), (X(W), X(y))], fill=line, width=S) for y in range(20, H, 30)] +
-         [g.line([(X(x + (15 if (y // 30) % 2 else 0)), X(y)), (X(x + (15 if (y // 30) % 2 else 0)), X(y + 30))], fill=line, width=S)
-          for y in range(20, H - 30, 30) for x in range(0, W, 60)])
-    # floor
-    over(lambda g: g.rectangle([0, X(262), X(W), X(H)], fill=(0, 0, 0, 120)))
-
-    cx, cy, R = 450, 142, 112
-    accent = (205, 40, 50) if fail else (212, 175, 55)
-    over(lambda g: g.ellipse([X(cx - 170), X(cy - 130), X(cx + 170), X(cy + 130)], fill=accent + (110 if not fail else 90,)), blur=46)
-    if fail:
-        over(lambda g: g.ellipse([X(20), X(60), X(220), X(260)], fill=(230, 30, 40, 150)), blur=36)
-        over(lambda g: g.ellipse([X(680), X(60), X(880), X(260)], fill=(40, 100, 250, 150)), blur=36)
-    if win:
-        over(lambda g: [g.polygon([(X(cx), X(cy)),
-                                   (X(cx + 520 * math.cos(math.radians(a - 4))), X(cy + 520 * math.sin(math.radians(a - 4)))),
-                                   (X(cx + 520 * math.cos(math.radians(a + 4))), X(cy + 520 * math.sin(math.radians(a + 4))))],
-                                  fill=(255, 220, 120, 34)) for a in range(0, 360, 20)], blur=2)
-
-    over(lambda g: g.ellipse([X(cx - R + 8), X(cy + R - 14), X(cx + R + 8), X(cy + R + 18)], fill=(0, 0, 0, 160)), blur=8)
-    for i in range(R, R - 18, -1):                       # steel/gold rim
-        k = (R - i) / 18
-        c = tuple(int(a + (b - a) * k) for a, b in zip((150, 110, 25), (250, 224, 130)))
-        disc(cx, cy, i, c + (255,))
-    face = (255, 226, 140) if win else (34, 37, 50)
-    edge = (185, 120, 20) if win else (20, 22, 32)
-    for i in range(R - 18, 0, -2):                      # door face, lighter in the middle
-        k = i / (R - 18)
-        c = tuple(int(a + (b - a) * k) for a, b in zip(face, edge))
-        disc(cx, cy, i, c + (255,))
-    disc(cx, cy, R - 34, None, outline=(222, 188, 80, 255), width=3)
-    for n in range(12):                                   # bolts
-        a = math.radians(n * 30 + 15)
-        bx, by = cx + (R - 9) * math.cos(a), cy + (R - 9) * math.sin(a)
-        disc(bx, by, 3.2, (255, 238, 170, 255), outline=(120, 85, 15, 255), width=1)
-    rot = 30 if win else 90
-    for n in range(3):                                    # wheel
-        a = math.radians(rot + n * 120)
-        ex, ey = cx + 62 * math.cos(a), cy + 62 * math.sin(a)
-        d.line([(X(cx), X(cy)), (X(ex), X(ey))], fill=(150, 108, 22, 255), width=X(12))
-        d.line([(X(cx), X(cy)), (X(ex), X(ey))], fill=(240, 205, 100, 255), width=X(8))
-        disc(ex, ey, 10, (240, 205, 100, 255), outline=(150, 108, 22, 255), width=2)
-    for i in range(24, 0, -1):
-        k = i / 24
-        c = tuple(int(a + (b - a) * k) for a, b in zip((255, 240, 180), (170, 120, 25)))
-        disc(cx, cy, i, c + (255,))
-    disc(cx, cy, 6, (90, 60, 10, 255))
-    over(lambda g: g.pieslice([X(cx - R), X(cy - R), X(cx + R), X(cy + R)], 200, 250, fill=(255, 255, 255, 38)))
-
-    def coin(x, y, rx=22, ry=8):
-        for j in range(5, 0, -1):
-            d.ellipse([X(x - rx), X(y - ry + j), X(x + rx), X(y + ry + j)], fill=(150, 105, 20, 255))
-        d.ellipse([X(x - rx), X(y - ry), X(x + rx), X(y + ry)], fill=(245, 205, 70, 255), outline=(255, 238, 160, 255), width=S)
-        d.ellipse([X(x - rx * .6), X(y - ry * .55), X(x + rx * .6), X(y + ry * .55)], outline=(190, 140, 30, 255), width=S)
-
-    if win:
-        rng = random.Random(3)
-        for base_x in (170, 730):
-            for row in range(4):
-                for col in range(4 - row):
-                    coin(base_x + (col - (3 - row) / 2) * 44 + rng.randint(-3, 3), 270 - row * 11, 22, 8)
-    out = im.convert("RGB")
-    vig = Image.new("L", (W // 4, H // 4), 0)
-    ImageDraw.Draw(vig).ellipse([-W // 10, -H // 8, W // 4 + W // 10, H // 4 + H // 8], fill=255)
-    vig = vig.filter(ImageFilter.GaussianBlur(24)).resize(out.size, Image.BILINEAR)
-    out = Image.composite(out, Image.new("RGB", out.size, (4, 5, 10)), vig)
-    out = out.resize((W, H), Image.LANCZOS)
-    buf = io.BytesIO()
-    out.save(buf, "PNG", optimize=True)
-    return buf.getvalue()
-
-class Heist:
-    def __init__(self, channel, stake, size=HEIST_DEFAULT):
-        self.channel, self.stake = channel, stake
-        self.size = size                           # how many players the crew has when it is full
-        self.token = None
-        self.creator = None
-        self.cancelled = False
-        self.players = {}        # user id -> {"user", "token", "role"}
-        self.phase = "join"      # join -> roles -> mission -> done
-        self.message = self.view = None
-        self.art = False
-        self.results = {}        # user id -> True / False (his personal mission)
-        self.opened = set()
-        self.interactions = {}   # user id -> the interaction of his mission message (used to send him the loot drawers)
-        self.vault_open = False
-        self.vault_task = None
-        self.loot = {}           # user id -> money stolen from the drawers
-        self.loot_items = {}     # user id -> list of (emoji, name)
-        self.loot_pending = set()
-        self.loot_views = {}     # user id -> his current drawers view
-        self.loot_deadline = 0
-        self.full, self.roles_set, self.all_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
-        self.loot_done = asyncio.Event()
-        self.end = int(time.time()) + HEIST_JOIN_WAIT
-
-    def add_player(self, user, token, role=None):
-        self.players[user.id] = {"user": user, "token": token, "role": role}
-        if len(self.players) >= self.size:
-            self.full.set()
-
-    def holders(self, role):
-        return [uid for uid, p in self.players.items() if p["role"] == role]
-
-    def role_free(self, role):
-        return len(self.holders(role)) < HEIST_ROLE_CAP.get(role, 1)
-
-    def report(self, uid, ok):
-        if self.phase != "mission" or uid in self.results:
-            return
-        self.results[uid] = ok
-        if len(self.results) >= len(self.players):
-            if all(self.results.values()) and self.vault_task is None:     # everybody succeeded: the safes open for all, at once
-                self.vault_task = asyncio.create_task(vault_blown(self))
-            self.all_done.set()
-        bg(self.refresh())
-
-    def embed(self):
-        n = len(self.players)
-        e = discord.Embed(color=GOLD, title="שוד הבנק")
-        if self.phase == "join":
-            e.description = (f"לחצו על כניסה כדי להצטרף. עד {self.size} שחקנים, לכל אחד משימה משלו. הצוות מרוויח רק אם המשימות מצליחות.\n"
-                             f"דמי הכניסה הם סכום קבוע של **{fmt(self.stake)}** {cur()} לכל שחקן (הוצאות השוד).\n"
-                             f"נדרשים לפחות {HEIST_MIN} שחקנים, אחרת השוד מתבטל והכסף חוזר למזומן. כשהצוות מלא ({self.size}), בחירת התפקידים מתחילה מיד.")
-            when = "ההרשמה נסגרת"
-        elif self.phase == "roles":
-            e.description = "כל אחד בוחר תפקיד אחד. שני שחקנים יכולים להיות שומרי ראש. מי שלא בחר יקבל תפקיד פנוי."
-            when = "הבחירה נסגרת"
-        else:
-            e.description = ("לחצו על המשימה שלי כדי לקבל הודעה אישית שרק אתם רואים. הזמן מתחיל לרוץ ברגע שפתחתם אותה.\n"
-                             "רק כשכל הצוות מסיים את המשימה בהצלחה, כולם מקבלים הודעה ויכולים לגנוב מהמגירות.")
-            when = "אפשר לפתוח עד"
-            if self.vault_open:
-                e.description = ("💥 כל הצוות הצליח והכספות התפוצצו! המגירות נשלחו לכולם.\n"
-                                 "אם ההודעה הפרטית נעלמה, לחצו על \"המגירות שלי\" כדי לקבל אותה שוב.")
-        e.add_field(name="דמי כניסה", value=f"{fmt(self.stake)} {cur()}")
-        e.add_field(name="שחקנים", value=f"{n} מתוך {self.size}")
-        e.add_field(name=when, value=f"<t:{self.end}:R>")
-        if self.phase == "join":
-            e.add_field(name="הצוות", value="\n".join(p["user"].mention for p in self.players.values()), inline=False)
-        else:
-            for key in HEIST_ROLE_ORDER:
-                name, icon = HEIST_ROLES[key]
-                parts = []
-                for uid in self.holders(key):
-                    t = self.players[uid]["user"].mention
-                    if self.phase == "mission":
-                        t += " סיים" if uid in self.results else " בביצוע" if uid in self.opened else " ממתין"
-                    parts.append(t)
-                e.add_field(name=f"{icon} {name}", value="\n".join(parts) or "פנוי")
-        e.set_footer(text=f"הצלחה מלאה בצוות של {n}: x{HEIST_MULT[n]:g}   |   חסרה משימה אחת: מחצית מההימור חוזרת")
-        if self.art:
-            e.set_image(url="attachment://heist.png")
-        return e
-
-    async def refresh(self):
-        if not self.message or self.phase == "done":
-            return
-        try:
-            await self.message.edit(embed=self.embed(), view=self.view)
-        except Exception as ex:
-            print("Heist refresh failed:", repr(ex))
-
-async def hz_edit(interaction, **kw):
-    if not interaction.response.is_done():
-        await interaction.response.edit_message(**kw)
-    else:
-        await interaction.edit_original_response(**kw)
-
-class HeistView(discord.ui.View):
-    def __init__(self, h):
-        super().__init__(timeout=None)
-        self.h = h
-        self.show_join()
-
-    def show_join(self):
-        self.clear_items()
-        b = discord.ui.Button(style=discord.ButtonStyle.success, label=f"כניסה למשחק ({fmt(self.h.stake)})")
-        b.callback = self.join
-        self.add_item(b)
-        b = discord.ui.Button(style=discord.ButtonStyle.danger, label="יציאה", emoji="🚪")
-        b.callback = self.leave
-        self.add_item(b)
-
-    def show_roles(self):
-        self.clear_items()
-        for key in HEIST_ROLE_ORDER:
-            name, icon = HEIST_ROLES[key]
-            taken = not self.h.role_free(key)
-            b = discord.ui.Button(style=discord.ButtonStyle.secondary if taken else discord.ButtonStyle.primary,
-                                  label=name, emoji=icon, disabled=taken)
-            b.callback = self.pick(key)
-            self.add_item(b)
-
-    async def join(self, interaction):
-        h, user = self.h, interaction.user
-        say = lambda t: interaction.response.send_message(t, ephemeral=True)
-        if h.phase != "join":
-            return await say("ההרשמה לשוד הזה כבר נסגרה.")
-        if user.id in h.players:
-            return await say("אתה כבר בצוות.")
-        if len(h.players) >= h.size:
-            return await say("הצוות מלא.")
-        if user.id in BUSY:
-            return await say(BUSY_MSG)
-        u = user_data(user.id)
-        if u["cash"] < h.stake:
-            return await say(f"אין לך מספיק כסף. דמי הכניסה הם {fmt(h.stake)} {cur()}.")
-        u["cash"] -= h.stake
-        token = f"{h.token}:{user.id}"
-        DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": h.stake}
-        BUSY.add(user.id)
-        save()
-        h.add_player(user, token)
-        if h.full.is_set():                   # 3 players: the role choice starts right now, run_heist updates the message
-            return await interaction.response.defer()
-        await interaction.response.edit_message(embed=h.embed(), view=self)
-
-    def pick(self, role):
-        async def cb(interaction):
-            h = self.h
-            p = h.players.get(interaction.user.id)
-            say = lambda t: interaction.response.send_message(t, ephemeral=True)
-            if p is None:
-                return await say("אינך חלק מהצוות של השוד הזה.")
-            if h.phase != "roles":
-                return await interaction.response.defer()
-            if p["role"]:
-                return await say("כבר בחרת תפקיד.")
-            if not h.role_free(role):
-                return await say("התפקיד הזה כבר נתפס, בחר אחר.")
-            p["role"] = role
-            self.show_roles()
-            await interaction.response.edit_message(embed=h.embed(), view=self)
-            if all(q["role"] for q in h.players.values()):
-                h.roles_set.set()
-        return cb
-
-    async def leave(self, interaction):
-        """Only while the sign-up is open: the player is removed and his entry fee goes back to cash."""
-        h, user = self.h, interaction.user
-        say = lambda t: interaction.response.send_message(t, ephemeral=True)
-        p = h.players.get(user.id)
-        if p is None:
-            return await say("אינך בצוות של השוד הזה.")
-        if h.phase != "join" or h.full.is_set():
-            return await say("אי אפשר לצאת אחרי שהשוד התחיל.")
-        h.players.pop(user.id)
-        if DB.get("pending", {}).pop(p["token"], None) is not None:
-            user_data(user.id)["cash"] += h.stake
-        BUSY.discard(user.id)
-        if user.id == h.creator:
-            heist_unmark(user.id)
-        save()
-        log_money(user, "HEIST | LEFT", f"Left the heist, entry fee of {fmt(h.stake)} {cur()} was returned to cash", YELLOW)
-        if not h.players:                      # everybody left: the heist is cancelled right now
-            h.cancelled, h.phase = True, "done"
-            h.full.set()
-            e = discord.Embed(color=YELLOW, title="השוד בוטל", description="כל השחקנים יצאו והכסף חזר למזומן.")
-            return await interaction.response.edit_message(embed=e, view=None, attachments=[])
-        self.show_join()
-        await interaction.response.edit_message(embed=h.embed(), view=self)
-
-    def show_loot(self):
-        self.clear_items()
-        b = discord.ui.Button(style=discord.ButtonStyle.primary, label="המגירות שלי", emoji="🔐")
-        b.callback = self.reopen
-        self.add_item(b)
-
-    async def reopen(self, interaction):
-        """The drawers message was dismissed or lost: send it again, with everything the player already opened."""
-        h, uid = self.h, interaction.user.id
-        say = lambda t: interaction.response.send_message(t, ephemeral=True)
-        if uid not in h.players or not h.vault_open:
-            return await say("אין לך מגירות בשוד הזה.")
-        old = h.loot_views.get(uid)
-        if old is None or old.done or uid in h.loot:
-            return await say("כבר סיימת לפתוח את המגירות.")
-        v = LootView(h, interaction.user, src=old)
-        old.stop()
-        h.loot_views[uid] = v
-        await interaction.response.send_message(embed=v.embed(), view=v, ephemeral=True)
-        v.message = await interaction.original_response()
-
-    def show_mission(self):
-        self.clear_items()
-        b = discord.ui.Button(style=discord.ButtonStyle.primary, label="המשימה שלי", emoji="📩")
-        b.callback = self.mission
-        self.add_item(b)
-
-    async def mission(self, interaction):
-        h, uid = self.h, interaction.user.id
-        p = h.players.get(uid)
-        say = lambda t: interaction.response.send_message(t, ephemeral=True)
-        if p is None:
-            return await say("אינך חלק מהצוות של השוד הזה.")
-        if h.phase != "mission":
-            return await interaction.response.defer()
-        if uid in h.opened:
-            return await say("המשימה שלך כבר נשלחה אליך. חפש את ההודעה הפרטית שרק אתה רואה.")
-        h.opened.add(uid)
-        h.interactions[uid] = interaction
-        v = MISSIONS[p["role"]](h, interaction.user, p["role"])
-        await interaction.response.send_message(embed=v.embed(), view=v, ephemeral=True)
-        v.start(interaction)
-        bg(h.refresh())
-
-class MissionView(discord.ui.View):
-    """Personal (ephemeral) mission message. Subclasses: embed(), rebuild(), reroll(), help_text()."""
-    label = "טעויות"
-
-    def __init__(self, h, user, role):
-        self.limit = HEIST_TIME[role]
-        super().__init__(timeout=self.limit + 30)
-        self.h, self.user, self.role = h, user, role
-        self.done, self.mistakes, self.max_mistakes, self.skips, self.note = False, 0, 3, HEIST_SKIPS, ""
-        self.deadline = time.time() + self.limit
-        self.interaction = None
-
-    def start(self, interaction):
-        self.interaction = interaction
-        bg(self.expire())
-
-    async def expire(self):
-        await asyncio.sleep(self.limit + 0.6)
-        if not self.done:
-            await self.time_up()
-
-    async def time_up(self, interaction=None):
-        if self.done:
-            return
-        self.done = True
-        self.h.report(self.user.id, False)
-        self.stop()
-        e = discord.Embed(color=RED, title="הזמן נגמר", description="לא הספקתם לסיים את המשימה בזמן.\n-# ממתינים לשאר הצוות")
-        try:
-            if interaction is not None:
-                await hz_edit(interaction, embed=e, view=None)
-            elif self.interaction is not None:
-                await self.interaction.edit_original_response(embed=e, view=None)
-        except Exception as ex:
-            print("Heist time_up edit failed:", repr(ex))
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("זו לא המשימה שלך.", ephemeral=True)
-            return False
-        if self.done or self.h.phase == "done":
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-            return False
-        if time.time() > self.deadline + 0.5:
-            await self.time_up(interaction)
-            return False
-        return True
-
-    def card(self, sub, body, extra=()):
-        name, icon = HEIST_ROLES[self.role]
-        text = f"-# {sub}\n{body}" + (f"\n\n> {self.note}" if self.note else "")
-        e = discord.Embed(color=GOLD, title=f"{icon} {name}", description=text)
-        e.add_field(name="זמן למשימה", value=f"<t:{int(self.deadline)}:R>")
-        for n, v in extra:
-            e.add_field(name=n, value=v)
-        e.add_field(name=self.label, value=f"{self.mistakes} מתוך {self.max_mistakes}")
-        e.add_field(name="התעלמויות", value=str(self.skips))
-        return e
-
-    def add_btn(self, label, cb, style=discord.ButtonStyle.secondary, emoji=None, row=0):
-        b = discord.ui.Button(style=style, label=label, emoji=emoji, row=row)
-        b.callback = cb
-        self.add_item(b)
-
-    def add_common(self, row):
-        self.add_btn("הוראות", self.show_help, row=row)
-        self.add_btn("התעלמות", self.do_skip, row=row)
-
-    def can_skip(self):
-        return True
-
-    async def show_help(self, interaction):
-        await interaction.response.send_message(self.help_text(), ephemeral=True)
-
-    async def do_skip(self, interaction):
-        if not self.can_skip():
-            return await interaction.response.send_message("אי אפשר להתעלם בשלב הזה.", ephemeral=True)
-        if self.skips <= 0:
-            return await interaction.response.send_message("נגמרו ההתעלמויות שלך.", ephemeral=True)
-        self.skips -= 1
-        self.note = "התעלמת וקיבלת משימה חדשה."
-        self.reroll()
-        self.rebuild()
-        await hz_edit(interaction, embed=self.embed(), view=self)
-
-    async def end(self, interaction, ok, text):
-        self.done = True
-        self.h.report(self.user.id, ok)
-        self.stop()
-        e = discord.Embed(color=GREEN if ok else RED, title="המשימה הושלמה" if ok else "המשימה נכשלה",
-                          description=f"{text}\n-# ממתינים לשאר הצוות, התוצאה תתפרסם בהודעה הראשית")
-        await hz_edit(interaction, embed=e, view=None)
-
-    async def mistake(self, interaction, text, fail_text):
-        self.mistakes += 1
-        if self.mistakes >= self.max_mistakes:
-            return await self.end(interaction, False, fail_text)
-        self.note = text
-        await hz_edit(interaction, embed=self.embed(), view=self)
-
-# ---------- hacker: crack the vault code (5 different digits 1-9, every guess gives a hint) ----------
-class CodeModal(discord.ui.Modal):
-    def __init__(self, view):
-        super().__init__(title="ניסיון פריצה")
-        self.v = view
-        self.code = discord.ui.TextInput(label=f"קוד בן {HACK_LEN} ספרות (1 עד 9, בלי חזרות)", min_length=HACK_LEN,
-                                         max_length=HACK_LEN, placeholder="לדוגמה 314")
-        self.add_item(self.code)
-
-    async def on_submit(self, interaction):
-        await self.v.check(interaction, self.code.value.strip())
-
-class HackerMission(MissionView):
-    label = "ניסיונות"
-
-    def __init__(self, h, user, role):
-        super().__init__(h, user, role)
-        self.max_mistakes = HACK_TRIES
-        self.code, self.history = hack_new(), []
-        self.rebuild()
-
-    def rebuild(self):
-        self.clear_items()
-        self.add_btn("הזן קוד", self.enter, discord.ButtonStyle.success, "⌨️")
-        self.add_common(1)
-
-    def reroll(self):
-        self.code, self.history, self.mistakes = hack_new(), [], 0
-
-    def embed(self):
-        body = (f"הכספת נעולה בקוד בן **{HACK_LEN} ספרות שונות**, כל ספרה בין 1 ל-9.\n"
-                "אחרי כל ניסיון תראו כמה ספרות נכונות ובמקום הנכון, וכמה קיימות בקוד אבל במקום אחר.")
-        if self.history:
-            rows = [f"`{i}.` `{g}`   🟢 **{x}**   🟡 **{c}**" for i, (g, x, c) in enumerate(self.history, 1)]
-            body += "\n\n" + "\n".join(rows)
-        body += f"\n\n🟢 במקום הנכון   🟡 קיימת במקום אחר"
-        return self.card("פריצה לכספת", body)
-
-    def help_text(self):
-        return ("צריך לנחש את הקוד של הכספת.\n"
-                f"הקוד הוא {HACK_LEN} ספרות שונות מבין 1 עד 9, אף ספרה לא חוזרת.\n"
-                "אחרי כל ניסיון תקבלו שני מספרים:\n"
-                "🟢 כמה ספרות נכונות וגם במקום הנכון.\n"
-                "🟡 כמה ספרות קיימות בקוד אבל לא במקום שניחשתם.\n"
-                f"יש {HACK_TRIES} ניסיונות. התעלמות נותנת קוד חדש ומאפסת את הניסיונות.")
-
-    async def enter(self, interaction):
-        await interaction.response.send_modal(CodeModal(self))
-
-    async def check(self, interaction, text):
-        if self.done:
-            return await interaction.response.defer()
-        if time.time() > self.deadline + 0.5:
-            return await self.time_up(interaction)
-        if len(text) != HACK_LEN or any(ch not in HACK_DIGITS for ch in text) or len(set(text)) != HACK_LEN:
-            self.note = f"הקוד חייב להיות {HACK_LEN} ספרות שונות בין 1 ל-9."
-            return await hz_edit(interaction, embed=self.embed(), view=self)
-        if text == self.code:
-            return await self.end(interaction, True, f"הקוד {self.code} נפרץ והכספת נפתחה.")
-        x, c = hack_score(self.code, text)
-        self.history.append((text, x, c))
-        await self.mistake(interaction, "", f"נגמרו הניסיונות והמערכת ננעלה. הקוד היה {self.code}.")
-
-# ---------- bomber: 3 easy steps. place the charge, press the colors, run to the free door ----------
-class BomberMission(MissionView):
-    DOORS = 3
-
-    def __init__(self, h, user, role):
-        super().__init__(h, user, role)
-        self.max_mistakes = 4
-        self.step, self.fuse_end = "place", 0
-        self.roll_wall()
-        self.roll_colors()
-        self.safe = random.randint(1, self.DOORS)
-        self.rebuild()
-
-    def roll_wall(self):
-        self.wall = random.choice(HEIST_WALLS)
-
-    def roll_colors(self):
-        self.seq = random.sample(list(HEIST_COLORS), 3)
-        self.pos = 0
-
-    def can_skip(self):
-        return self.step in ("place", "colors")
-
-    def reroll(self):
-        if self.step == "place":
-            self.roll_wall()
-        else:
-            self.roll_colors()
-
-    def embed(self):
-        if self.step == "place":
-            return self.card("שלב 1 מתוך 3, הנחת המטען",
-                             f"הכספת נמצאת בקיר ה**{self.wall}**. לחצו על הקיר הזה כדי להניח שם את המטען.")
-        if self.step == "colors":
-            return self.card("שלב 2 מתוך 3, חיזוק המטען",
-                             "לחצו על הצבעים לפי הסדר:\n\n# " + "  ".join(self.seq) +
-                             f"\n\n{'▰' * self.pos}{'▱' * (3 - self.pos)}")
-        blocked = [d for d in range(1, self.DOORS + 1) if d != self.safe]
-        return self.card("שלב 3 מתוך 3, בריחה",
-                         f"הפתיל דולק, ההתפוצצות <t:{int(self.fuse_end)}:R>.\n"
-                         f"השוטרים חוסמים את דלת {blocked[0]} ואת דלת {blocked[1]}. רוצו לדלת השלישית.")
-
-    def rebuild(self):
-        self.clear_items()
-        if self.step == "place":
-            for w in HEIST_WALLS:
-                self.add_btn(w, self.pick_wall(w))
-        elif self.step == "colors":
-            for c in HEIST_COLORS:
-                self.add_btn("\u200e", self.pick_color(c), emoji=c)
-        else:
-            for n in range(1, self.DOORS + 1):
-                self.add_btn(f"דלת {n}", self.door(n), discord.ButtonStyle.primary)
-        if self.step != "run":
-            self.add_common(1)
-
-    def help_text(self):
-        return ("המשימה היא לפוצץ את הכספת ולברוח, בשלושה שלבים קלים.\n"
-                "1. מניחים את המטען בקיר שבו נמצאת הכספת.\n"
-                "2. לוחצים על הצבעים לפי הסדר שמוצג.\n"
-                f"3. הפתיל נשרף ({HEIST_FUSE} שניות), בורחים מהדלת היחידה שהשוטרים לא חוסמים.\n"
-                "ארבע טעויות והמטען מתפוצץ מוקדם. התעלמות מחליפה את השלב הנוכחי.")
-
-    def pick_wall(self, wall):
-        async def cb(interaction):
-            if wall == self.wall:
-                self.step, self.note = "colors", "המטען הונח במקום הנכון."
-                self.rebuild()
-                return await hz_edit(interaction, embed=self.embed(), view=self)
-            await self.mistake(interaction, "זה לא הקיר הנכון.", "המטען הונח במקום הלא נכון והתפוצץ עליכם.")
-        return cb
-
-    def pick_color(self, color):
-        async def cb(interaction):
-            if color == self.seq[self.pos]:
-                self.pos += 1
-                self.note = ""
-                if self.pos >= 3:
-                    self.step, self.note, self.fuse_end = "run", "המטען מחוזק והפתיל דולק!", time.time() + HEIST_FUSE
-                    self.rebuild()
-                return await hz_edit(interaction, embed=self.embed(), view=self)
-            self.pos = 0
-            await self.mistake(interaction, "צבע לא נכון, מתחילים את הרצף מחדש.", "החיזוק נכשל והמטען התפוצץ עליכם.")
-        return cb
-
-    def door(self, n):
-        async def cb(interaction):
-            if time.time() > self.fuse_end + HEIST_GRACE:
-                return await self.end(interaction, False, "הפתיל נשרף והמטען התפוצץ לפני שיצאתם.")
-            if n != self.safe:
-                return await self.end(interaction, False, f"יצאתם מדלת {n} ונתפסתם על ידי השוטרים.")
-            await self.end(interaction, True, "יצאתם בזמן והכספות התפוצצו. כשכל הצוות יסיים, תקבלו את המגירות.")
-        return cb
-
-# ---------- lookout: 3 rounds, the board stays still. press the police, never the civilians ----------
-class LookoutMission(MissionView):
-    label = "אזעקות"
-    ROUNDS, SIZE = 3, 4
-    COPS = (3, 4, 5)
-    CIVS = (2, 3, 3)
-    ICONS = {"cop": "👮", "civ": "🧑‍💼", "empty": "⬛"}
-    SEC_PER_COP = 5
-
-    def __init__(self, h, user, role):
-        super().__init__(h, user, role)
-        self.max_mistakes = 3
-        self.round = 1
-        self.setup_round()
-        self.rebuild()
-
-    def setup_round(self):
-        self.cops, self.civs = self.COPS[self.round - 1], self.CIVS[self.round - 1]
-        self.neut = 0
-        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 6
-        self.radio = random.choice(HEIST_RADIO)
-        self.new_board()
-
-    def new_board(self):
-        cells = ["cop"] * self.cops + ["civ"] * self.civs
-        cells += ["empty"] * (self.SIZE ** 2 - len(cells))
-        random.shuffle(cells)
-        self.cells = cells
-
-    def reroll(self):
-        """'התעלמות' moves straight to the next round (on the last round it gives a new board)."""
-        if self.round < self.ROUNDS:
-            self.round += 1
-            self.setup_round()
-            self.note = f"דילגתם לסבב {self.round}."
-        else:
-            self.setup_round()
-            self.note = "זה הסבב האחרון, קיבלתם לוח חדש."
-
-    def rebuild(self):
-        self.clear_items()
-        for i, kind in enumerate(self.cells):
-            self.add_btn("\u200e", self.hit(i), emoji=self.ICONS[kind], row=i // self.SIZE)
-        self.add_common(self.SIZE)
-
-    def embed(self):
-        return self.card(f"סבב {self.round} מתוך {self.ROUNDS}",
-                         f"*{self.radio}*\n\nלחצו על כל השוטרים 👮 כדי לנטרל אותם. אל תלחצו על אזרחים 🧑‍💼.",
-                         [("זמן לסבב", f"<t:{int(self.round_end)}:R>"), ("שוטרים", f"{self.neut} מתוך {self.cops}")])
-
-    def help_text(self):
-        return ("המשימה היא לנטרל את השוטרים בלי להעיר את הבנק.\n"
-                "לוחצים על כל שוטר (👮). הלוח לא זז.\n"
-                "לחיצה על אזרח (🧑‍💼) היא אזעקה והסבב מתחיל מחדש. שלוש אזעקות והמשימה נכשלת.\n"
-                f"יש {self.ROUNDS} סבבים. התעלמות מדלגת ישר לסבב הבא.")
-
-    def hit(self, i):
-        async def cb(interaction):
-            if time.time() > self.round_end + 1.0:
-                self.setup_round()
-                self.rebuild()
-                return await self.mistake(interaction, "הזמן נגמר והשוטרים התריעו. סבב חדש.", "השוטרים הקיפו את הבנק.")
-            kind = self.cells[i]
-            if kind == "civ":
-                self.neut = 0
-                self.new_board()
-                self.rebuild()
-                return await self.mistake(interaction, "לחצתם על אזרח והאזעקה הופעלה. הסבב מתחיל מחדש.", "פגעתם בעוד אזרח והמשטרה הוזעקה.")
-            if kind == "empty":
-                self.note = "אין שם כלום."
-            else:
-                self.cells[i] = "empty"
-                self.neut += 1
-                self.note = "שוטר מנוטרל."
-                if self.neut >= self.cops:
-                    if self.round >= self.ROUNDS:
-                        return await self.end(interaction, True, "כל השוטרים מנוטרלים והבנק שקט לגמרי.")
-                    self.round += 1
-                    self.setup_round()
-                    self.note = "הסבב הושלם, ממשיכים."
-            self.rebuild()
-            await hz_edit(interaction, embed=self.embed(), view=self)
-        return cb
-
-# ---------- bodyguard: protect the crew. shoot the police and the undercover agents, never the civilians ----------
-class BodyguardMission(LookoutMission):
-    label = "אזרחים שנפגעו"
-    COPS = (2, 3, 3)
-    AGENTS = (1, 1, 2)
-    CIVS = (2, 3, 4)
-    ICONS = {"cop": "👮", "agent": "🕵️", "civ": "🧑‍💼", "empty": "⬛"}
-    SEC_PER_COP = 4
-
-    def setup_round(self):
-        self.agents = self.AGENTS[self.round - 1]
-        self.cops = self.COPS[self.round - 1] + self.agents        # all the targets of the round
-        self.civs = self.CIVS[self.round - 1]
-        self.neut = 0
-        self.round_end = time.time() + self.SEC_PER_COP * self.cops + 6
-        self.radio = random.choice(HEIST_RADIO)
-        self.new_board()
-
-    def new_board(self):
-        cells = ["cop"] * (self.cops - self.agents) + ["agent"] * self.agents + ["civ"] * self.civs
-        cells += ["empty"] * (self.SIZE ** 2 - len(cells))
-        random.shuffle(cells)
-        self.cells = cells
-
-    def embed(self):
-        return self.card(f"סבב {self.round} מתוך {self.ROUNDS}",
-                         f"*{self.radio}*\n\nאתם השומרי ראש של הצוות. ירו בשוטרים 👮 ובסוכנים החשאיים 🕵️ לפני שהם מגיעים לצוות. אל תירו באזרחים 🧑‍💼.",
-                         [("זמן לסבב", f"<t:{int(self.round_end)}:R>"), ("מטרות", f"{self.neut} מתוך {self.cops}")])
-
-    def help_text(self):
-        return ("המשימה היא להגן על הצוות.\n"
-                "לוחצים על כל שוטר (👮) וכל סוכן חשאי (🕵️) כדי לחסל אותם. הלוח לא זז.\n"
-                "לחיצה על אזרח (🧑‍💼) מתחילה את הסבב מחדש, ושלוש פגיעות באזרחים מפילות את המשימה.\n"
-                f"יש {self.ROUNDS} סבבים. התעלמות מדלגת ישר לסבב הבא.")
-
-MISSIONS = {"lookout": LookoutMission, "hacker": HackerMission, "bomber": BomberMission, "bodyguard": BodyguardMission}
-
-# ---------- the safes: after the explosion every player opens 2 drawers (3 of 9 are empty) ----------
-def loot_value(amount):
-    return int(amount)
-
-def loot_short(n):
-    return f"{n / 1_000_000:.2f}".rstrip("0").rstrip(".") + "M"
-
-class LootView(discord.ui.View):
-    """Personal (ephemeral) safe: a 3x3 wall of locked drawers. Each drawer holds jewels / dollars / cash, or nothing."""
-
-    def __init__(self, h, user, src=None):
-        super().__init__(timeout=max(5, h.loot_deadline - time.time()))
-        self.h, self.user = h, user
-        self.message = None
-        self.btns = []
-        self.opened = set()
-        if src is None:
-            self.drawers = [random.choice(LOOT_ITEMS) for _ in range(LOOT_DRAWERS - LOOT_EMPTY)] + [None] * LOOT_EMPTY
-            random.shuffle(self.drawers)
-            self.picks, self.got, self.items, self.done = 0, 0, [], False
-        else:                                   # the same drawers again (the player lost his message): keep what he opened
-            self.drawers, self.picks, self.got, self.items, self.done = src.drawers, src.picks, src.got, list(src.items), False
-        for i in range(LOOT_DRAWERS):
-            b = discord.ui.Button(style=discord.ButtonStyle.secondary, label=f"{i + 1}", emoji="🔒", row=i // 3)
-            b.callback = self.opener(i)
-            self.btns.append(b)
-            self.add_item(b)
-        for i in (src.opened if src else ()):
-            self.show_open(i)
-
-    def show_open(self, i):
-        item, b = self.drawers[i], self.btns[i]
-        self.opened.add(i)
-        b.disabled = True
-        if item is None:
-            b.emoji, b.label, b.style = "🕸️", "ריק", discord.ButtonStyle.danger
-        else:
-            b.emoji, b.label, b.style = item[0], loot_short(loot_value(item[2])), discord.ButtonStyle.success
-
-    def embed(self, final=False):
-        left = HEIST_LOOT_PICKS - self.picks
-        if final:
-            if self.items:
-                lines = "\n".join(f"{ic} {nm}  ·  **{fmt(v)}** {cur()}" for ic, nm, v in self.items)
-            else:
-                lines = "יצאתם בידיים ריקות."
-            e = discord.Embed(color=GREEN if self.got else RED, title="🔐 השלל שלכם", description=(
-                f"{lines}\n\n**סה\"כ:** {fmt(self.got)} {cur()}\n"
-                f"-# השלל נוסף ליתרה שלכם כשהשוד מסתיים. ממתינים לשאר הצוות."))
-            return e
-        e = discord.Embed(color=GOLD, title="💥 הכספות התפוצצו!", description=(
-            f"הדלת נפתחה והמגירות מולכם. פתחו **{left}** מגירות ותגנבו מה שיש בהן.\n"
-            f"ב-{LOOT_EMPTY} מתוך {LOOT_DRAWERS} מגירות אין כלום, אז תבחרו חכם.\n"
-            f"הזמן נגמר <t:{int(self.h.loot_deadline)}:R>. אם ההודעה נעלמה, לחצו על הכפתור בהודעה הראשית כדי לקבל אותה שוב.\n"
-            + (f"\nעד עכשיו: **{fmt(self.got)}** {cur()}" if self.picks else "")))
-        e.set_footer(text="🔒 נעול   ·   🕸️ ריק   ·   💎👑💍⌚💵💰🪙 שלל")
-        return e
-
-    def opener(self, i):
-        async def cb(interaction):
-            if self.done or self.btns[i].disabled:
-                return await interaction.response.defer()
-            item = self.drawers[i]
-            if item is not None:
-                ic, nm, amount = item
-                val = loot_value(amount)
-                self.got += val
-                self.items.append((ic, nm, val))
-            self.show_open(i)
-            self.picks += 1
-            if self.picks >= HEIST_LOOT_PICKS:
-                self.finish()
-                for x in self.btns:
-                    x.disabled = True
-                self.stop()
-                return await interaction.response.edit_message(embed=self.embed(final=True), view=self)
-            await interaction.response.edit_message(embed=self.embed(), view=self)
-        return cb
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("אלה לא המגירות שלך.", ephemeral=True)
-            return False
-        return True
-
-    def finish(self):
-        if self.done:
-            return
-        self.done = True
-        uid = self.user.id
-        self.h.loot[uid] = self.got
-        self.h.loot_items[uid] = list(self.items)
-        self.h.loot_pending.discard(uid)
-        if not self.h.loot_pending:
-            self.h.loot_done.set()
-
-    async def on_timeout(self):
-        if self.done:
-            return
-        self.finish()
-        for x in self.btns:
-            x.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(embed=self.embed(final=True), view=self)
-            except Exception:
-                pass
-
-async def vault_blown(h):
-    """The bomber blew the safes: every player gets a small private message with his drawers, at the same moment."""
-    if h.vault_open:
-        return
-    h.vault_open = True
-    h.loot_deadline = time.time() + HEIST_LOOT_WAIT
-    targets = [(uid, p) for uid, p in h.players.items() if uid in h.interactions]
-    h.loot_pending = {uid for uid, _ in targets}
-    for uid, p in targets:
-        v = LootView(h, p["user"])
-        h.loot_views[uid] = v
-        try:
-            v.message = await h.interactions[uid].followup.send(
-                content="-# 💥 כל הצוות הצליח והכספות התפוצצו! יש לכם רגע לגנוב מהמגירות.",
-                embed=v.embed(), view=v, ephemeral=True, wait=True)
-        except Exception as ex:
-            print("Heist loot send failed:", repr(ex))
-            h.loot_pending.discard(uid)
-    if not h.loot_pending:
-        h.loot_done.set()
-    else:
-        h.view.show_loot()
-        await h.refresh()
-
-async def finish_heist(h):
-    c = cur()
-    h.phase = "done"
-    for uid in h.players:
-        h.results.setdefault(uid, False)
-    outcome = {}
-    for r in HEIST_ROLE_ORDER:
-        who = h.holders(r)
-        if who:
-            outcome[r] = all(h.results[u] for u in who)
-        elif r in HEIST_CORE:                 # a core role nobody took may succeed by itself
-            outcome[r] = any(random.random() < HEIST_AUTO for _ in range(luck_attempts(0)))
-    ok, total = sum(outcome.values()), len(outcome)
-    n = len(h.players)
-    lines, log_lines = [], []
-    for uid, p in h.players.items():
-        if ok == total:
-            win = int(h.stake * HEIST_MULT[n])
-            win += multi_extra("heist", win - h.stake)
-        elif ok == total - 1 and h.results.get(uid):
-            win = int(h.stake * HEIST_PART)      # only a player whose OWN mission worked gets part of the fee back
-        else:
-            win = 0                              # failing on purpose (or timing out) never gives anything back
-        loot = h.loot.get(uid, 0)
-        kept = loot                              # the loot is only handed out when the whole crew succeeded, so it is always paid
-        win += kept
-        DB.get("pending", {}).pop(p["token"], None)
-        BUSY.discard(uid)
-        user_data(uid)["cash"] += win
-        net = win - h.stake
-        loot_txt = ""
-        if loot:
-            icons = "".join(ic for ic, _, _ in h.loot_items.get(uid, []))
-            loot_txt = f"  {icons} שלל {fmt(loot)}" + ("" if kept else " (אבד)")
-        if net > 0:
-            lines.append(f"{p['user'].mention}  +{fmt(net)} {c}{loot_txt}")
-        elif win > 0:
-            lines.append(f"{p['user'].mention}  קיבל בחזרה {fmt(win)} {c}{loot_txt}")
-        else:
-            lines.append(f"{p['user'].mention}  -{fmt(h.stake)} {c}{loot_txt}")
-        role = HEIST_ROLES[p["role"]][0] if p["role"] else "-"
-        log_lines.append((uid, p, net, role, kept))
-    save()
-    crew = []
-    for uid, p, net, role, kept in log_lines:
-        crew.append(f"{p['user'].name} | {role} | {'completed' if h.results.get(uid) else 'failed'}"
-                    + (f" | loot {fmt(kept)}" if kept else ""))
-    verdict = "Full success" if ok == total else "Partial success" if ok == total - 1 else "Failed"
-    for uid, p, net, role, kept in log_lines:
-        log_game(p["user"], "heist", h.stake, net,
-                 detail=f"{verdict} | missions {ok}/{total} | crew of {n} | entry {fmt(h.stake)}\n```\n" + "\n".join(crew) + "\n```")
-    if ok == total:
-        title, color, kind, text = "השוד הצליח", GOLD, "win", "כל המשימות הושלמו והצוות יצא עם הכסף."
-    elif ok == total - 1:
-        title, color, kind, text = "הצלחה חלקית", HEIST_ORANGE, "vault", "חסרה משימה אחת. הצוות ברח עם חלק מההימור."
-    else:
-        title, color, kind, text = "השוד נכשל", RED, "fail", "המשימות נכשלו והמשטרה תפסה את הצוות."
-    e = discord.Embed(color=color, title=title, description=text)
-    for r in outcome:
-        name, icon = HEIST_ROLES[r]
-        names = ", ".join(h.players[u]["user"].mention for u in h.holders(r)) or "מחליף אוטומטי"
-        e.add_field(name=f"{icon} {name}", value=f"{names}\n{'הצליח' if outcome[r] else 'נכשל'}")
-    e.add_field(name="תוצאות", value="\n".join(lines), inline=False)
-    kw = {}
-    try:
-        png = heist_art(kind)
-        e.set_image(url="attachment://heist_result.png")
-        kw["attachments"] = [discord.File(io.BytesIO(png), "heist_result.png")]
-    except Exception as ex:
-        print("Heist art failed:", repr(ex))
-    try:
-        await h.message.edit(embed=e, view=None, **kw)
-    except Exception:
-        e.set_image(url=None)
-        await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
-
-async def heist_abort(h, title="הזמן אזל", text="השוד בוטל והכסף חזר למזומן.", to="cash"):
-    """Something went wrong: nobody loses anything. Players who were not paid yet get the entry fee back to their cash."""
-    h.phase = "done"
-    names = []
-    for uid, p in h.players.items():
-        if DB.get("pending", {}).pop(p["token"], None) is not None:
-            user_data(uid)[to] += h.stake
-            names.append(p["user"].mention)
-            log_money(p["user"], "HEIST | CANCELLED", f"Heist cancelled, entry fee of {fmt(h.stake)} {cur()} was returned to {to}", YELLOW)
-        BUSY.discard(uid)
-    save()
-    e = discord.Embed(color=YELLOW, title=title, description=(
-        text
-        + (f"\n\n{fmt(h.stake)} {cur()} הוחזרו ל: " + ", ".join(names) if names else "")))
-    try:
-        await h.message.edit(embed=e, view=None, attachments=[])
-    except Exception:
-        try:
-            await h.channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
-        except Exception as ex2:
-            print("Heist abort message failed:", repr(ex2))
-
-async def run_heist(h):
-    cid = h.channel.id
-    view = h.view
-    try:
-        try:
-            await asyncio.wait_for(h.full.wait(), max(0, h.end - time.time()))
-        except asyncio.TimeoutError:
-            pass
-        if h.cancelled:
-            return
-        if len(h.players) < HEIST_MIN:
-            heist_unmark(h.creator)                  # the creator may open a new heist today
-            return await heist_abort(h, "השוד בוטל",
-                                     f"לא הצטרפו מספיק שחקנים בזמן (נדרשים לפחות {HEIST_MIN}). הכסף חזר לבנק, בלי הפסד.", to="bank")
-        h.phase, h.end = "roles", int(time.time()) + HEIST_ROLE_WAIT
-        view.show_roles()
-        await h.refresh()
-        try:
-            await asyncio.wait_for(h.roles_set.wait(), HEIST_ROLE_WAIT)
-        except asyncio.TimeoutError:
-            pass
-        slots = lambda rs: [r for r in rs for _ in range(HEIST_ROLE_CAP.get(r, 1) - len(h.holders(r)))]
-        free = slots(HEIST_CORE)
-        random.shuffle(free)
-        free += slots(r for r in HEIST_ROLE_ORDER if r not in HEIST_CORE)       # core roles are given out first
-        free.reverse()
-        for p in h.players.values():
-            if p["role"] is None:
-                p["role"] = free.pop()
-        h.phase, h.end = "mission", int(time.time()) + HEIST_OPEN_WAIT      # whoever did not choose in time got a free role
-        view.show_mission()
-        await h.refresh()
-        try:
-            await asyncio.wait_for(h.all_done.wait(), HEIST_OPEN_WAIT)
-        except asyncio.TimeoutError:
-            for uid in h.players:           # nobody opened it in time: that mission failed
-                if uid not in h.opened:
-                    h.report(uid, False)
-        try:
-            await asyncio.wait_for(h.all_done.wait(), max(HEIST_TIME.values()) + 5)
-        except asyncio.TimeoutError:
-            pass
-        if h.vault_task is not None:            # the drawers were sent: wait until everybody opened them
-            await h.vault_task
-        if h.vault_open and h.loot_pending:
-            try:
-                await asyncio.wait_for(h.loot_done.wait(), HEIST_LOOT_WAIT + 3)
-            except asyncio.TimeoutError:
-                pass
-        await finish_heist(h)
-    except Exception as ex:
-        print("Heist failed:", repr(ex))
-        await heist_abort(h)
-    finally:
-        HEISTS.pop(cid, None)
-
-@bot.command(name="heist", usage="heist [2-5]")
-async def heist(ctx, size: str = None):
-    crew = HEIST_DEFAULT
-    if size is not None:
-        if not size.isdigit() or not HEIST_MIN <= int(size) <= HEIST_MAX:
-            return await reply(ctx, f"Usage: `$heist [{HEIST_MIN}-{HEIST_MAX}]` (the number of players)", RED)
-        crew = int(size)
-    if ctx.channel.id in HEISTS:
-        return await reply(ctx, "יש כבר שוד פתוח בערוץ הזה. לחצו על כניסה למשחק כדי להצטרף אליו.", RED)
-    if heist_used_today(ctx.author.id):
-        return await reply(ctx, "כבר יצרת שוד היום. אפשר ליצור שוד חדש מחר אחרי 00:00 (אפשר עדיין להצטרף לשוד של מישהו אחר).", RED)
-    if user_data(ctx.author.id)["cash"] < HEIST_FEE:
-        return await reply(ctx, f"שוד עולה {fmt(HEIST_FEE)} {cur()} לכל שחקן (הוצאות). אין לך מספיק כסף במזומן.", RED)
-    bet = await take_bet(ctx, str(HEIST_FEE), "heist", track=True)
-    if not bet:
-        return
-    heist_mark(ctx.author.id)
-    h = Heist(ctx.channel, bet, crew)
-    h.token = str(ctx.message.id)
-    h.creator = ctx.author.id
-    h.add_player(ctx.author, h.token)         # the creator is in; he chooses his role with the buttons like everybody else
-    h.view = HeistView(h)
-    HEISTS[ctx.channel.id] = h
-    kw = {}
-    try:
-        kw["file"] = discord.File(io.BytesIO(heist_art("vault")), "heist.png")
-        h.art = True
-    except Exception as ex:
-        print("Heist art failed:", repr(ex))
-    try:
-        h.message = await ctx.reply(embed=h.embed(), view=h.view, mention_author=False, **kw)
-    except Exception:
-        HEISTS.pop(ctx.channel.id, None)
-        heist_unmark(ctx.author.id)
-        cancel_game(ctx.author, h.token, bet)
-        raise
-    bg(run_heist(h))
 
 # ================= SCRATCH CARDS ($sc) =================
 try:
@@ -3536,7 +2414,7 @@ class ScratchView(OwnedView):
             except Exception:
                 pass
 
-class ScratchAmountModal(discord.ui.Modal):
+class AmountModal(discord.ui.Modal):
     def __init__(self, menu, key):
         c = SC_CARDS[key]
         super().__init__(title=f"{c['name']} - כמה כסף?"[:45])
@@ -3604,7 +2482,7 @@ class ScratchSelect(discord.ui.Select):
             return await interaction.response.send_message(BUSY_MSG, ephemeral=True)
         if not sc_stock(key)["left"]:
             return await interaction.response.send_message("הכרטיס הזה אזל מהמלאי ❌", ephemeral=True)
-        await interaction.response.send_modal(ScratchAmountModal(menu, key))
+        await interaction.response.send_modal(AmountModal(menu, key))
         try:
             await interaction.message.edit(view=menu)
         except Exception:
@@ -3737,33 +2615,11 @@ async def bal(ctx, target: str = None):
         if member is None:
             return await reply(ctx, "Usage: `$bal [@user | user ID]` — or reply to a player (ping ON) and type `$bal a`", RED)
     u, c = user_data(member.id), cur()
-    view = BalView()
-    view.message = await ctx.reply(embed=make_embed(member, (
+    await ctx.reply(embed=make_embed(member, (
         "Use the `top` command to view your rank.\n\n"
         f"• **Money Out:** {fmt(u['cash'])} {c}\n"
         f"• **Bank Money:** {fmt(u['bank'])} {c}\n"
-        f"• **Total Money:** {fmt(u['cash'] + u['bank'])} {c}"), BLUE), view=view, mention_author=False)
-
-class BalView(discord.ui.View):
-    """The 'Top' button under $bal: whoever presses it gets the full leaderboard privately (with Dismiss message)."""
-
-    def __init__(self):
-        super().__init__(timeout=600)
-        self.message = None
-
-    @discord.ui.button(label="Top", style=discord.ButtonStyle.primary)
-    async def top_btn(self, interaction, button):
-        view = TopView(interaction.user)
-        await interaction.response.send_message(embed=view.build(), view=view, ephemeral=True)
-
-    async def on_timeout(self):
-        for b in self.children:
-            b.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except Exception:
-                pass
+        f"• **Total Money:** {fmt(u['cash'] + u['bank'])} {c}"), BLUE), mention_author=False)
 
 async def move(ctx, amount, src, dst, usage, verb):
     u = user_data(ctx.author.id)
@@ -3808,9 +2664,7 @@ async def pay(ctx, target: str = None, amount: str = None):
     member = await resolve_target(ctx, target)
     if member is None or amount is None:
         return await reply(ctx, "Usage: `$pay @user | user ID <amount | half | all>` — or reply to a player (ping ON) and type `$pay a <amount>`", RED)
-    if member.bot:
-        return await reply(ctx, "Please enter a valid user.", RED)
-    if member.id == ctx.author.id:
+    if member.bot or member.id == ctx.author.id:
         return await reply(ctx, "You can't pay this user.", RED)
     u = user_data(ctx.author.id)
     amt = parse_amount(amount, u["cash"])
@@ -3835,15 +2689,9 @@ async def rob(ctx, target: str = None):
     if member is None:
         ctx.command.reset_cooldown(ctx)
         return await reply(ctx, "Usage: `$rob @user | user ID` — or reply to a player (ping ON) and type `$rob a`", RED)
-    if member.bot:
+    if member.bot or member.id == ctx.author.id:
         ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "Please enter a valid user.", RED)
-    if member.id == ctx.author.id:
-        ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, "You cannot rob yourself.", RED)
-    if immunity_until(member) is not None:
-        ctx.command.reset_cooldown(ctx)
-        return await reply(ctx, f"{member.name} is immune.", RED)
+        return await reply(ctx, "You can't rob this user.", RED)
     me, tgt = user_data(ctx.author.id), user_data(member.id)
     loot = {k: int(tgt[k] * ROB_PERCENT) for k in ROB_FROM}
     total = sum(loot.values())
@@ -4044,560 +2892,6 @@ admin_only = commands.check(admin_or_owner)
 staff_only = commands.check(is_staff)
 owner_only = commands.check(lambda ctx: ctx.author.id in OWNER_IDS)
 
-# ================= LOTTERY ($lottery) =================
-LOTTO_CHANNEL_ID = 1556503844567916665       # the only room where the lottery lives
-LOTTO_MIN_PRICE = 5_000_000                  # the cheapest ticket
-LOTTO_MAX_TICKETS = 2                        # tickets per player in one draw
-LOTTO_PICK, LOTTO_RANGE, LOTTO_STRONG = 5, 37, 7     # 5 numbers out of 37 + one strong number out of 7
-LOTTO_DRAWN = 6                              # the draw takes 6 numbers (5=6 system)
-LOTTO_MULT = {5: 25, 4: 7.5, 3: 5, 2: 2.5, 1: 1.5}   # hits -> prize as a multiple of the ticket price
-LOTTO_STRONG_BONUS = 0.5                     # a correct strong number adds this part of the prize
-LOTTO_PRESETS = (5_000_000, 7_500_000, 10_000_000, 25_000_000, 50_000_000, 100_000_000, 250_000_000, 500_000_000, 1_000_000_000)
-LOTTO_RED, LOTTO_BLUE_C = 0xE3242B, 0x1D4E9E
-LOTTO_LOCK = asyncio.Lock()
-
-LOTTO_RULES = (
-    "פעם בשבוע יש הגרלה, ביום שבת ב-00:00 (זה הלילה שבין שישי לשבת). התוצאות מתפרסמות כאן בחדר.\n\n"
-    "**איך משחקים**\n"
-    "לוחצים על \"מלא טופס\". בוחרים 5 מספרים מתוך 37 ומספר חזק אחד מ-1 עד 7. "
-    "אחרי זה קובעים כמה כסף לשים על הטופס, מינימום 5 מיליון, והסכום באחריותכם. אפשר לקנות עד 2 טפסים.\n\n"
-    "**איך זוכים**\n"
-    "בהגרלה יוצאים 6 מספרים ומספר חזק אחד. סופרים כמה מהמספרים שלכם יצאו, והפרס הוא הסכום שלכם כפול:\n"
-    "5 פגיעות פי 25\n"
-    "4 פגיעות פי 7.5\n"
-    "3 פגיעות פי 5\n"
-    "2 פגיעות פי 2.5\n"
-    "פגיעה אחת פי 1.5\n"
-    "אם גם המספר החזק נכון, מקבלים עוד חצי מהפרס.\n\n"
-    "**הקופה**\n"
-    "כל הכסף שנכנס מהטפסים נצבר בקופה. מי שפגע הכי הרבה מספרים לוקח את כולה, גם אם זה רק 1 או 2. "
-    "אם כמה טפסים פגעו אותו דבר, קודם מי שפגע גם בחזק, ואם עדיין שווה מחלקים ביניהם. "
-    "אם אף אחד לא פגע בשום מספר, הקופה עוברת להגרלה הבאה.\n\n"
-    "דוגמה: שמתם 10 מיליון ופגעתם ב-3 מספרים, אתם מקבלים 50 מיליון. אם זה היה הכי הרבה פגיעות בהגרלה, אתם לוקחים גם את הקופה."
-)
-
-def heb(s):
-    """Hebrew for PIL: the bot's own helper reverses it only when this Pillow has no RTL support."""
-    return he(s)
-
-def next_saturday():
-    """The coming Saturday at 00:00 (Israel time) as a timestamp. That is the night between Friday and Saturday."""
-    now = datetime.datetime.now(LOCAL_TZ)
-    t = (now + datetime.timedelta(days=(5 - now.weekday()) % 7)).replace(hour=0, minute=0, second=0, microsecond=0)
-    if t <= now:
-        t += datetime.timedelta(days=7)
-    return int(t.timestamp())
-
-def lotto():
-    return DB.get("lotto")
-
-def lotto_open_now(r=None):
-    r = r or lotto()
-    return bool(r) and not r.get("done") and time.time() < r["end"]
-
-def lotto_pot(r):
-    return r.get("carry", 0) + sum(t["price"] for t in r["tickets"])
-
-def lotto_mine(r, uid):
-    return [t for t in r["tickets"] if t["uid"] == str(uid)]
-
-def lotto_prize(price, hits, strong_hit):
-    m = LOTTO_MULT.get(hits, 0)
-    if not m:
-        return 0
-    return int(price * m * ((1 + LOTTO_STRONG_BONUS) if strong_hit else 1))
-
-def lotto_grid(nums):
-    """The form as text: the numbers 1-37 in rows of seven, a chosen number looks like [07]."""
-    cells = [f"[{n:02d}]" if n in nums else f" {n:02d} " for n in range(1, LOTTO_RANGE + 1)]
-    return "```\n" + "\n".join("".join(cells[i:i + 7]) for i in range(0, LOTTO_RANGE, 7)) + "\n```"
-
-# ---------- pictures ----------
-@lru_cache(maxsize=64)
-def lotto_ticket_art(nums, strong, idx, price, draw_text):
-    """A filled-in betting slip in the style of the real one: red and blue, pink table, chosen ovals are filled."""
-    S, W, H = 2, 620, 800
-    RED, BLUE, PINK = (227, 36, 43), (29, 78, 158), (252, 221, 221)
-    im = Image.new("RGB", (W * S, H * S), (255, 255, 255))
-    d = ImageDraw.Draw(im)
-
-    def X(v):
-        return int(v * S)
-
-    def box(x0, y0, x1, y1, fill=None, outline=None, r=10, w=2):
-        d.rounded_rectangle([X(x0), X(y0), X(x1), X(y1)], radius=X(r), fill=fill, outline=outline, width=X(w) if outline else 0)
-
-    def text(x, y, t, size, fill, anchor="mm"):
-        d.text((X(x), X(y)), t, font=get_font(int(size * S)), fill=fill, anchor=anchor)
-
-    box(30, 24, 310, 92, fill=BLUE)
-    box(310, 24, 590, 92, fill=RED)
-    text(170, 58, heb("שיטתי"), 40, (255, 255, 255))
-    text(450, 58, heb("לוטו"), 40, (255, 255, 255))
-    box(30, 104, 590, 214, fill=RED)
-    d.ellipse([X(130), X(108), X(490), X(210)], fill=BLUE)
-    text(310, 160, heb("חזק"), 72, (255, 255, 255))
-
-    box(30, 236, 590, 716, fill=PINK, r=8)
-    text(255, 262, heb("בחרו 5 מספרים"), 17, RED)
-    text(530, 262, heb("חזק"), 17, RED)
-    x0, y0, pitch_x, pitch_y = 74, 296, 60, 62
-    chosen = set(nums)
-    for n in range(1, LOTTO_RANGE + 1):
-        r_, c_ = divmod(n - 1, 7)
-        cx, cy = x0 + c_ * pitch_x, y0 + r_ * pitch_y
-        text(cx, cy, str(n), 19, RED)
-        box(cx - 22, cy + 14, cx + 22, cy + 38, fill=BLUE if n in chosen else (255, 255, 255), outline=BLUE if n in chosen else RED, r=12)
-    d.line([X(494), X(276), X(494), X(700)], fill=RED, width=X(2))
-    for n in range(1, LOTTO_STRONG + 1):
-        cx, cy = 542, y0 + (n - 1) * pitch_y
-        text(cx, cy, str(n), 19, RED)
-        box(cx - 22, cy + 14, cx + 22, cy + 38, fill=BLUE if n == strong else (255, 255, 255), outline=BLUE if n == strong else RED, r=12)
-
-    box(30, 732, 590, 782, fill=(255, 255, 255), outline=BLUE, r=10)
-    text(60, 757, f"TICKET {idx}/{LOTTO_MAX_TICKETS}", 17, BLUE, "lm")
-    text(310, 757, f"{price:,}", 20, RED)
-    text(560, 757, f"DRAW {draw_text}", 17, BLUE, "rm")
-    out = io.BytesIO()
-    im.resize((W, H), Image.LANCZOS).save(out, "PNG")
-    return out.getvalue()
-
-@lru_cache(maxsize=16)
-def lotto_balls_art(drawn=None, strong=None):
-    """The banner: six white balls and a gold strong ball. Without numbers (drawn=None) the balls show a question mark."""
-    S, W, H = 2, 900, 230
-    im = Image.new("RGB", (W * S, H * S))
-    d = ImageDraw.Draw(im)
-    for x in range(W * S):
-        k = x / (W * S - 1)
-        d.line([(x, 0), (x, H * S)], fill=tuple(int(a + (b - a) * k) for a, b in zip((196, 28, 38), (22, 58, 128))))
-    f = get_font
-
-    def X(v):
-        return int(v * S)
-
-    d.text((X(450), X(52)), heb("לוטו שיטתי חזק"), font=f(int(46 * S)), fill=(255, 255, 255), anchor="mm")
-    vals = list(drawn) if drawn else [None] * LOTTO_DRAWN
-    xs = [105 + i * 112 for i in range(LOTTO_DRAWN)] + [105 + LOTTO_DRAWN * 112 + 10]
-    for i, cx in enumerate(xs):
-        gold = i == LOTTO_DRAWN
-        v = (strong if gold else vals[i]) if drawn else None
-        cy, r = 150, 44
-        d.ellipse([X(cx - r + 4), X(cy - r + 8), X(cx + r + 4), X(cy + r + 8)], fill=(0, 0, 0))
-        d.ellipse([X(cx - r), X(cy - r), X(cx + r), X(cy + r)], fill=(240, 196, 25) if gold else (255, 255, 255),
-                  outline=(150, 110, 10) if gold else (210, 210, 220), width=X(3))
-        d.ellipse([X(cx - r * 0.55), X(cy - r * 0.62), X(cx - r * 0.1), X(cy - r * 0.25)], fill=(255, 236, 150) if gold else (245, 245, 252))
-        d.text((X(cx), X(cy + 2)), "?" if v is None else str(v), font=f(int(40 * S)), fill=(120, 80, 0) if gold else (29, 78, 158), anchor="mm")
-    out = io.BytesIO()
-    im.resize((W, H), Image.LANCZOS).save(out, "PNG")
-    return out.getvalue()
-
-def lotto_file(png, name):
-    return discord.File(io.BytesIO(png), name)
-
-# ---------- the public panel ----------
-def lotto_embed(r, art=True):
-    end, pot = r["end"], lotto_pot(r)
-    e = discord.Embed(color=LOTTO_RED, title="לוטו שבועי | שיטתי חזק", description=(
-        "בוחרים 5 מספרים מתוך 37 ומספר חזק אחד מ-1 עד 7, וקובעים כמה לשים על הטופס. "
-        "ההגרלה ביום שבת ב-00:00, ומי שפגע הכי הרבה לוקח את כל הקופה."))
-    e.add_field(name="הקופה", value=f"**{fmt(pot)}** {cur()}")
-    e.add_field(name="טפסים שנמכרו", value=str(len(r["tickets"])))
-    e.add_field(name="ההגרלה", value=f"<t:{end}:F>\n<t:{end}:R>")
-    e.add_field(name="פרסים לפי פגיעות (פי הסכום שבטופס)", value=(
-        "\n".join(f"{h} פגיעות: פי {m:g}" if h > 1 else f"פגיעה אחת: פי {m:g}" for h, m in LOTTO_MULT.items())
-        + f"\nמספר חזק נכון: עוד {int(LOTTO_STRONG_BONUS * 100)}% על הפרס"), inline=False)
-    e.set_footer(text=f"עד {LOTTO_MAX_TICKETS} טפסים לשחקן  |  מינימום {fmt(LOTTO_MIN_PRICE)} לטופס")
-    if art:
-        e.set_image(url="attachment://lotto_banner.png")
-    return e
-
-async def lotto_refresh_panel():
-    r = lotto()
-    if not r or not r.get("message"):
-        return
-    try:
-        ch = bot.get_channel(r["channel"]) or await bot.fetch_channel(r["channel"])
-        await ch.get_partial_message(r["message"]).edit(embed=lotto_embed(r))
-    except Exception as ex:
-        print("Lotto panel refresh failed:", repr(ex))
-
-async def lotto_open(channel, carry=0):
-    """Open a new round that ends on the coming Saturday at 00:00 and post its panel."""
-    r = {"id": int(time.time()), "end": next_saturday(), "tickets": [], "carry": int(carry),
-         "channel": channel.id, "message": 0, "done": False}
-    DB["lotto"] = r
-    save()
-    kw = {}
-    try:
-        kw["file"] = lotto_file(lotto_balls_art(), "lotto_banner.png")
-        art = True
-    except Exception as ex:
-        print("Lotto banner failed:", repr(ex))
-        art = False
-    msg = await channel.send(embed=lotto_embed(r, art), view=LottoPanel(), **kw)
-    r["message"] = msg.id
-    save()
-    return msg
-
-class LottoPanel(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="מלא טופס", emoji="🎟️", style=discord.ButtonStyle.success, custom_id="lotto:buy")
-    async def buy(self, interaction, button):
-        r = lotto()
-        say = lambda t: interaction.response.send_message(t, ephemeral=True)
-        if not lotto_open_now(r):
-            return await say("אין הגרלה פתוחה כרגע. ההגרלה הבאה תיפתח אחרי ההכרזה.")
-        if len(lotto_mine(r, interaction.user.id)) >= LOTTO_MAX_TICKETS:
-            return await say(f"כבר קנית {LOTTO_MAX_TICKETS} טפסים בהגרלה הזו.")
-        if user_data(interaction.user.id)["cash"] < LOTTO_MIN_PRICE:
-            return await say(f"טופס עולה לפחות {fmt(LOTTO_MIN_PRICE)} {cur()} ואין לך מספיק כסף במזומן.")
-        form = LottoForm(interaction.user, r["id"])
-        await interaction.response.send_message(embed=form.embed(), view=form, ephemeral=True)
-
-    @discord.ui.button(label="הטפסים שלי", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="lotto:mine")
-    async def mine(self, interaction, button):
-        r = lotto()
-        mine = lotto_mine(r, interaction.user.id) if r else []
-        if not mine:
-            return await interaction.response.send_message("אין לך טפסים בהגרלה הזו.", ephemeral=True)
-        embeds, files = [], []
-        draw_text = datetime.datetime.fromtimestamp(r["end"], LOCAL_TZ).strftime("%d/%m")
-        for i, t in enumerate(mine, 1):
-            e = discord.Embed(color=LOTTO_BLUE_C, description=f"טופס {i}: סכום **{fmt(t['price'])}** {cur()}")
-            try:
-                files.append(lotto_file(lotto_ticket_art(tuple(t["nums"]), t["strong"], i, t["price"], draw_text), f"ticket{i}.png"))
-                e.set_image(url=f"attachment://ticket{i}.png")
-            except Exception as ex:
-                print("Lotto ticket art failed:", repr(ex))
-                e.description += f"\nמספרים: {' '.join(map(str, t['nums']))}  |  חזק: {t['strong']}"
-            embeds.append(e)
-        await interaction.response.send_message(embeds=embeds, files=files, ephemeral=True)
-
-    @discord.ui.button(label="הסבר", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="lotto:help")
-    async def help(self, interaction, button):
-        await interaction.response.send_message(embed=discord.Embed(color=LOTTO_BLUE_C, title="איך הלוטו עובד", description=LOTTO_RULES), ephemeral=True)
-
-# ---------- the form (private) ----------
-class LottoAmountModal(discord.ui.Modal):
-    def __init__(self, form):
-        super().__init__(title="סכום לטופס")
-        self.form = form
-        self.amount = discord.ui.TextInput(label=f"כמה לשים על הטופס? (מינימום {fmt(LOTTO_MIN_PRICE)})",
-                                           placeholder="לדוגמה 12m או 15000000", max_length=20)
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction):
-        cash = user_data(interaction.user.id)["cash"]
-        v = parse_amount(self.amount.value.strip().lower(), cash)
-        if v is None or v < LOTTO_MIN_PRICE:
-            self.form.note = f"הסכום חייב להיות לפחות {fmt(LOTTO_MIN_PRICE)}."
-        elif v > cash:
-            self.form.note = "אין לך מספיק כסף במזומן לסכום הזה."
-        else:
-            self.form.price, self.form.note = v, ""
-        self.form.rebuild()
-        await interaction.response.edit_message(embed=self.form.embed(), view=self.form)
-
-class LottoForm(discord.ui.View):
-    def __init__(self, user, round_id):
-        super().__init__(timeout=900)
-        self.user, self.round_id = user, round_id
-        self.nums, self.strong, self.price = set(), None, LOTTO_MIN_PRICE
-        self.mode, self.page, self.note = "numbers", 0, ""
-        self.rebuild()
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("זה לא הטופס שלך. לחץ על \"מלא טופס\" בהודעה הראשית.", ephemeral=True)
-            return False
-        return True
-
-    def btn(self, label, cb, style=discord.ButtonStyle.secondary, row=0, emoji=None, disabled=False):
-        b = discord.ui.Button(label=label, style=style, row=row, emoji=emoji, disabled=disabled)
-        b.callback = cb
-        self.add_item(b)
-
-    def ready(self):
-        return len(self.nums) == LOTTO_PICK and self.strong is not None and self.price >= LOTTO_MIN_PRICE
-
-    def rebuild(self):
-        self.clear_items()
-        if self.mode == "numbers":
-            lo, hi = (1, 20) if self.page == 0 else (21, LOTTO_RANGE)
-            for i, n in enumerate(range(lo, hi + 1)):
-                self.btn(str(n), self.toggle(n), discord.ButtonStyle.success if n in self.nums else discord.ButtonStyle.secondary, row=i // 5)
-            self.btn("21-37 ▶" if self.page == 0 else "◀ 1-20", self.flip, row=4)
-            self.btn("אקראי", self.random_nums, row=4, emoji="🎲")
-            self.btn("נקה", self.clear_nums, row=4, emoji="🧹")
-            self.btn("המשך", self.go_finish, discord.ButtonStyle.primary, row=4, emoji="➡️", disabled=len(self.nums) < LOTTO_PICK)
-            return
-        for n in range(1, LOTTO_STRONG + 1):
-            self.btn(str(n), self.pick_strong(n), discord.ButtonStyle.success if n == self.strong else discord.ButtonStyle.secondary, row=0 if n <= 5 else 1)
-        self.btn("חזק אקראי", self.random_strong, row=1, emoji="🎲")
-        prices = list(LOTTO_PRESETS)
-        if self.price not in prices:
-            prices = sorted(prices + [self.price])
-        sel = discord.ui.Select(placeholder="בחר סכום לטופס", row=2, options=[
-            discord.SelectOption(label=fmt(p), value=str(p), default=p == self.price) for p in prices[:25]])
-        sel.callback = self.pick_price
-        self.add_item(sel)
-        self.btn("חזרה למספרים", self.go_numbers, row=3, emoji="⬅️")
-        self.btn("סכום אחר", self.custom_price, row=3, emoji="💳")
-        self.btn("קנה טופס", self.purchase, discord.ButtonStyle.success, row=3, emoji="✅", disabled=not self.ready())
-
-    def embed(self):
-        r = lotto()
-        note = f"\n\n> {self.note}" if self.note else ""
-        if self.mode == "numbers":
-            e = discord.Embed(color=LOTTO_RED, title="טופס לוטו | שלב 1 מתוך 2: בחירת מספרים", description=(
-                f"בחרו {LOTTO_PICK} מספרים. מספר שבחרתם נראה כך: [07]. לחיצה נוספת עליו מסירה אותו.\n"
-                f"{lotto_grid(self.nums)}\nנבחרו **{len(self.nums)}** מתוך {LOTTO_PICK}" + note))
-            return e
-        mine = len(lotto_mine(r, self.user.id)) + 1 if r else 1
-        nums = " ".join(f"`{n:02d}`" for n in sorted(self.nums))
-        table = "\n".join(f"{h} פגיעות: **{fmt(int(self.price * m))}**" if h > 1 else f"פגיעה אחת: **{fmt(int(self.price * m))}**"
-                          for h, m in LOTTO_MULT.items())
-        e = discord.Embed(color=LOTTO_RED, title=f"טופס לוטו {mine} | שלב 2 מתוך 2: מספר חזק וסכום", description=(
-            "בחרו מספר חזק אחד מ-1 עד 7 (חובה), ואת הסכום שתשימו על הטופס.\n\n"
-            f"המספרים שלכם: {nums}\n"
-            f"המספר החזק: **{self.strong if self.strong else 'לא נבחר'}**\n"
-            f"הסכום: **{fmt(self.price)}** {cur()}" + note))
-        e.add_field(name="מה תקבלו אם תפגעו (לפי הסכום הזה)", value=table + f"\nמספר חזק נכון: עוד {int(LOTTO_STRONG_BONUS * 100)}%")
-        if r:
-            e.add_field(name="הקופה עכשיו", value=f"{fmt(lotto_pot(r))} {cur()}")
-        e.set_footer(text=f"במזומן יש לך {fmt(user_data(self.user.id)['cash'])}")
-        return e
-
-    async def show(self, interaction):
-        self.rebuild()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-    def toggle(self, n):
-        async def cb(interaction):
-            if n in self.nums:
-                self.nums.discard(n)
-                self.note = ""
-            elif len(self.nums) >= LOTTO_PICK:
-                self.note = f"כבר בחרת {LOTTO_PICK} מספרים. לחץ על מספר שבחרת כדי להסיר אותו."
-            else:
-                self.nums.add(n)
-                self.note = ""
-            await self.show(interaction)
-        return cb
-
-    async def flip(self, interaction):
-        self.page = 1 - self.page
-        await self.show(interaction)
-
-    async def random_nums(self, interaction):
-        self.nums = set(random.sample(range(1, LOTTO_RANGE + 1), LOTTO_PICK))
-        self.note = ""
-        await self.show(interaction)
-
-    async def clear_nums(self, interaction):
-        self.nums, self.note = set(), ""
-        await self.show(interaction)
-
-    async def go_finish(self, interaction):
-        self.mode, self.note = "finish", ""
-        await self.show(interaction)
-
-    async def go_numbers(self, interaction):
-        self.mode, self.note = "numbers", ""
-        await self.show(interaction)
-
-    def pick_strong(self, n):
-        async def cb(interaction):
-            self.strong, self.note = n, ""
-            await self.show(interaction)
-        return cb
-
-    async def random_strong(self, interaction):
-        self.strong, self.note = random.randint(1, LOTTO_STRONG), ""
-        await self.show(interaction)
-
-    async def pick_price(self, interaction):
-        self.price, self.note = int(interaction.data["values"][0]), ""
-        await self.show(interaction)
-
-    async def custom_price(self, interaction):
-        await interaction.response.send_modal(LottoAmountModal(self))
-
-    async def purchase(self, interaction):
-        r, uid = lotto(), interaction.user.id
-        u = user_data(uid)
-
-        async def refuse(text):
-            self.note = text
-            await self.show(interaction)
-
-        if not lotto_open_now(r) or r["id"] != self.round_id:
-            self.stop()
-            return await interaction.response.edit_message(embed=discord.Embed(color=RED, description="ההגרלה הזו כבר נסגרה."), view=None)
-        if not self.ready():
-            return await refuse("חסר מספר חזק או סכום תקין.")
-        if len(lotto_mine(r, uid)) >= LOTTO_MAX_TICKETS:
-            return await refuse(f"כבר קנית {LOTTO_MAX_TICKETS} טפסים.")
-        if u["cash"] < self.price:
-            return await refuse("אין לך מספיק כסף במזומן לסכום הזה.")
-        u["cash"] -= self.price                      # no await between the check and the payment
-        ticket = {"uid": str(uid), "nums": sorted(self.nums), "strong": self.strong, "price": self.price, "ts": int(time.time())}
-        r["tickets"].append(ticket)
-        save()
-        self.stop()
-        idx = len(lotto_mine(r, uid))
-        log_money(interaction.user, "LOTTERY | TICKET", f"Bought ticket {idx}/{LOTTO_MAX_TICKETS} for {fmt(self.price)} {cur()}: "
-                  f"{' '.join(map(str, ticket['nums']))} | strong {ticket['strong']}", BLUE)
-        bg(lotto_refresh_panel())
-        e = discord.Embed(color=GREEN, title="הטופס נקלט", description=(
-            f"שילמת **{fmt(self.price)}** {cur()}. התוצאות בשבת ב-00:00, <t:{r['end']}:R>.\n"
-            + (f"אפשר לקנות עוד טופס אחד." if idx < LOTTO_MAX_TICKETS else "קנית את כל הטפסים שמותר.")))
-        kw = {}
-        try:
-            draw_text = datetime.datetime.fromtimestamp(r["end"], LOCAL_TZ).strftime("%d/%m")
-            kw["attachments"] = [lotto_file(lotto_ticket_art(tuple(ticket["nums"]), ticket["strong"], idx, ticket["price"], draw_text), "ticket.png")]
-            e.set_image(url="attachment://ticket.png")
-        except Exception as ex:
-            print("Lotto ticket art failed:", repr(ex))
-            e.description += f"\nמספרים: {' '.join(map(str, ticket['nums']))}  |  חזק: {ticket['strong']}"
-        await interaction.response.edit_message(embed=e, view=None, **kw)
-
-# ---------- the draw ----------
-async def lotto_announce(r, drawn, strong, rows, pot, top, carry):
-    ch = bot.get_channel(r["channel"]) or await bot.fetch_channel(r["channel"])
-    nums = "  ".join(f"`{n:02d}`" for n in drawn)
-    e = discord.Embed(color=LOTTO_RED, title="תוצאות הלוטו השבועי", description=(
-        f"המספרים שיצאו: {nums}\nהמספר החזק: **{strong}**\n\n"
-        f"נמכרו **{len(r['tickets'])}** טפסים, והקופה הייתה **{fmt(pot)}** {cur()}."))
-    if top:
-        who = "\n".join(f"<@{x['t']['uid']}>: {x['hits']} פגיעות" + (" + חזק" if x["sh"] else "") + f" | {fmt(x['pot'])} {cur()}" for x in top)
-        e.add_field(name="לקחו את הקופה", value=who, inline=False)
-    else:
-        e.add_field(name="הקופה", value=f"אף אחד לא פגע בשום מספר, **{fmt(carry)}** {cur()} עוברים להגרלה הבאה." if rows
-                    else f"לא נמכרו טפסים, **{fmt(carry)}** {cur()} עוברים להגרלה הבאה.", inline=False)
-    wins = [x for x in rows if x["prize"] > 0]
-    if wins:
-        wins.sort(key=lambda x: -x["prize"])
-        lines = [f"<@{x['t']['uid']}>: {x['hits']} פגיעות" + (" + חזק" if x["sh"] else "") + f" | **{fmt(x['prize'])}** {cur()}" for x in wins[:15]]
-        if len(wins) > 15:
-            lines.append(f"ועוד {len(wins) - 15} טפסים")
-        e.add_field(name="פרסים על הפגיעות", value="\n".join(lines), inline=False)
-    kw = {}
-    try:
-        kw["file"] = lotto_file(lotto_balls_art(tuple(drawn), strong), "lotto_result.png")
-        e.set_image(url="attachment://lotto_result.png")
-    except Exception as ex:
-        print("Lotto result art failed:", repr(ex))
-    winners = sorted({x["t"]["uid"] for x in rows if x["prize"] or x["pot"]})[:10]
-    content = ("מזל טוב " + " ".join(f"<@{u}>" for u in winners)) if winners else None
-    await ch.send(content=content, embed=e, allowed_mentions=discord.AllowedMentions(users=True), **kw)
-
-async def lotto_finish(force=False):
-    """Draw the numbers, pay everybody, announce, and open the next round. It can never run twice for the same round."""
-    async with LOTTO_LOCK:
-        r = DB.get("lotto")
-        if not r or r.get("done") or (not force and time.time() < r["end"]):
-            return
-        r["done"] = True
-        save()
-        drawn = sorted(random.sample(range(1, LOTTO_RANGE + 1), LOTTO_DRAWN))
-        strong = random.randint(1, LOTTO_STRONG)
-        pot = lotto_pot(r)
-        rows = []
-        for t in r["tickets"]:
-            hits, sh = len(set(t["nums"]) & set(drawn)), t["strong"] == strong
-            rows.append({"t": t, "hits": hits, "sh": sh, "prize": lotto_prize(t["price"], hits, sh), "pot": 0})
-        best = max(((x["hits"], x["sh"]) for x in rows), default=(0, False))
-        top, carry = [], pot
-        if rows and best[0] >= 1:
-            top = [x for x in rows if (x["hits"], x["sh"]) == best]
-            share = pot // len(top)
-            for x in top:
-                x["pot"] = share
-            carry = pot - share * len(top)
-        totals = {}
-        for x in rows:
-            totals[x["t"]["uid"]] = totals.get(x["t"]["uid"], 0) + x["prize"] + x["pot"]
-        for uid, amount in totals.items():
-            if amount:
-                user_data(int(uid))["bank"] += amount
-        DB["lotto_last"] = {"id": r["id"], "drawn": drawn, "strong": strong, "pot": pot, "carry": carry,
-                            "tickets": len(r["tickets"]), "paid": sum(totals.values())}
-        save()
-        for uid, amount in totals.items():
-            if amount:
-                try:
-                    user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
-                    log_money(user, "LOTTERY | WIN", f"Won {fmt(amount)} {cur()} in the weekly lottery (paid to the bank)", GREEN)
-                except Exception as ex:
-                    print("Lotto log failed:", repr(ex))
-        try:
-            await lotto_announce(r, drawn, strong, rows, pot, top, carry)
-        except Exception as ex:
-            print("Lotto announce failed:", repr(ex))
-        try:
-            ch = bot.get_channel(r["channel"]) or await bot.fetch_channel(r["channel"])
-            await lotto_open(ch, carry)          # a new round for the next Saturday
-        except Exception as ex:
-            print("Lotto next round failed:", repr(ex))
-
-@tasks.loop(seconds=30)
-async def lotto_loop():
-    if loaded is None or not loaded.is_set():
-        return
-    r = DB.get("lotto")
-    if r and not r.get("done") and time.time() >= r["end"]:
-        try:
-            await lotto_finish()
-        except Exception as ex:
-            print("Lotto draw failed:", repr(ex))
-
-@bot.command(name="lottery", usage="lottery [draw | cancel]")
-@owner_only
-async def lottery(ctx, sub: str = None):
-    if ctx.channel.id != LOTTO_CHANNEL_ID:
-        return await reply(ctx, f"The lottery can only be managed in <#{LOTTO_CHANNEL_ID}>.", RED)
-    r, sub = lotto(), (sub or "").lower()
-    if sub == "draw":
-        if not r or r.get("done"):
-            return await reply(ctx, "There is no open lottery.", RED)
-        return await lotto_finish(force=True)
-    if sub == "cancel":
-        if not r or r.get("done"):
-            return await reply(ctx, "There is no open lottery.", RED)
-        async with LOTTO_LOCK:
-            for t in r["tickets"]:
-                user_data(int(t["uid"]))["cash"] += t["price"]
-            n = len(r["tickets"])
-            r["done"] = True
-            DB["lotto"] = None
-            save()
-        try:
-            ch = bot.get_channel(r["channel"]) or await bot.fetch_channel(r["channel"])
-            await ch.get_partial_message(r["message"]).edit(embed=discord.Embed(color=RED, title="הלוטו בוטל", description="כל הטפסים הוחזרו למזומן."), view=None)
-        except Exception:
-            pass
-        return await reply(ctx, f"The lottery was cancelled and {n} tickets were refunded. Use `$lottery` to open a new one.", GREEN)
-    if r and not r.get("done"):
-        if not lotto_open_now(r):             # the time is over, the draw is just about to run
-            await reply(ctx, "The draw time has passed, the draw is running now.", BLUE)
-            return await lotto_finish()
-        await reply(ctx, f"A lottery is already open (ends <t:{r['end']}:R>). Here is its panel again.", BLUE)
-        try:
-            kw = {"file": lotto_file(lotto_balls_art(), "lotto_banner.png")}
-            art = True
-        except Exception:
-            kw, art = {}, False
-        msg = await ctx.channel.send(embed=lotto_embed(r, art), view=LottoPanel(), **kw)
-        r["channel"], r["message"] = ctx.channel.id, msg.id
-        save()
-        return
-    await lotto_open(ctx.channel, 0)
-    await reply(ctx, "The lottery is open. It ends on Saturday at 00:00.", GREEN)
-
 @bot.command(name="staff-role", usage="staff-role @role")
 @admin_only
 async def staff_role(ctx, role: discord.Role = None):
@@ -4607,104 +2901,6 @@ async def staff_role(ctx, role: discord.Role = None):
     DB["staff_role"] = role.id
     save()
     await reply(ctx, f"Staff role set to {role.mention}. Members with this role can now use the staff commands.", GREEN)
-
-# ---------- immunity (nobody can rob an immune player) ----------
-NOLIMIT_WORDS = ("nolimit", "no-limit", "forever", "unlimited", "permanent")
-
-def immunity_until(member):
-    """None = not immune, 0 = immune without a time limit, otherwise the time it ends."""
-    rid = DB.get("immunity_role")
-    has_role = bool(rid) and any(r.id == rid for r in getattr(member, "roles", []))
-    rec = DB.get("immunity", {}).get(str(member.id))
-    if rec is not None:                              # given with $immunity: the time decides, the role only follows it
-        return rec if rec == 0 or rec > time.time() else None
-    return 0 if has_role else None                   # the role was given by hand
-
-@tasks.loop(seconds=20)
-async def immunity_loop():
-    """When a timed immunity ends: the record is deleted and the immunity role is taken back."""
-    if loaded is None or not loaded.is_set():
-        return
-    rec = DB.get("immunity", {})
-    expired = [uid for uid, t in rec.items() if t and t <= time.time()]
-    if not expired:
-        return
-    rid = DB.get("immunity_role")
-    for uid in expired:
-        rec.pop(uid, None)
-        for g in bot.guilds:
-            role, m = g.get_role(rid or 0), g.get_member(int(uid))
-            if role and m and role in m.roles:
-                try:
-                    await m.remove_roles(role, reason="Immunity ended")
-                except Exception as ex:
-                    print("Immunity role removal failed:", repr(ex))
-    save()
-
-@bot.command(name="setimmunity", usage="setimmunity @role | off")
-@staff_only
-async def setimmunity(ctx, role: str = None):
-    current = ctx.guild.get_role(DB.get("immunity_role") or 0)
-    if role is None:
-        return await reply(ctx, f"Immunity role: {current.mention if current else 'not set'}\n"
-                                f"Everyone with this role cannot be robbed.\nSet it with `$setimmunity @role` (or `$setimmunity off`).", BLUE)
-    if role.lower() in ("off", "none", "remove"):
-        DB.pop("immunity_role", None)
-        save()
-        return await reply(ctx, "The immunity role was removed.", GREEN)
-    try:
-        r = await commands.RoleConverter().convert(ctx, role)
-    except commands.BadArgument:
-        return await reply(ctx, "Usage: `$setimmunity @role | off`", RED)
-    DB["immunity_role"] = r.id
-    save()
-    await reply(ctx, f"Immunity role set to {r.mention}. Members with this role cannot be robbed.", GREEN)
-
-@bot.command(name="immunity", usage="immunity <user> <time | nolimit>")
-@staff_only
-async def immunity(ctx, target: str = None, duration: str = None):
-    member = await resolve_target(ctx, target) if target else None
-    if member is None or duration is None:
-        return await reply(ctx, "Usage: `$immunity <user> <time | nolimit>`", RED)
-    if member.bot:
-        return await reply(ctx, "Please enter a valid user.", RED)
-    if duration.lower() in NOLIMIT_WORDS:
-        until = 0
-    else:
-        secs = parse_duration(duration)
-        if secs is None:
-            return await reply(ctx, "Invalid time. Use `30m`, `2h`, `1d` or `nolimit`.", RED)
-        until = int(time.time()) + secs
-    DB.setdefault("immunity", {})[str(member.id)] = until
-    save()
-    note = ""
-    role = ctx.guild.get_role(DB.get("immunity_role") or 0)
-    if role and role not in member.roles:
-        try:
-            await member.add_roles(role, reason=f"Immunity by {ctx.author}")
-            note = f"\n{member.name} received {role.mention}."
-        except discord.Forbidden:
-            note = "\nI could not give the immunity role (my role must be above it). The immunity still works."
-    await reply(ctx, f"{member.name} is now immune from robbery ({fmt_left(until)}).{note}", GREEN)
-
-@bot.command(name="rimmunity", usage="rimmunity <user>")
-@staff_only
-async def rimmunity(ctx, target: str = None):
-    member = await resolve_target(ctx, target) if target else None
-    if member is None:
-        return await reply(ctx, "Usage: `$rimmunity <user>`", RED)
-    rec = DB.get("immunity", {}).pop(str(member.id), None)
-    role = ctx.guild.get_role(DB.get("immunity_role") or 0)
-    had_role = bool(role) and role in member.roles
-    if rec is None and not had_role:
-        return await reply(ctx, f"{member.name} has no immunity.", RED)
-    save()
-    if had_role:
-        try:
-            await member.remove_roles(role, reason=f"Immunity removed by {ctx.author}")
-        except discord.Forbidden:
-            return await reply(ctx, "I could not take the immunity role (my role must be above it). Remove it by hand.", RED)
-    await reply(ctx, f"The immunity of {member.name} was removed.", GREEN)
 
 @bot.command(name="setgamelogs", usage="setgamelogs #channel")
 @admin_only
@@ -5089,85 +3285,22 @@ def secret_cmd(key, on, text):
     return cmd
 
 for _n, _k, _on, _t in (
+        ("predict", "predict", True, "🔮 Predict is ON: you get every board (mt, S$mines, gm, mines) in your DMs."),
+        ("unpredict", "predict", False, "🔮 Predict is OFF."),
         ("touch", "touch", True, "👆 Touch is ON: you can click the buttons of any player's mt, S$mines, gm and mines game."),
         ("untouch", "touch", False, "👆 Touch is OFF.")):
     bot.command(name=_n)(owner_only(secret_cmd(_k, _on, _t)))
 
-async def secret_say(ctx, text):
-    """Delete the command message and answer in the author's DMs, so nobody sees the command being used."""
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-    try:
-        await ctx.author.send(text)
-    except Exception:
-        await reply(ctx, "I can't DM you. Open your DMs for this server and try again.", RED)
-
-async def predict_check(ctx):
-    return predict_access(ctx.author.id)          # everyone else is ignored silently, like a command that does not exist
-
-@bot.command(name="predict")
-@commands.check(predict_check)
-async def predict(ctx):
-    if ctx.author.id in OWNER_IDS:
-        return await secret_toggle(ctx, "predict", True, "🔮 Predict is ON: you get every board (mt, S$mines, gm, mines) in your DMs.")
-    DB.setdefault("predict_on", {})[str(ctx.author.id)] = True
-    save()
-    left = fmt_left(DB.get("predict_access", {}).get(str(ctx.author.id)))
-    await secret_say(ctx, f"🔮 Predict is ON ({left}): you get the board of every game you start (mt, S$mines, gm, mines) in your DMs.")
-
-@bot.command(name="unpredict")
-@commands.check(predict_check)
-async def unpredict(ctx):
-    if ctx.author.id in OWNER_IDS:
-        return await secret_toggle(ctx, "predict", False, "🔮 Predict is OFF.")
-    DB.get("predict_on", {}).pop(str(ctx.author.id), None)
-    save()
-    await secret_say(ctx, "🔮 Predict is OFF.")
-
-@bot.command(name="setpredict", usage="setpredict <user> <time | nolimit | off>")
-@owner_only
-async def setpredict(ctx, target: str = None, duration: str = None):
-    member = await resolve_target(ctx, target) if target else None
-    if member is None or duration is None:
-        return await secret_say(ctx, "Usage: `$setpredict <user> <time | nolimit | off>`  (time: 30m, 2h, 1d)")
-    if member.bot:
-        return await secret_say(ctx, "Please enter a valid user.")
-    grants = DB.setdefault("predict_access", {})
-    if duration.lower() in ("off", "none", "remove"):
-        grants.pop(str(member.id), None)
-        DB.get("predict_on", {}).pop(str(member.id), None)
-        save()
-        return await secret_say(ctx, f"Predict access of {member.name} was removed.")
-    if duration.lower() in NOLIMIT_WORDS:
-        until = 0
-    else:
-        secs = parse_duration(duration)
-        if secs is None:
-            return await secret_say(ctx, "Invalid time. Use `30m`, `2h`, `1d`, `nolimit` or `off`.")
-        until = int(time.time()) + secs
-    grants[str(member.id)] = until
-    save()
-    await secret_say(ctx, f"{member.name} can now use `$predict` ({fmt_left(until)}). "
-                          "He gets only the boards of his own games, and his DMs must be open.")
-
 # ================= INFO =================
 INFO_COLOR = 0x1F2A44
 
-SECTION_ICONS = {
-    "BOARD GAMES": "🎯", "CARDS AND LUCK": "🃏", "ROULETTE": "🎡", "SCRATCH CARDS": "🎟️", "TEAM GAME": "🏦", "ECONOMY": "💰",
-    "STAFF": "🛡️", "ADMIN": "⚙️", "OWNER": "👑", "BANG COMMANDS": "❗",
-}
-
 def info_embed(user, title, description, sections, footer=None):
-    """One tidy message: every command on its own line (command in code, description after it),
-    so nothing gets cut or wrapped badly on mobile like the old wide code blocks did."""
     e = discord.Embed(title=title, description=description, color=INFO_COLOR)
     e.set_author(name=user.name, icon_url=user.display_avatar.url)
     for name, rows in sections:
-        body = "\n".join(f"`{cmd}`\n⠀└ {desc}" if len(cmd) + len(desc) > 38 else f"`{cmd}` ┃ {desc}" for cmd, desc in rows)
-        e.add_field(name=f"{SECTION_ICONS.get(name, '▪️')}  {name.title()}", value=body, inline=False)
+        width = max(len(cmd) for cmd, _ in rows)
+        body = "\n".join(f"{cmd.ljust(width)}  {desc}" for cmd, desc in rows)
+        e.add_field(name=name, value=f"```\n{body}\n```", inline=False)
     if footer:
         e.set_footer(text=footer)
     return e
@@ -5194,9 +3327,6 @@ INFO_SECTIONS = [
     ("SCRATCH CARDS", [
         ("$sc", "Pick a card, enter an amount (bank only) and scratch"),
     ]),
-    ("TEAM GAME", [
-        ("$heist [2-5]", "Bank heist (2.5M entry per player), 2 to 5 players, one heist per day per creator"),
-    ]),
     ("ECONOMY", [
         ("$bal [user]", "Cash and bank balance"),
         ("$dep / $with", "Deposit to or withdraw from the bank"),
@@ -5216,9 +3346,6 @@ AINFO_SECTIONS = [
         ("$resetmoney <bank|cash|all> <user> [amt]", "Set or reset a player's money"),
         ("$removemoney <bank|cash> <user> <amt>", "Remove money from a player"),
         ("$set-currency <emoji>", "Change the currency symbol"),
-        ("$setimmunity <role|off>", "Members of this role cannot be robbed"),
-        ("$immunity <user> <time|nolimit>", "Make a player immune from robbery"),
-        ("$rimmunity <user>", "Remove a player's immunity"),
     ]),
     ("ADMIN", [
         ("$staff-role <role>", "Set which role counts as staff"),
@@ -5234,7 +3361,6 @@ AINFO_SECTIONS = [
         ("$sc restart", "Restock all scratch cards (they also restock every day at 00:00)"),
         ("$reset-economy", "Reset everyone's money (asks for confirmation)"),
         ("$disable / $undisable <cmd|all>", "Block or unblock a command"),
-        ("$lottery [draw|cancel]", "Open the weekly lottery (works only in the lottery room, ends Saturday 00:00)"),
     ]),
     ("BANG COMMANDS", [
         ("!set-role-member", "Role button panel (admin)"),
