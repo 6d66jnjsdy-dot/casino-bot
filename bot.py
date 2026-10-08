@@ -45,7 +45,7 @@ EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "s
 MULT = {"diamond": 3, "urn": 15, "stone": 1.1, "coin": 2, "bag": 4.5, "map": 1}
 MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (never the urn or the bag)
 URN_CHANCE = (3, 10)
-MINES_MULT = [100, 250, 1800, 8000, 16500, 43000, 75000, 800000]
+MINES_MULT = [1.1, 1.3, 1.6, 1.85, 2.2, 4.3, 6.2, 8.35]
 # S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
