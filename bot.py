@@ -1195,7 +1195,8 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
-CARD_HEADER = ""   # normal text line = the cards show in the small standard emoji size (same size as the reference screenshot). "# " = huge, "## " = medium.
+CARD_HEADER = "## "   # "## " = medium-big cards (every card, also the ones added by Hit / Double / Split, uses it). "# " = huge, "" = small.
+BJ_WIDTH = 46         # invisible padding on the title line that makes the whole embed wider. Raise it for a wider embed, lower it for a narrower one.
 
 def cards_text(cards):
     return "".join(card_text(c) for c in cards)
@@ -1305,7 +1306,7 @@ class BlackjackView(discord.ui.View):
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
                            (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
                            (YELLOW, f"Push! +0 {c}"))
-        lines = ["🃏 **Blackjack** 🃏", ""] + ([f"**{head}**", ""] if head else [])
+        lines = ["🃏 **Blackjack** 🃏" + "⠀" * BJ_WIDTH, ""] + ([f"**{head}**", ""] if head else [])
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
