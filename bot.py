@@ -1195,7 +1195,7 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
-CARD_HEADER = "# "   # cards are written on a heading line so Discord shows the emojis BIG. "## " = smaller, "" = small.
+CARD_HEADER = ""   # normal text line = the cards show in the small standard emoji size (same size as the reference screenshot). "# " = huge, "## " = medium.
 
 def cards_text(cards):
     return "".join(card_text(c) for c in cards)
@@ -1804,14 +1804,15 @@ async def cf(ctx, amount: str = None):
         profit = bet + multi_extra("cf", bet)
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        e = make_embed(ctx.author, f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!", GREEN)
+        # everything lives in the description (not in embed fields), so the bold lines show in the same big size as the reference screenshot
+        e = make_embed(ctx.author, (
+            f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
+            f"**Your chicken's strength (chance of winning): {strength}%**\n"
+            f"**You now have {fmt(u['cash'])} {c}**"), GREEN)
     else:
         profit = -bet
         u["chicken"] = strength = CF_MIN
         e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
-    if won:
-        e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
-                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     save()
     log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
     await ctx.reply(embed=e, mention_author=False)
@@ -3534,7 +3535,7 @@ class ScratchView(OwnedView):
             except Exception:
                 pass
 
-class AmountModal(discord.ui.Modal):
+class ScratchAmountModal(discord.ui.Modal):
     def __init__(self, menu, key):
         c = SC_CARDS[key]
         super().__init__(title=f"{c['name']} - כמה כסף?"[:45])
@@ -3602,7 +3603,7 @@ class ScratchSelect(discord.ui.Select):
             return await interaction.response.send_message(BUSY_MSG, ephemeral=True)
         if not sc_stock(key)["left"]:
             return await interaction.response.send_message("הכרטיס הזה אזל מהמלאי ❌", ephemeral=True)
-        await interaction.response.send_modal(AmountModal(menu, key))
+        await interaction.response.send_modal(ScratchAmountModal(menu, key))
         try:
             await interaction.message.edit(view=menu)
         except Exception:
@@ -4279,7 +4280,7 @@ class LottoPanel(discord.ui.View):
         await interaction.response.send_message(embed=discord.Embed(color=LOTTO_BLUE_C, title="איך הלוטו עובד", description=LOTTO_RULES), ephemeral=True)
 
 # ---------- the form (private) ----------
-class AmountModal(discord.ui.Modal):
+class LottoAmountModal(discord.ui.Modal):
     def __init__(self, form):
         super().__init__(title="סכום לטופס")
         self.form = form
@@ -4422,7 +4423,7 @@ class LottoForm(discord.ui.View):
         await self.show(interaction)
 
     async def custom_price(self, interaction):
-        await interaction.response.send_modal(AmountModal(self))
+        await interaction.response.send_modal(LottoAmountModal(self))
 
     async def purchase(self, interaction):
         r, uid = lotto(), interaction.user.id
