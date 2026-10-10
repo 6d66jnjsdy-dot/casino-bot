@@ -19,7 +19,7 @@ def hand_value(cards):
     return total
 
 # ---------- real playing cards, drawn in code, uploaded once as bot emojis (never sent as images) ----------
-SW, SH = 130, 186         # card size in pixels
+SW, SH = 148, 186         # card size in pixels (width / height like the reference cards)
 _CK = 4                   # supersampling (drawn big, scaled down = smooth edges)
 _CRED = (200, 24, 40, 255)
 _CBLACK = (24, 24, 30, 255)
@@ -127,7 +127,7 @@ def get_card(card):
     d = ImageDraw.Draw(im)
     d.rounded_rectangle([0, 0, W - 1, H - 1], radius=14 * K, fill=(255, 255, 255, 255),
                         outline=(150, 150, 158, 255), width=2 * K)
-    d.text((W * .5, H * .5), r, font=get_font(int(H * (.38 if len(r) == 2 else .47))), fill=col, anchor="mm")
+    d.text((W * .5, H * .49), r, font=get_font(int(H * (.47 if len(r) == 2 else .62))), fill=col, anchor="mm")
     idx = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     di = ImageDraw.Draw(idx)
     draw_suit(di, s, .18 * W, .14 * H, .075 * H)      # top-left
@@ -164,7 +164,7 @@ CARD_BACK = None
 def _emoji_png(card):
     im = get_back() if card is None else get_card(card)
     buf = io.BytesIO()
-    im.resize((130, 186), Image.LANCZOS).save(buf, "PNG")    # card-shaped emoji, no empty padding
+    im.save(buf, "PNG")    # card-shaped emoji, no empty padding
     return buf.getvalue()
 
 async def setup_card_emojis():
