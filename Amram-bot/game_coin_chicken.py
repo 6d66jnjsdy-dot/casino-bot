@@ -76,11 +76,10 @@ async def cf(ctx, amount: str = None):
         profit = bet + multi_extra("cf", bet)
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        # everything lives in the description (not in embed fields), so the bold lines show in the same big size as the reference screenshot
-        e = make_embed(ctx.author, (
-            f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
-            f"**Your chicken's strength (chance of winning): {strength}%**\n"
-            f"**You now have {fmt(u['cash'])} {c}**"), GREEN)
+        # same layout as the reference: the sentence is the description, the two bold lines are one field (smaller bold text)
+        e = make_embed(ctx.author, f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!", GREEN)
+        e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
+                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
     else:
         profit = -bet
         u["chicken"] = strength = CF_MIN
