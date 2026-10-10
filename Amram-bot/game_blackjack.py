@@ -19,7 +19,7 @@ def hand_value(cards):
     return total
 
 # ---------- real playing cards, drawn in code, uploaded once as bot emojis (never sent as images) ----------
-SW, SH = 96, 134          # card size in pixels
+SW, SH = 130, 186         # card size in pixels
 _CK = 4                   # supersampling (drawn big, scaled down = smooth edges)
 _CRED = (200, 24, 40, 255)
 _CBLACK = (24, 24, 30, 255)
@@ -118,27 +118,21 @@ def _face_layer(rank, suit, W, H):
 
 @lru_cache(maxsize=None)
 def get_card(card):
+    """White card, big rank in the middle, small suit in the top-left and bottom-right corners."""
     r, s = card
     K = _CK
     W, H = SW * K, SH * K
     col = SUIT_COLOR[s]
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=9 * K, fill=(255, 255, 255, 255), outline=(170, 170, 176, 255), width=K)
-    d.rounded_rectangle([5 * K, 5 * K, W - 1 - 5 * K, H - 1 - 5 * K], radius=6 * K, outline=(235, 235, 238, 255), width=K)
-    if r in ("J", "Q", "K"):
-        im = Image.alpha_composite(im, _face_layer(r, s, W, H))
-        d = ImageDraw.Draw(im)
-    elif r == "A":
-        draw_suit(d, s, W / 2, H / 2, .21 * H)
-    else:
-        for cx, cy in CARD_PIPS[r]:
-            draw_suit(d, s, (.33 + .34 * cx) * W, (.2 + .6 * cy) * H, .075 * H, flip=cy > .5)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=14 * K, fill=(255, 255, 255, 255),
+                        outline=(150, 150, 158, 255), width=2 * K)
+    d.text((W * .5, H * .5), r, font=get_font(int(H * (.38 if len(r) == 2 else .47))), fill=col, anchor="mm")
     idx = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     di = ImageDraw.Draw(idx)
-    di.text((.14 * W, .1 * H), r, font=get_font(int(H * (.13 if len(r) == 2 else .165))), fill=col, anchor="mm")
-    draw_suit(di, s, .14 * W, .205 * H, .042 * H)
-    im = Image.alpha_composite(Image.alpha_composite(im, idx), idx.rotate(180))
+    draw_suit(di, s, .18 * W, .14 * H, .075 * H)      # top-left
+    draw_suit(di, s, .82 * W, .86 * H, .075 * H)      # bottom-right (upright, so hearts never look like spades)
+    im = Image.alpha_composite(im, idx)
     return im.resize((SW, SH), Image.LANCZOS)
 
 @lru_cache(maxsize=1)
@@ -163,11 +157,6 @@ def get_back():
     im.paste(inner, (m, m), mask)
     return im.resize((SW, SH), Image.LANCZOS)
 
-try:
-    from cards_art import get_card      # real card pictures (cards_art.py next to this file)
-except Exception as _e:
-    print("cards_art.py not loaded, using the drawn cards:", repr(_e))
-
 # --- the 52 cards + the card back become application emojis of the bot (created once, reused after every restart) ---
 CARD_EMOJI = {}
 CARD_BACK = None
@@ -186,13 +175,13 @@ async def setup_card_emojis():
             return
         allem = await bot.fetch_application_emojis()
         for e in allem:
-            if e.name.startswith(("c_", "k_", "d_")):  # older versions of the cards: remove them
+            if e.name.startswith(("c_", "k_", "d_", "p_")):  # older versions of the cards: remove them
                 try:
                     await e.delete()
                 except Exception:
                     pass
         have = {e.name: e for e in allem}
-        todo = [(None, "p_back")] + [((r, s), f"p_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
+        todo = [(None, "q_back")] + [((r, s), f"q_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
         made = 0
         for card, name in todo:
             e = have.get(name)
@@ -215,11 +204,11 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
-CARD_HEADER = "## "   # "## " = medium-big cards (every card, also the ones added by Hit / Double / Split, uses it). "# " = huge, "" = small.
+CARD_HEADER = ""   # "## " = medium-big cards (every card, also the ones added by Hit / Double / Split, uses it). "# " = huge, "" = small.
 BJ_WIDTH = 46         # invisible padding on the title line that makes the whole embed wider. Raise it for a wider embed, lower it for a narrower one.
 
 def cards_text(cards):
-    return "".join(card_text(c) for c in cards)
+    return ", ".join(card_text(c) for c in cards)
 
 @lru_cache(maxsize=None)
 def get_font(size):
@@ -326,18 +315,20 @@ class BlackjackView(discord.ui.View):
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
                            (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
                            (YELLOW, f"Push! +0 {c}"))
-        lines = ["🃏 **Blackjack** 🃏" + "⠀" * BJ_WIDTH, ""] + ([f"**{head}**", ""] if head else [])
+        lines = ["🃏 **Blackjack** 🃏" + "⠀" * BJ_WIDTH, ""] + ([f"**{head}**"] if head else [])
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
+            if i:
+                lines.append("")
             lines.append(f"**Your Hand{f' {i + 1}' if multi else ''}**{mark}")
             lines.append(CARD_HEADER + cards_text(h["cards"]))
-            lines.append(f"Value: **{hand_value(h['cards'])}**")
+            lines += ["", f"Value: **{hand_value(h['cards'])}**"]
         if self.done:
             dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
         else:
-            dealer_cards, dealer_val = f"{card_text(self.dealer[0])}{back_text()}", card_value(self.dealer[0][0])
-        lines += ["**Dealer**", CARD_HEADER + dealer_cards, f"Value: **{dealer_val}**"]
+            dealer_cards, dealer_val = f"{card_text(self.dealer[0])}, {back_text()}", card_value(self.dealer[0][0])
+        lines += ["**Dealer**", CARD_HEADER + dealer_cards, "", f"Value: **{dealer_val}**"]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
         return e
