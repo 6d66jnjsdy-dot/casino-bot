@@ -1,4 +1,4 @@
-import discord, random, sys
+import discord, random, sys, re, os
 from collections import Counter
 from core import *
 
@@ -21,7 +21,7 @@ SUIT_EMOJI = {"♣": "♣️", "♠": "♠️", "♥": "♥️", "♦": "♦️"
 RV = {r: i for i, r in enumerate(["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"], 2)}
 VR = {v: r for r, v in RV.items()}
 FULL_DECK = [(r, s) for r in RANKS for s in SUITS]
-_LOG_FILE = "poker_log.txt"
+_LOG_FILE = os.path.join(DATA_DIR, "poker_log.txt")
 
 # ---------- הקלפים: לוקח אותם מקובץ הבלאק ג'ק לבד (בלי לדעת את שם הקובץ), בלי לשנות אותו ----------
 _BJ = None
@@ -31,7 +31,7 @@ def _bj():
     if _BJ is None:
         for m in list(sys.modules.values()):
             try:
-                if m is not None and m.__name__ != __name__ and hasattr(m, "card_text") and hasattr(m, "CARD_EMOJI"):
+                if m is not None and m.__name__ != __name__ and hasattr(m, "CARD_EMOJI") and getattr(m, "card_text", card_text) is not card_text and hasattr(m, "card_text"):
                     _BJ = m
                     break
             except Exception:
@@ -328,8 +328,7 @@ class PokerView(discord.ui.View):
         if self.message:
             await self.message.edit(embed=self.render(), view=self)
 
-@bot.command(name="poker", usage="poker <amount | half | all>")
-async def poker(ctx, amount: str = None):
+async def run_poker(ctx, amount=None):
     bet = await take_bet(ctx, amount, "poker <amount | half | all>", track=True)
     if not bet:
         return
@@ -343,25 +342,33 @@ async def poker(ctx, amount: str = None):
         raise
     view.message = msg
 
-print("poker.py IMPORTED - $poker command registered:", bot.get_command("poker"))
+# ---------- $poker / s$poker ----------
+# הפקודה מטופלת ישירות מהודעה (לא דרך מערכת הפקודות), כדי שפילטרים/צ'קים אחרים בבוט לא יבלעו אותה בשקט.
+_POKER_RE = re.compile(r"^(?:\$|s\$)poker(?=\s|$)(?:\s+(\S+))?", re.I)
 
-# ---------- דיבאג זמני: מוחקים את הבלוק הזה כשהפוקר עובד ----------
-@bot.listen("on_message")
-async def _poker_debug(message):
-    if message.author.bot or not message.content.lower().startswith("$poker"):
+async def _poker_on_message(message):
+    if message.author.bot:
         return
+    m = _POKER_RE.match(message.content.strip())
+    if not m:
+        return
+    print(f"POKER: got a command from {message.author} in channel {message.channel.id}")
     try:
+        await loaded.wait()
+        if message.channel.id not in ALLOWED_CHANNELS:
+            print("POKER: ignored - this channel is not in ALLOWED_CHANNELS")
+            return
+        if "poker" in DB.get("disabled", []) and message.author.id not in OWNER_IDS:
+            print("POKER: ignored - poker is in the disabled list")
+            return
         ctx = await bot.get_context(message)
-        try:
-            ok = await bot.can_run(ctx)
-        except Exception as ex:
-            ok = f"CHECK FAILED: {ex!r}"
-        print("POKER DEBUG | saw the message | command found:", ctx.command, "| valid:", ctx.valid,
-              "| checks pass:", ok, "| channel allowed:", message.channel.id in ALLOWED_CHANNELS,
-              "| disabled:", "poker" in DB.get("disabled", []), "| in BUSY:", message.author.id in BUSY)
+        await run_poker(ctx, m.group(1))
     except Exception as ex:
-        print("POKER DEBUG error:", repr(ex))
+        import traceback
+        print("POKER: crashed:", repr(ex))
+        traceback.print_exc()
 
-# נדרש כדי ש-core יוכל לטעון את הקובץ עם bot.load_extension("poker")
-async def setup(bot):
-    print("poker.py loaded OK - $poker is ready")
+if not getattr(bot, "_poker_listener_added", False):      # מונע כפילות אם הקובץ נטען פעמיים
+    bot.add_listener(_poker_on_message, "on_message")
+    bot._poker_listener_added = True
+print("poker.py IMPORTED - $poker listener is active")
