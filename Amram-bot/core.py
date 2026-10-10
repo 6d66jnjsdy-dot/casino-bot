@@ -532,12 +532,6 @@ async def setup_hook():
         await bot.load_extension("extras")
     except Exception as ex:
         print("extras.py failed to load:", repr(ex))
-    # poker: loaded only if nothing else (e.g. an "import poker" in main.py) already registered the command
-    if bot.get_command("poker") is None:
-        try:
-            await bot.load_extension("poker")
-        except Exception as ex:
-            print("poker.py failed to load:", repr(ex))
     try:
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(graceful_shutdown()))
     except (NotImplementedError, RuntimeError):
