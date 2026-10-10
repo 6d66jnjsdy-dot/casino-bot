@@ -1,5 +1,6 @@
 """Entry point. Imports every module, links their names together (same behaviour as the old single file), runs the bot."""
 import sys, importlib
+import os; print("FILES:", sorted(os.listdir(os.path.dirname(os.path.abspath(__file__)))))
 MODULES = ['core', 'game_mines', 'game_blackjack', 'game_slots', 'game_roulette', 'game_coin_chicken', 'game_higher_lower', 'game_heist', 'game_scratch', 'economy', 'shop', 'staff', 'lottery', 'owner', 'info']
 mods = [importlib.import_module(n) for n in MODULES]
 
