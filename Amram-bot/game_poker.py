@@ -1,27 +1,48 @@
-import discord, random
+import discord, random, sys
 from collections import Counter
 from core import *
-# !!! שנה את "blackjack" לשם האמיתי של הקובץ שבו נמצא קוד הבלאק ג'ק שלך (הוא לא משתנה, רק מייבאים ממנו את הקלפים)
-from blackjack import card_text, RANKS, SUITS, SUIT_EMOJI
 
 # ================= 5-CARD DRAW POKER =================
-MAX_DRAWS = 2                 # כמה פעמים אפשר להחליף קלפים
-POKER_SEP = " "               # מה בין הקלפים. " " = כמו בתמונות שלך, ", " = כמו בבלאק ג'ק
+MAX_DRAWS = 2                   # כמה פעמים אפשר להחליף קלפים
+POKER_SEP = " "                 # מה בין הקלפים. " " = כמו בתמונות שלך, ", " = כמו בבלאק ג'ק
 POKER_PLAYING_COLOR = 0x4A90D9  # הפס הכחול בזמן משחק
-POKER_START_BOOST = 0.35      # סיכוי (לכל ניסיון, עד 2 ניסיונות) לחלק יד פתיחה חדשה אם היא בלי זוג. מעלה את סיכוי הזוג+ ביד ההתחלתית מ-50% לכ-62%
-POKER_WIN_NERF = 0.10         # כשהשחקן ניצח, סיכוי לתת לדילר יד חדשה (עד 2 ניסיונות). מוריד/מעלה את אחוזי הניצחון הכללי
-POKER_BONUS = {               # בונוס על הניצחון (פעמים ההימור) לפי סוג יד. 1x הבסיס תמיד. מחק שורה = אין בונוס
-    4: 0.25,   # straight
-    5: 0.50,   # flush
-    6: 0.75,   # full house
-    7: 2.0,    # four of a kind
-    8: 4.0,    # straight flush
-    9: 9.0,    # royal flush
-}
+POKER_WIN_NERF = 0.05           # כשהשחקן ניצח, סיכוי לתת לדילר יד חדשה (עד 2 ניסיונות). גבוה יותר = הבית מנצח יותר
+POKER_BONUS = {}                # בונוס על ניצחון עם יד חזקה (פעמים ההימור), למשל {7: 2.0, 8: 4.0}. ריק = אין בונוסים, רק 1:1
 
+# ---- האחוזים שביקשת (משקלים יחסיים, הקוד מנרמל אותם ל-100%) ----
+# 0 קלף גבוה | 1 זוג | 2 שני זוגות | 3 שלשה | 4 רצף | 5 צבע | 6 פול האוס | 7 רביעייה | 8 רצף צבע
+START_W = {0: 51.1, 1: 39.1, 2: 13, 3: 8, 4: 2, 5: 1.6, 6: 1.2, 7: 1, 8: 0.5}   # יד ההתחלה
+FINAL_W = {0: 15, 1: 47, 2: 35, 3: 14, 4: 6.5, 5: 5, 6: 5, 7: 4, 8: 3}            # אחרי החלפות
+# הדילר משתמש באותם אחוזים בדיוק, כדי שהמשחק יישאר הוגן (בערך 50/50)
+
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+SUITS = ["♣", "♠", "♥", "♦"]
+SUIT_EMOJI = {"♣": "♣️", "♠": "♠️", "♥": "♥️", "♦": "♦️"}
 RV = {r: i for i, r in enumerate(["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"], 2)}
+VR = {v: r for r, v in RV.items()}
 FULL_DECK = [(r, s) for r in RANKS for s in SUITS]
 _LOG_FILE = "poker_log.txt"
+
+# ---------- הקלפים: לוקח אותם מקובץ הבלאק ג'ק לבד (בלי לדעת את שם הקובץ), בלי לשנות אותו ----------
+_BJ = None
+
+def _bj():
+    global _BJ
+    if _BJ is None:
+        for m in list(sys.modules.values()):
+            try:
+                if m is not None and m.__name__ != __name__ and hasattr(m, "card_text") and hasattr(m, "CARD_EMOJI"):
+                    _BJ = m
+                    break
+            except Exception:
+                pass
+    return _BJ
+
+def card_text(card):
+    m = _bj()
+    if m is not None:
+        return m.card_text(card)
+    return f"**{card[0]}**{SUIT_EMOJI[card[1]]}"
 
 def next_log():
     try:
@@ -37,9 +58,9 @@ def next_log():
         pass
     return n
 
+# ---------- דירוג יד ----------
 def evaluate(cards):
-    """Returns (category, tiebreakers). 0 high card, 1 pair, 2 two pair, 3 trips, 4 straight,
-    5 flush, 6 full house, 7 quads, 8 straight flush. Higher tuple = better hand."""
+    """(category, tiebreakers). Higher tuple = better hand."""
     vals = sorted((RV[r] for r, _ in cards), reverse=True)
     flush = len({s for _, s in cards}) == 1
     uniq = sorted(set(vals), reverse=True)
@@ -79,7 +100,7 @@ def _straight_draw(vals):
     return low[-1] - low[0] <= 4
 
 def dealer_discards(cards):
-    """Basic draw-poker strategy: which positions the dealer throws away."""
+    """Basic draw-poker strategy: which positions to throw away."""
     cat, _ = evaluate(cards)
     vals = [RV[r] for r, _ in cards]
     cnt = Counter(vals)
@@ -98,6 +119,68 @@ def dealer_discards(cards):
     top = sorted(range(5), key=lambda i: vals[i], reverse=True)[:2]
     return [i for i in range(5) if i not in top]
 
+# ---------- יצירת ידיים לפי האחוזים ----------
+def _pick_cat(weights):
+    return random.choices(list(weights), weights=list(weights.values()))[0]
+
+def _build(cat):
+    rk = lambda n: random.sample(RANKS, n)
+    ss = lambda n: random.sample(SUITS, n)
+    rs = lambda: random.choice(SUITS)
+    if cat == 0:
+        return [(r, rs()) for r in rk(5)]
+    if cat == 1:
+        a, b, c, d = rk(4)
+        return [(a, s) for s in ss(2)] + [(x, rs()) for x in (b, c, d)]
+    if cat == 2:
+        a, b, c = rk(3)
+        return [(a, s) for s in ss(2)] + [(b, s) for s in ss(2)] + [(c, rs())]
+    if cat == 3:
+        a, b, c = rk(3)
+        return [(a, s) for s in ss(3)] + [(b, rs()), (c, rs())]
+    if cat in (4, 8):
+        top = random.randint(5, 14)
+        vals = [14, 5, 4, 3, 2] if top == 5 else [top - i for i in range(5)]
+        suit = rs()
+        return [(VR[v], suit if cat == 8 else rs()) for v in vals]
+    if cat == 5:
+        suit = rs()
+        return [(r, suit) for r in rk(5)]
+    if cat == 6:
+        a, b = rk(2)
+        return [(a, s) for s in ss(3)] + [(b, s) for s in ss(2)]
+    a, b = rk(2)
+    return [(a, s) for s in SUITS] + [(b, rs())]
+
+def make_hand(cat, avoid=()):
+    avoid = set(avoid)
+    for _ in range(300):
+        h = _build(cat)
+        if len(set(h)) == 5 and not (set(h) & avoid) and evaluate(h)[0] == cat:
+            random.shuffle(h)
+            return h
+    d = [c for c in FULL_DECK if c not in avoid]
+    random.shuffle(d)
+    return d[:5]
+
+def biased_draw(hand, idxs, out):
+    """Replace the cards at idxs. The result aims at a category taken from FINAL_W
+    (it can only get as close as the cards you kept allow)."""
+    target = _pick_cat(FINAL_W)
+    pool = [c for c in FULL_DECK if c not in out]
+    best, best_key = None, None
+    for _ in range(150):
+        new = list(hand)
+        for i, c in zip(idxs, random.sample(pool, len(idxs))):
+            new[i] = c
+        cat = evaluate(new)[0]
+        if cat == target:
+            return new
+        key = (abs(cat - target), cat > target)
+        if best_key is None or key < best_key:
+            best, best_key = new, key
+    return best
+
 class _Btn(discord.ui.Button):
     def __init__(self, handler, **kw):
         super().__init__(**kw)
@@ -111,9 +194,8 @@ class PokerView(discord.ui.View):
         super().__init__(timeout=120)
         self.user, self.bet, self.token = user, bet, token
         self.log = next_log()
-        self.deck = list(FULL_DECK)
-        random.shuffle(self.deck)
-        self.hand = self.deal_start()
+        self.hand = make_hand(_pick_cat(START_W))
+        self.out = set(self.hand)          # קלפים שכבר יצאו (לא יחזרו)
         self.dealer = []
         self.selected = set()
         self.draws_left = MAX_DRAWS
@@ -121,18 +203,6 @@ class PokerView(discord.ui.View):
         self.net = 0
         self.message = None
         self.rebuild()
-
-    def deal_start(self):
-        hand = None
-        for attempt in range(3):
-            deck = list(FULL_DECK)
-            random.shuffle(deck)
-            hand = deck[:5]
-            self.deck = deck[5:]
-            # יד פתיחה בלי זוג: לפעמים מחלקים מחדש (לא תמיד, כדי לא להגזים)
-            if evaluate(hand)[0] >= 1 or random.random() >= POKER_START_BOOST:
-                break
-        return hand
 
     # ---------- buttons ----------
     def rebuild(self):
@@ -156,15 +226,16 @@ class PokerView(discord.ui.View):
 
     # ---------- game logic ----------
     def make_dealer(self):
-        deck = [c for c in FULL_DECK if c not in self.hand]
-        random.shuffle(deck)
-        hand = deck[:5]
-        deck = deck[5:]
+        hand = make_hand(_pick_cat(START_W), avoid=self.hand)
+        out = set(self.hand) | set(hand)
         for rnd in range(2):
-            if rnd == 1 and evaluate(hand)[0] >= 1:     # סיבוב שני רק אם עדיין אין כלום
+            if rnd == 1 and evaluate(hand)[0] >= 1:
                 break
-            for i in dealer_discards(hand):
-                hand[i] = deck.pop()
+            idx = dealer_discards(hand)
+            if not idx:
+                break
+            hand = biased_draw(hand, idx, out)
+            out |= set(hand)
         return hand
 
     def player_wins(self):
@@ -237,8 +308,9 @@ class PokerView(discord.ui.View):
     async def do_draw(self, interaction):
         if not self.selected:
             return await interaction.response.send_message("Click on the cards you want to swap first.", ephemeral=True)
-        for i in self.selected:
-            self.hand[i] = self.deck.pop()
+        idxs = sorted(self.selected)
+        self.hand = biased_draw(self.hand, idxs, self.out)
+        self.out |= set(self.hand)
         self.selected = set()
         self.draws_left -= 1
         if self.draws_left <= 0:
@@ -271,7 +343,6 @@ async def poker(ctx, amount: str = None):
         raise
     view.message = msg
 
-
 # נדרש כדי ש-core יוכל לטעון את הקובץ עם bot.load_extension("poker")
 async def setup(bot):
-    pass
+    print("poker.py loaded OK - $poker is ready")
