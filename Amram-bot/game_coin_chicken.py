@@ -79,14 +79,16 @@ async def cf(ctx, amount: str = None):
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
         
-        # שימוש ב-### בשורות התחתונות כדי שיופיעו כטקסט קטן ומודגש בדיוק כמו בתמונה
+        # יצירת התיאור בדיוק כמו בתמונה, שומר על גודל טקסט אחיד וגדול
         description_text = (
             f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
-            f"### Your chicken's strength (chance of winning): {strength}%\n"
-            f"### You now have {fmt(u['cash'])} {c}"
+            f"Your chicken's strength (chance of winning): {strength}%\n"
+            f"You now have {fmt(u['cash'])} {c}"
         )
         
         e = make_embed(ctx.author, description_text, GREEN)
+        # הוספת שורת המשתמש בחלק העליון של התיבה (ה-Author)
+        e.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
     else:
         profit = -bet
         u["chicken"] = strength = CF_MIN
@@ -95,5 +97,5 @@ async def cf(ctx, amount: str = None):
     save()
     log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
     
-    # שליחה נקייה ללא reply כדי שלא יופיע סרגל הציטוט מעל שם הבוט
+    # שליחה רגילה לחלוטין ללא reply כדי שלא יופיע סרגל הציטוט מעל שם הבוט
     await ctx.send(embed=e)
