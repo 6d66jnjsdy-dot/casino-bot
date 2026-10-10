@@ -57,7 +57,7 @@ MT_MULT = [1.3, 1.7, 2.2, 2.9, 4.5]
 MT_SAFE = "💲"
 
 MULTI_MAX = 5
-MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch", "heist")
+MULTI_GAMES = ("gm", "mines", "s$mines", "mt", "bj", "slots", "roulette", "ht", "cf", "hl", "scratch", "heist", "poker")
 
 CF_MIN, CF_MAX = 50, 84
 CF_HIDDEN = 1
@@ -278,7 +278,7 @@ def bg(coro):
 GAME_NAMES = {"gm": "Gold Mines", "mines": "Mines", "money tower": "Money Tower", "blackjack": "Blackjack",
               "slots": "Slots", "roulette": "Roulette", "heads or tail": "Heads or Tail",
               "chicken fight": "Chicken Fight", "higher or lower": "Higher or Lower", "heist": "Bank Heist",
-              "rob": "Rob"}
+              "rob": "Rob", "poker": "5-Card Draw Poker"}
 LOG_TITLES = {
     "DEP": "Deposit", "WITH": "Withdrawal", "WORK": "Work", "CRIME": "Crime", "PAY": "Transfer",
     "SHOP": "Shop Purchase", "ADD MONEY": "Money Added", "REMOVE MONEY": "Money Removed",
@@ -532,6 +532,12 @@ async def setup_hook():
         await bot.load_extension("extras")
     except Exception as ex:
         print("extras.py failed to load:", repr(ex))
+    # poker: loaded only if nothing else (e.g. an "import poker" in main.py) already registered the command
+    if bot.get_command("poker") is None:
+        try:
+            await bot.load_extension("poker")
+        except Exception as ex:
+            print("poker.py failed to load:", repr(ex))
     try:
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(graceful_shutdown()))
     except (NotImplementedError, RuntimeError):
