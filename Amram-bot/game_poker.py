@@ -209,7 +209,7 @@ class PokerView(discord.ui.View):
         self.clear_items()
         for i, (r, s) in enumerate(self.hand):
             self.add_item(_Btn(lambda inter, ix=i: self.toggle(inter, ix), label=r, emoji=SUIT_EMOJI[s], row=0,
-                               style=discord.ButtonStyle.primary if i in self.selected else discord.ButtonStyle.secondary,
+                               style=discord.ButtonStyle.success if i in self.selected else discord.ButtonStyle.secondary,
                                disabled=self.done))
         self.add_item(_Btn(self.do_draw, label="Draw", style=discord.ButtonStyle.primary, row=1, disabled=self.done))
         self.add_item(_Btn(self.do_finish, label="Finish", style=discord.ButtonStyle.danger, row=1, disabled=self.done))
