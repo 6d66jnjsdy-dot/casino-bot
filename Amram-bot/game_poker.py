@@ -270,3 +270,8 @@ async def poker(ctx, amount: str = None):
         BUSY.discard(ctx.author.id)
         raise
     view.message = msg
+
+
+# נדרש כדי ש-core יוכל לטעון את הקובץ עם bot.load_extension("poker")
+async def setup(bot):
+    pass
