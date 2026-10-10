@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 from discord.ext import commands, tasks
 from aiohttp import web
 from core import *
+
 # ================= HEADS OR TAIL / CHICKEN FIGHT =================
 async def refund_timeout(view, name):
     view.settled = True
@@ -72,19 +73,29 @@ async def cf(ctx, amount: str = None):
     u, c = user_data(ctx.author.id), cur()
     strength = max(CF_MIN, min(CF_MAX, u.get("chicken", CF_MIN)))
     won = any(random.randint(1, 100) <= strength + CF_HIDDEN for _ in range(luck_attempts(ctx.author.id)))
+    
     if won:
         profit = bet + multi_extra("cf", bet)
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
-        # same layout as the reference: the sentence is the description, the two bold lines are one field (smaller bold text)
-        e = make_embed(ctx.author, f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!", GREEN)
-        e.add_field(name=f"Your chicken's strength (chance of winning): {strength}%",
-                    value=f"**You now have {fmt(u['cash'])} {c}**", inline=False)
+        
+        # יצירת התיאור בדיוק כמו בתמונה, שומר על גודל טקסט אחיד וגדול
+        description_text = (
+            f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
+            f"Your chicken's strength (chance of winning): {strength}%\n"
+            f"You now have {fmt(u['cash'])} {c}"
+        )
+        
+        e = make_embed(ctx.author, description_text, GREEN)
+        # הוספת שורת המשתמש בחלק העליון של התיבה (ה-Author)
+        e.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
     else:
         profit = -bet
         u["chicken"] = strength = CF_MIN
         e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
+        
     save()
     log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
-    # plain send (NOT reply): the reference has no "replying to..." bar above the bot name, a reply adds that bar and shifts the whole message
+    
+    # שליחה רגילה לחלוטין ללא reply כדי שלא יופיע סרגל הציטוט מעל שם הבוט
     await ctx.send(embed=e)
