@@ -295,10 +295,11 @@ class PokerView(discord.ui.View):
     async def update(self, interaction):
         self.rebuild()
         e = self.render()
+        v = None if self.done else self      # game over: no buttons at all, like the screenshots
         if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=e, view=self)
+            await interaction.response.edit_message(embed=e, view=v)
         else:
-            await interaction.edit_original_response(embed=e, view=self)
+            await interaction.edit_original_response(embed=e, view=v)
 
     # ---------- clicks ----------
     async def toggle(self, interaction, ix):
@@ -326,7 +327,7 @@ class PokerView(discord.ui.View):
             return
         self.finish()
         if self.message:
-            await self.message.edit(embed=self.render(), view=self)
+            await self.message.edit(embed=self.render(), view=None)
 
 async def run_poker(ctx, amount=None):
     bet = await take_bet(ctx, amount, "poker <amount | half | all>", track=True)
@@ -352,7 +353,6 @@ async def _poker_on_message(message):
     m = _POKER_RE.match(message.content.strip())
     if not m:
         return
-    print(f"POKER: got a command from {message.author} in channel {message.channel.id}")
     try:
         await loaded.wait()
         if message.channel.id not in ALLOWED_CHANNELS:
@@ -371,4 +371,10 @@ async def _poker_on_message(message):
 if not getattr(bot, "_poker_listener_added", False):      # מונע כפילות אם הקובץ נטען פעמיים
     bot.add_listener(_poker_on_message, "on_message")
     bot._poker_listener_added = True
+# פקודה "ריקה" רק כדי שהבוט יכיר את השם poker ($disable, עזרה וכו'). המשחק עצמו רץ מה-listener למעלה.
+if bot.get_command("poker") is None:
+    @bot.command(name="poker", usage="poker <amount | half | all>")
+    async def _poker_registered(ctx, *, rest: str = None):
+        return
+
 print("poker.py IMPORTED - $poker listener is active")
