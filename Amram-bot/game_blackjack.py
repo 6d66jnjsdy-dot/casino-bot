@@ -213,7 +213,7 @@ def back_text():
     return CARD_BACK or "❓"
 
 CARD_HEADER = ""      # "" = normal inline cards (exactly like the reference screenshots). "## " = bigger, "# " = huge.
-BJ_WIDTH = 46         # invisible padding on the title line that makes the whole embed wider. Raise it for a wider embed, lower it for a narrower one.
+BJ_WIDTH = 14         # invisible padding on the title line. MUST stay short: if title + padding is wider than the phone screen it wraps and adds empty lines under the title.
 
 def cards_text(cards):
     return ", ".join(card_text(c) for c in cards)
