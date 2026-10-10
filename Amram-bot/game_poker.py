@@ -343,6 +343,25 @@ async def poker(ctx, amount: str = None):
         raise
     view.message = msg
 
+print("poker.py IMPORTED - $poker command registered:", bot.get_command("poker"))
+
+# ---------- דיבאג זמני: מוחקים את הבלוק הזה כשהפוקר עובד ----------
+@bot.listen("on_message")
+async def _poker_debug(message):
+    if message.author.bot or not message.content.lower().startswith("$poker"):
+        return
+    try:
+        ctx = await bot.get_context(message)
+        try:
+            ok = await bot.can_run(ctx)
+        except Exception as ex:
+            ok = f"CHECK FAILED: {ex!r}"
+        print("POKER DEBUG | saw the message | command found:", ctx.command, "| valid:", ctx.valid,
+              "| checks pass:", ok, "| channel allowed:", message.channel.id in ALLOWED_CHANNELS,
+              "| disabled:", "poker" in DB.get("disabled", []), "| in BUSY:", message.author.id in BUSY)
+    except Exception as ex:
+        print("POKER DEBUG error:", repr(ex))
+
 # נדרש כדי ש-core יוכל לטעון את הקובץ עם bot.load_extension("poker")
 async def setup(bot):
     print("poker.py loaded OK - $poker is ready")
