@@ -79,16 +79,15 @@ async def cf(ctx, amount: str = None):
         u["cash"] += bet + profit
         u["chicken"] = strength = min(CF_MAX, strength + 1)
         
-        # יצירת הטקסט הראשי - שתי השורות האחרונות עטופות ב-** להדגשה מלאה כמו בתמונה
-        description_text = (
-            f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!\n\n"
-            f"**Your chicken's strength (chance of winning): {strength}%**\n"
-            f"**You now have {fmt(u['cash'])} {c}**"
-        )
+        # השורה הראשונה נשארת גדולה בתוך ה-Description
+        e = make_embed(ctx.author, f"Your chicken won the fight, you won {fmt(profit)} {c}🐓!", GREEN)
         
-        e = make_embed(ctx.author, description_text, GREEN)
-        # הוספת פרופיל ושם המשתמש בחלק העליון של התיבה הירוקה
-        e.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
+        # שאר הכתוביות נכנסות כשדה (Field) - מה שגורם להן להיות קטנות יותר ומודגשות בדיוק כמו בתמונה
+        e.add_field(
+            name=ctx.author.name,
+            value=f"**Your chicken's strength (chance of winning): {strength}%**\n**You now have {fmt(u['cash'])} {c}**",
+            inline=False
+        )
     else:
         profit = -bet
         u["chicken"] = strength = CF_MIN
@@ -97,5 +96,5 @@ async def cf(ctx, amount: str = None):
     save()
     log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
     
-    # שליחה נקייה ללא reply כדי להעלים את סרגל הציטוט
+    # שליחה רגילה לחלוטין ללא reply כדי שלא יופיע סרגל הציטוט מעל שם הבוט
     await ctx.send(embed=e)
