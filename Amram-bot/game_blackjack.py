@@ -212,6 +212,7 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
+BJ_PLAYING_COLOR = 0xFAD25A   # side-bar color while the game is running (hex, like 0xRRGGBB). Change it if the shade is not exactly the one you want.
 CARD_HEADER = ""      # "" = normal inline cards (exactly like the reference screenshots). "## " = bigger, "# " = huge.
 BJ_WIDTH = 14         # invisible padding on the title line. MUST stay short: if title + padding is wider than the phone screen it wraps and adds empty lines under the title.
 
@@ -320,7 +321,7 @@ class BlackjackView(discord.ui.View):
         """Text-only embed (no image): instant to build and to send.
         Layout (line by line) matches the reference screenshots:
         title / blank / result / Your Hand / cards / blank / Value / Dealer / cards / blank / Value"""
-        c, color, head = cur(), YELLOW, None
+        c, color, head = cur(), discord.Color(BJ_PLAYING_COLOR), None
         if self.done:
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
                            (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
