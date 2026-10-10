@@ -33,6 +33,7 @@ INFO_SECTIONS = [
     ]),
     ("CARDS AND LUCK", [
         ("$bj <bet>", "Blackjack"),
+        ("$poker <bet>", "5-Card Draw Poker, swap cards up to 2 times"),
         ("$slots <bet>", "Slot machine"),
         ("$hl <bet>", "Higher or lower"),
         ("$ht <bet>", "Heads or tail"),
