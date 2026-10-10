@@ -30,6 +30,11 @@ _CINK = (40, 30, 30, 255)
 SUIT_COLOR = {"♣": _CBLACK, "♠": _CBLACK, "♥": _CRED, "♦": _CRED}
 SUIT_LETTER = {"♣": "C", "♠": "S", "♥": "H", "♦": "D"}
 
+# Emoji name prefix. Bump this number whenever the card drawing / size changes:
+# the bot then deletes every older card emoji and uploads fresh ones, so you never see stale / differently-sized cards.
+CARD_VERSION = 2
+CARD_PREFIX = f"bj{CARD_VERSION}_"
+
 def _ccircle(cx, cy, r, n=48):
     return [(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
 
@@ -174,14 +179,17 @@ async def setup_card_emojis():
             print("Card emojis need discord.py 2.5 or newer (pip install -U discord.py). Using text cards.")
             return
         allem = await bot.fetch_application_emojis()
+        # remove EVERY older card emoji (any previous prefix / version) so stale cards with a different size/shape never get reused
         for e in allem:
-            if e.name.startswith(("c_", "k_", "d_", "p_")):  # older versions of the cards: remove them
+            old = e.name.startswith(("c_", "k_", "d_", "p_", "q_")) or (e.name.startswith("bj") and not e.name.startswith(CARD_PREFIX))
+            if old:
                 try:
                     await e.delete()
                 except Exception:
                     pass
-        have = {e.name: e for e in allem}
-        todo = [(None, "q_back")] + [((r, s), f"q_{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
+                await asyncio.sleep(0.2)
+        have = {e.name: e for e in allem if e.name.startswith(CARD_PREFIX)}
+        todo = [(None, f"{CARD_PREFIX}back")] + [((r, s), f"{CARD_PREFIX}{r}{SUIT_LETTER[s]}") for r in RANKS for s in SUITS]
         made = 0
         for card, name in todo:
             e = have.get(name)
@@ -204,7 +212,7 @@ def card_text(card):
 def back_text():
     return CARD_BACK or "❓"
 
-CARD_HEADER = ""   # "## " = medium-big cards (every card, also the ones added by Hit / Double / Split, uses it). "# " = huge, "" = small.
+CARD_HEADER = ""      # "" = normal inline cards (exactly like the reference screenshots). "## " = bigger, "# " = huge.
 BJ_WIDTH = 46         # invisible padding on the title line that makes the whole embed wider. Raise it for a wider embed, lower it for a narrower one.
 
 def cards_text(cards):
@@ -309,7 +317,9 @@ class BlackjackView(discord.ui.View):
         self.pay(returned, sum(h["bet"] for h in self.hands))
 
     def render(self):
-        """Text-only embed (no image): instant to build and to send."""
+        """Text-only embed (no image): instant to build and to send.
+        Layout (line by line) matches the reference screenshots:
+        title / blank / result / Your Hand / cards / blank / Value / Dealer / cards / blank / Value"""
         c, color, head = cur(), YELLOW, None
         if self.done:
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
