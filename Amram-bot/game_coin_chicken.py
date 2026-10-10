@@ -86,4 +86,5 @@ async def cf(ctx, amount: str = None):
         e = make_embed(ctx.author, f"Your chicken lost the fight... You lost {fmt(bet)} {c} 🐓.", RED)
     save()
     log_game(ctx.author, "chicken fight", bet, profit, detail=f"Chicken strength after the fight: {strength}%")
-    await ctx.reply(embed=e, mention_author=False)
+    # plain send (NOT reply): the reference has no "replying to..." bar above the bot name, a reply adds that bar and shifts the whole message
+    await ctx.send(embed=e)
