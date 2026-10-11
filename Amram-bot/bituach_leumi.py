@@ -2,7 +2,7 @@
 Command: $ביטוח-לאומי  (owners only)
 Add 'bituach_leumi' to MODULES in main.py (after 'owner'), and put bituach_leumi.jpeg next to this file.
 """
-import os, re, sys, time, discord
+import os, re, sys, time, asyncio, discord
 from discord.ext import commands, tasks
 
 BL_DIR = os.path.dirname(os.path.abspath(__file__))
