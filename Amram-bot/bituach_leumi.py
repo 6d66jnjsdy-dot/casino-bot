@@ -140,17 +140,17 @@ KINDS = {
         "title": "דמי אבטלה", "emoji": "💼", "slug": "unemployment", "sign": "חתום אבטלה",
         "info": ("**דמי אבטלה**\nהכנסה יומית קבועה שמגיעה לחשבון שלך בכל יום (00:00 שעון ישראל) לטווח זמן שהצוות מאשר.\n\n"
                  "• פותחים חדר אישי עם העוזר האישי\n• הצוות חותם ומאשר: סכום יומי, טווח זמן וכמה תצטרך לשלם לנו\n"
-                 "• התשלום לצוות מנוכה מהחשבון שלך (ומה שחסר מנוכה מהתשלומים הראשונים)"),
+                 "• התשלום לצוות בסוף התקופה: תקבל תזכורת יום לפני, ואחרי שהתקופה נגמרת יש לך 24 שעות לשלם. אם לא תשלם תיקנס באותו סכום ותהיה במינוס"),
     },
     "capital": {
         "title": "מסלול הוני", "emoji": "📈", "slug": "capital", "sign": "חתום מסלול הוני",
         "info": ("**מסלול הוני**\nבמשך תקופה שהצוות מאשר, בכל משחק שתנצח בו תקבל בונוס נוסף של 25% מהרווח (ברירת מחדל, הצוות יכול לשנות).\n\n"
-                 "• פותחים חדר אישי עם העוזר האישי\n• הצוות חותם ומאשר: אחוז, טווח זמן וכמה תצטרך לשלם לנו"),
+                 "• פותחים חדר אישי עם העוזר האישי\n• הצוות חותם ומאשר: אחוז, טווח זמן וכמה תצטרך לשלם לנו\n• התשלום לצוות בסוף התקופה: תקבל תזכורת יום לפני, ואחרי שהתקופה נגמרת יש לך 24 שעות לשלם. אם לא תשלם תיקנס באותו סכום ותהיה במינוס"),
     },
     "monthly": {
         "title": "קצבה חודשית", "emoji": "🗓️", "slug": "monthly", "sign": "חתום קצבה",
         "info": ("**קצבה חודשית**\nסכום קבוע שמגיע לחשבון שלך פעם בחודש (כל 30 יום) למספר חודשים שהצוות מאשר.\n\n"
-                 "• פותחים חדר אישי עם העוזר האישי\n• הצוות חותם ומאשר: סכום חודשי, מספר חודשים וכמה תצטרך לשלם לנו"),
+                 "• פותחים חדר אישי עם העוזר האישי\n• הצוות חותם ומאשר: סכום חודשי, מספר חודשים וכמה תצטרך לשלם לנו\n• התשלום לצוות בסוף התקופה: תקבל תזכורת יום לפני, ואחרי שהתקופה נגמרת יש לך 24 שעות לשלם. אם לא תשלם תיקנס באותו סכום ותהיה במינוס"),
     },
 }
 
@@ -164,39 +164,42 @@ def bl_db():
 
 
 def is_staff(member):
+    """Owners and server administrators only."""
     if member.id in OWNER_IDS:
         return True
     try:
-        if member.guild_permissions.administrator:
-            return True
-        rid = DB.get("staff_role") or DB.get("staff_role_id")
-        if rid and any(r.id == int(rid) for r in member.roles):
-            return True
+        return bool(member.guild_permissions.administrator)
     except Exception:
-        pass
-    return False
+        return False
 
 
-def charge_fee(uid, fee):
-    """Takes the fee from cash, then bank. Returns what is still owed (deducted later from payouts)."""
+def total_money(uid):
     u = user_data(uid)
-    take = min(u["cash"], fee)
+    return max(u["cash"], 0) + max(u["bank"], 0)
+
+
+def take_money(uid, amount):
+    """Takes from cash, then bank. Returns the part that could not be taken."""
+    u = user_data(uid)
+    take = min(max(u["cash"], 0), amount)
     u["cash"] -= take
-    rest = fee - take
-    take_b = min(u["bank"], rest)
+    rest = amount - take
+    take_b = min(max(u["bank"], 0), rest)
     u["bank"] -= take_b
     return rest - take_b
 
 
-def pay_user(uid, kind, gross):
-    p = bl_db()["plans"].get(str(uid), {}).get(kind)
-    cut = 0
-    if p and p.get("fee_left", 0) > 0:
-        cut = min(p["fee_left"], gross)
-        p["fee_left"] -= cut
-    user_data(uid)["cash"] += gross - cut
+def penalize(uid, fee):
+    """Did not pay in time: the fee + a fine of the same amount. Cash may go negative."""
+    short = take_money(uid, fee * 2)
+    user_data(uid)["cash"] -= short
     save()
-    return gross - cut
+
+
+def pay_user(uid, kind, gross):
+    user_data(uid)["cash"] += gross
+    save()
+    return gross
 
 
 def info_embed(kind):
@@ -269,13 +272,6 @@ async def open_ticket(interaction, kind):
         m = g.get_member(oid)
         if m:
             ow[m] = see
-    try:
-        rid = DB.get("staff_role") or DB.get("staff_role_id")
-        role = g.get_role(int(rid)) if rid else None
-        if role:
-            ow[role] = see
-    except Exception:
-        pass
     name = re.sub(r"[^a-z0-9]+", "-", user.name.lower()).strip("-") or str(user.id)[-4:]
     try:
         ch = await g.create_text_channel(f"{KINDS[kind]['slug']}-{name}"[:90], category=interaction.channel.category,
@@ -319,11 +315,11 @@ class ApproveModal(discord.ui.Modal):
         super().__init__(title=f"אישור - {KINDS[kind]['title']}")
         self.kind = kind
         if kind == "unemp":
-            fields = [("סכום יומי", "50000"), ("טווח זמן (בימים)", "7"), ("כמה הוא צריך לשלם לנו", "0")]
+            fields = [("סכום יומי", "50000"), ("טווח זמן (בימים)", "7"), ("תשלום לצוות בסוף התקופה", "0")]
         elif kind == "capital":
-            fields = [("אחוז בונוס", "25"), ("טווח זמן בימים (0 = ללא הגבלה)", "7"), ("כמה הוא צריך לשלם לנו", "0")]
+            fields = [("אחוז בונוס", "25"), ("טווח זמן בימים (0 = ללא הגבלה)", "7"), ("תשלום לצוות בסוף התקופה", "0")]
         else:
-            fields = [("סכום חודשי", "500000"), ("מספר חודשים", "3"), ("כמה הוא צריך לשלם לנו", "0")]
+            fields = [("סכום חודשי", "500000"), ("מספר חודשים", "3"), ("תשלום לצוות בסוף התקופה", "0")]
         for label, ph in fields:
             self.add_item(discord.ui.TextInput(label=label, placeholder=ph, max_length=20))
 
@@ -333,26 +329,35 @@ class ApproveModal(discord.ui.Modal):
         if not t or t["status"] != "open":
             return await interaction.response.send_message("הבקשה כבר טופלה.", ephemeral=True)
         a, b, fee = (num(i.value) for i in self.children)
-        if a is None or b is None or fee is None or a <= 0 or (b <= 0 and self.kind != "capital"):
-            return await interaction.response.send_message("ערכים לא תקינים, נסה שוב.", ephemeral=True)
+        if a is None or b is None or fee is None or a <= 0 or (b <= 0 and (self.kind != "capital" or fee > 0)):
+            return await interaction.response.send_message(
+                "ערכים לא תקינים. חייב טווח זמן (ובמסלול הוני אי אפשר לגבות תשלום בלי טווח זמן).", ephemeral=True)
         uid, now = t["uid"], time.time()
         if self.kind == "unemp":
-            plan = {"amount": a, "end": now + b * DAY, "last_day": None}
+            end = now + b * DAY
+            plan = {"amount": a, "last_day": None}
             terms = f"סכום יומי: **{fmt(a)}** {cur()}\nטווח זמן: **{b}** ימים"
         elif self.kind == "capital":
-            plan = {"percent": min(a, 500), "end": now + b * DAY if b else 0}
+            end = now + b * DAY if b else 0
+            plan = {"percent": min(a, 500)}
             terms = f"בונוס: **{plan['percent']}%** על כל רווח\nטווח זמן: **{b if b else 'ללא הגבלה'}**" + (" ימים" if b else "")
         else:
+            end = now + b * 30 * DAY
             plan = {"amount": a, "months_left": b, "next": now + 30 * DAY}
             terms = f"סכום חודשי: **{fmt(a)}** {cur()}\nחודשים: **{b}**"
-        plan["fee_left"] = charge_fee(uid, fee)
+        plan.update({"end": end, "fee": fee, "state": "active", "reminded": False, "deadline": 0})
         d["plans"].setdefault(str(uid), {})[self.kind] = plan
         t["status"] = "approved"
         save()
+        pay_line = ""
+        if fee > 0:
+            pay_line = (f"\nתשלום לצוות: **{fmt(fee)}** {cur()}\nהמסלול מסתיים <t:{int(end)}:F>. תקבל תזכורת יום לפני, "
+                        f"ויהיו לך 24 שעות לשלם אחרי הסיום. אם לא תשלם תיקנס באותו סכום ותהיה במינוס.")
         e = discord.Embed(title="✅ הבקשה אושרה", color=GREEN,
-                          description=f"{terms}\nתשלום לצוות: **{fmt(fee)}** {cur()}\nחתימה: **{t.get('signed')}**")
+                          description=f"{terms}{pay_line}\nחתימה: **{t.get('signed')}**")
+        kw = {"view": PayView(self.kind)} if fee > 0 else {}
         await interaction.response.send_message(content=f"<@{uid}>", embed=e,
-                                                allowed_mentions=discord.AllowedMentions(users=True))
+                                                allowed_mentions=discord.AllowedMentions(users=True), **kw)
         m = interaction.guild.get_member(uid)
         if m:
             try:
@@ -407,7 +412,11 @@ class TicketView(discord.ui.View):
 
     @discord.ui.button(label="מחיקת חדר", emoji="🗑️", style=discord.ButtonStyle.secondary, custom_id="bl:delete")
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        t = await self._staff(interaction)
+        if interaction.user.id not in OWNER_IDS:
+            return await interaction.response.send_message("מחיקת החדר לבעלים בלבד.", ephemeral=True)
+        t = bl_db()["tickets"].get(str(interaction.channel_id))
+        if not t:
+            return await interaction.response.send_message("החדר לא נמצא במערכת.", ephemeral=True)
         if t:
             await interaction.response.send_message("החדר יימחק בעוד 3 שניות...")
             bl_db()["tickets"].pop(str(interaction.channel_id), None)
@@ -436,34 +445,113 @@ async def bituach_leumi(ctx):
 
 
 # ================= payouts + 25% bonus =================
+class PayView(discord.ui.View):
+    """Persistent 'pay now' button (used in the room and in reminders)."""
+    def __init__(self, kind):
+        super().__init__(timeout=None)
+        b = discord.ui.Button(label="שלם עכשיו", emoji="💳", style=discord.ButtonStyle.success, custom_id=f"bl:pay:{kind}")
+        b.callback = self._make(kind)
+        self.add_item(b)
+
+    @staticmethod
+    def _make(kind):
+        async def cb(interaction: discord.Interaction):
+            d, uid = bl_db(), interaction.user.id
+            kinds = d["plans"].get(str(uid), {})
+            p = kinds.get(kind)
+            if not p or p.get("fee", 0) <= 0:
+                return await interaction.response.send_message("אין לך חוב פתוח במסלול הזה.", ephemeral=True)
+            fee = p["fee"]
+            if total_money(uid) < fee:
+                return await interaction.response.send_message(
+                    f"אין לך מספיק כסף (מזומן + בנק). נדרש: {fmt(fee)} {cur()}", ephemeral=True)
+            take_money(uid, fee)
+            p["fee"] = 0
+            if p.get("state") == "due":
+                kinds.pop(kind, None)
+                if not kinds:
+                    d["plans"].pop(str(uid), None)
+            save()
+            await interaction.response.send_message(embed=discord.Embed(
+                title="✅ התשלום התקבל", color=GREEN, description=f"שולמו {fmt(fee)} {cur()}. תודה!"))
+            try:
+                log_money(interaction.user, f"National Insurance | {KINDS[kind]['title']}", f"Paid {fmt(fee)}")
+            except Exception:
+                pass
+        return cb
+
+
+async def bl_notify(uid, kind, embed):
+    """Sends to the user's private room (if it still exists) and to DMs."""
+    for cid, t in list(bl_db()["tickets"].items()):
+        if t["uid"] == uid and t["kind"] == kind:
+            ch = bot.get_channel(int(cid))
+            if ch:
+                try:
+                    await ch.send(content=f"<@{uid}>", embed=embed, view=PayView(kind),
+                                  allowed_mentions=discord.AllowedMentions(users=True))
+                except Exception as ex:
+                    print("BL notify (room) failed:", repr(ex))
+    try:
+        user = bot.get_user(uid) or await bot.fetch_user(uid)
+        await user.send(embed=embed, view=PayView(kind))
+    except Exception:
+        pass
+
+
+async def _bl_tick(uid, kinds, kind, p, now, today):
+    state, fee, end = p.get("state", "active"), p.get("fee", 0), p.get("end", 0)
+    title = KINDS[kind]["title"]
+    if state == "active":
+        if kind == "unemp" and now < end and p["last_day"] != today:
+            p["last_day"] = today
+            pay_user(uid, kind, p["amount"])
+        elif kind == "monthly" and p["months_left"] > 0 and now >= p["next"]:
+            pay_user(uid, kind, p["amount"])
+            p["months_left"] -= 1
+            p["next"] += 30 * DAY
+        if not end:
+            return
+        if fee > 0 and not p.get("reminded") and now >= end - DAY:
+            p["reminded"] = True
+            await bl_notify(uid, kind, discord.Embed(
+                title=f"⏰ תזכורת - {title}", color=YELLOW,
+                description=(f"המסלול מסתיים <t:{int(end)}:R>.\nאחרי הסיום יש לך **24 שעות** לשלם **{fmt(fee)}** {cur()}.\n"
+                             f"אם לא תשלם, תיקנס באותו סכום ותהיה במינוס.")))
+        if now >= end:
+            if fee > 0:
+                p["state"] = "due"
+                p["deadline"] = max(end, now) + DAY
+                await bl_notify(uid, kind, discord.Embed(
+                    title=f"💳 הגיע זמן התשלום - {title}", color=RED,
+                    description=(f"המסלול הסתיים. יש לך עד <t:{int(p['deadline'])}:F> לשלם **{fmt(fee)}** {cur()}.\n"
+                                 f"אם לא תשלם, תיקנס באותו סכום ({fmt(fee)}) ותהיה במינוס.")))
+            else:
+                kinds.pop(kind, None)
+    elif state == "due" and now >= p["deadline"]:
+        if fee > 0:
+            penalize(uid, fee)
+            bal = user_data(uid)["cash"]
+            await bl_notify(uid, kind, discord.Embed(
+                title=f"⛔ קנס - {title}", color=RED,
+                description=(f"לא שילמת בזמן. נגבו **{fmt(fee * 2)}** {cur()} (התשלום + קנס באותו סכום).\n"
+                             f"היתרה במזומן: **{fmt(bal)}** {cur()}")))
+        kinds.pop(kind, None)
+
+
 @tasks.loop(minutes=5)
 async def bl_loop():
     await loaded.wait()
     now, today = time.time(), today_key()
     plans = bl_db()["plans"]
     for uid, kinds in list(plans.items()):
-        try:
-            p = kinds.get("unemp")
-            if p:
-                if now >= p["end"]:
-                    kinds.pop("unemp")
-                elif p["last_day"] != today:
-                    p["last_day"] = today
-                    pay_user(uid, "unemp", p["amount"])
-            p = kinds.get("monthly")
-            if p and now >= p["next"]:
-                pay_user(uid, "monthly", p["amount"])
-                p["months_left"] -= 1
-                p["next"] += 30 * DAY
-                if p["months_left"] <= 0:
-                    kinds.pop("monthly")
-            p = kinds.get("capital")
-            if p and p["end"] and now >= p["end"]:
-                kinds.pop("capital")
-            if not kinds:
-                plans.pop(uid, None)
-        except Exception as ex:
-            print("BL loop error:", repr(ex))
+        for kind, p in list(kinds.items()):
+            try:
+                await _bl_tick(int(uid), kinds, kind, p, now, today)
+            except Exception as ex:
+                print("BL loop error:", repr(ex))
+        if not kinds:
+            plans.pop(uid, None)
     save()
 
 
@@ -471,7 +559,7 @@ def _bonus(user, net):
     p = bl_db()["plans"].get(str(user.id), {}).get("capital")
     if not p or net <= 0:
         return
-    if p["end"] and time.time() >= p["end"]:
+    if p.get("state", "active") != "active" or (p["end"] and time.time() >= p["end"]):
         return
     extra = int(net * p["percent"] / 100)
     if extra > 0:
@@ -504,6 +592,8 @@ async def bl_ready():
     bot._bl_ready = True
     bot.add_view(BLPanel())
     bot.add_view(TicketView())
+    for k in KINDS:
+        bot.add_view(PayView(k))
     _install_bonus_hook()
     if not bl_loop.is_running():
         bl_loop.start()
