@@ -8,7 +8,7 @@ if HERE not in sys.path:
 # Order matters: a module may use names of the modules loaded before it.
 MODULES = ['core', 'game_mines', 'game_blackjack', 'game_poker', 'game_slots', 'game_roulette', 'game_coin_chicken',
            'game_higher_lower', 'game_heist', 'game_scratch', 'economy', 'shop', 'staff',
-           'game_lottery', 'owner', 'info']
+           'game_lottery', 'owner', 'bituach_leumi', 'info']
 
 mods = []
 for name in MODULES:
