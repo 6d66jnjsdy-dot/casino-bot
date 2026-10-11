@@ -58,7 +58,6 @@ class BoardView(OwnedView):
     game_name = "game"
     multi_key = None
     cash_row = None
-    live = False            # True = a live embed is shown above the board while playing (used by Mines / S$mines)
 
     def __init__(self, user, bet, token=None):
         super().__init__(timeout=120)
@@ -136,12 +135,6 @@ class BoardView(OwnedView):
             except discord.HTTPException:
                 await asyncio.sleep(0.3 * (i + 1))
 
-    def play_kw(self):
-        kw = dict(content=self.header, view=self)
-        if self.live:
-            kw["embed"] = self.live_embed()
-        return kw
-
     async def push(self, interaction):
         # clicks that arrive while an edit is running only mark the board as dirty, the loop then draws the LATEST board
         self.dirty = True
@@ -154,7 +147,7 @@ class BoardView(OwnedView):
                 async with self.edit_lock:
                     if self.done:
                         break
-                    await self.edit_ui(interaction, **self.play_kw())
+                    await self.edit_ui(interaction, content=self.header, view=self)
         finally:
             self.flushing = False
 
@@ -246,43 +239,7 @@ class GoldMines(BoardView):
             self.marked.add(i)
             self.tiles[i].emoji, self.tiles[i].style = "✅", discord.ButtonStyle.success
 
-class MinesLook:
-    """New look shared by Mines and S$mines: a live embed above the board + a redesigned result embed.
-    Only the look changes here: boards, multipliers, payouts and the invisible tile emoji are untouched."""
-    live = True
-
-    def counts(self):
-        total = sum(1 for k in self.board if k != "bomb")
-        found = sum(1 for i in self.revealed if self.board[i] != "bomb")
-        return found, total, len(self.board) - total
-
-    def bar(self):
-        found, total, _ = self.counts()
-        filled = min(10, (found * 10 + total - 1) // total) if total else 0
-        return "▰" * filled + "▱" * (10 - filled)
-
-    def live_embed(self):
-        found, total, bombs = self.counts()
-        e = discord.Embed(title="Mines", color=BLUE,
-                          description=f"{self.bar()}\n{found} of {total} diamonds found")
-        e.add_field(name="Bet", value=f"{fmt(self.bet)} {cur()}", inline=True)
-        e.add_field(name="Bombs", value=str(bombs), inline=True)
-        e.add_field(name="Safe left", value=str(total - found), inline=True)
-        return e
-
-    def embed(self, lost):
-        got = self.bet + int(self.profit)
-        line = f"-You lost {fmt(self.bet)} {cur()}" if lost else f"+You won and got {fmt(got)} {cur()}"
-        found, total, _ = self.counts()
-        cash = user_data(self.user.id)["cash"]
-        desc = (f"```diff\n{line}\n```\n"
-                f"{self.bar()}\n"
-                f"You found {found}/{total} {EMOJI['diamond']}\n"
-                f"You now have: {fmt(cash)} {cur()}")
-        return make_embed(self.user, desc, RED if lost else GREEN,
-                          "💣 You hit a bomb!" if lost else "💎 You cashed out!")
-
-class Mines(MinesLook, BoardView):
+class Mines(BoardView):
     cols = 3
     reveal_on_cashout = False
     game_name = "mines"
@@ -294,7 +251,7 @@ class Mines(MinesLook, BoardView):
     def earn(self, kind):
         self.profit = self.bet * (MINES_MULT[len(self.revealed) - 1] - 1)
 
-class SMines(MinesLook, BoardView):
+class SMines(BoardView):
     reveal_on_cashout = False
     multi_key = "s$mines"
 
@@ -409,7 +366,7 @@ class SizeView(OwnedView):
             try:
                 game = SMines(self.user, self.bet, key, self.token)
                 game.message = interaction.message
-                await interaction.response.edit_message(content=game.header, embed=game.live_embed() if game.live else None, view=game)
+                await interaction.response.edit_message(content=game.header, embed=None, view=game)
             except Exception:
                 cancel_game(self.user, self.token, self.bet)
                 raise
@@ -430,8 +387,7 @@ async def start_board(ctx, cls, amount, usage):
     if bet:
         view = cls(ctx.author, bet, str(ctx.message.id))
         try:
-            kw = {"embed": view.live_embed()} if view.live else {}
-            view.message = await ctx.reply(view.header, view=view, mention_author=False, **kw)
+            view.message = await ctx.reply(view.header, view=view, mention_author=False)
         except Exception:
             cancel_game(ctx.author, view.token, bet)
             raise
