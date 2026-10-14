@@ -597,3 +597,11 @@ async def bl_ready():
     _install_bonus_hook()
     if not bl_loop.is_running():
         bl_loop.start()
+if not bl.loop.start() ("on_ready") wrapped._bl d["log_game"] = wrapped is orig if bl.loop
+if not bl.loop.is_runnin():add_view(BlPanel()) = True 
+                                                  return - True Log mame = wrapped if orig if bal.loop
+ for k in KINDS:
+bot.add_view(TicketView)(() = def as "on ready" is not 
+if not orig or KINDS: 
+and bonus_hook() - View: + add or orig or KINDS: if share link 
+create or add if not 
