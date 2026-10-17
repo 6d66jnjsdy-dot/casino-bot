@@ -16,6 +16,16 @@ SHOP_ITEMS = [
     ("Royale Flush",  1554242535369482371, 675_000_000),
 ]
 
+# what each role gives (shown under the role in the shop)
+SHOP_PERKS = {
+    "High Roller":   "+5% profit in Mines",
+    "Poker Royale":  "Rob cooldown reduced to 5 minutes",
+    "Whale Player":  "10% extra luck in Blackjack and Poker",
+    "Action Junkie": "+7.5% profit in Gold Mines (gm)",
+    "APEX Gambling": "1.5B paid into your bank every day at 00:00",
+    "Royale Flush":  "$bonus: +25% profit for 10 minutes, every 24 hours",
+}
+
 SHOP_BUSY = set()
 SHOP_REGISTERED = False
 
@@ -122,8 +132,9 @@ class ShopLayout(discord.ui.LayoutView):
 
         for item in SHOP_ITEMS:
             name, rid, price = item
+            perk = SHOP_PERKS.get(name, "")
             parts.append(discord.ui.Section(
-                f"### <@&{rid}>\n**{fmt(price)}** {cur()}",
+                f"### <@&{rid}>\n**{fmt(price)}** {cur()}\n-# {perk}",
                 accessory=ShopButton(item)))
 
         parts.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
