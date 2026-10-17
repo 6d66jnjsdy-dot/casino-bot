@@ -528,7 +528,6 @@ async def setup_hook():
     immunity_loop.start()
     lotto_loop.start()
     bot.add_view(LottoPanel())
-    bot.add_view(ShopView())
     try:
         await bot.load_extension("extras")
     except Exception as ex:
