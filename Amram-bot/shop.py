@@ -7,37 +7,19 @@ SHOP_COLOR = 0xDDC9A3
 RECEIPT_COLOR = 0x57F287
 
 SHOP_ITEMS = [
-    ("Casino Joker",   "🃏", 1554242301927104643, 175_000_000),
-    ("Casino Master",  "💎", 1554242805071876116, 225_000_000),
-    ("Casino Dealer",  "🤵", 1554241846165766225, 350_000_000),
-    ("Casino Legend",  "🗽", 1554239763006099487, 425_000_000),
-    ("Casino Royalty", "🌟", 1554240949213724854, 500_000_000),
-    ("Casino Emperor", "👑", 1554242535369482371, 675_000_000),
+    ("High Roller",   "🎲", 1554242301927104643, 175_000_000),
+    ("Poker Royale",  "♠️", 1554242805071876116, 225_000_000),
+    ("Whale Player",  "🤑", 1554241846165766225, 350_000_000),
+    ("Action Junkie",  "🪎", 1554239763006099487, 425_000_000),
+    ("APEX Gambling", "🏆", 1554240949213724854, 500_000_000),
+    ("Royale Flush", "🃏", 1554242535369482371, 675_000_000),
 ]
 
 SHOP_BUSY = set()
 
 
-def header_text():
-    return f"# 🎰 {SHOP_TITLE}\n-# Exclusive roles · permanent · paid from your bank"
-
-
 def balance_text(bank):
-    return f"**💰 Bank balance**\n## {fmt(bank)} {cur()}"
-
-
-def item_text(item, owned, bank):
-    name, emoji, rid, price = item
-    if owned:
-        status = "-# ✅ Owned"
-    elif bank >= price:
-        status = "-# 🟢 Ready to buy"
-    else:
-        pct = bank / price
-        filled = int(pct * 10)
-        bar = "▰" * filled + "▱" * (10 - filled)
-        status = f"-# {bar} {int(pct * 100)}% · {fmt(price - bank)} {cur()} to go"
-    return f"### {emoji}  <@&{rid}>\n**{fmt(price)}** {cur()}\n{status}"
+    return f"## {SHOP_TITLE}\nBank balance: **{fmt(bank)}** {cur()}"
 
 
 async def shop_say(interaction, text):
@@ -51,14 +33,13 @@ class ReceiptLayout(discord.ui.LayoutView):
     def __init__(self, emoji, role, price, bank_after):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Container(
-            discord.ui.TextDisplay("# ✅ Purchase Complete"),
+            discord.ui.TextDisplay(f"## Purchase Complete\n{emoji}  {role.mention}"),
             discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
-            discord.ui.TextDisplay(f"### {emoji}  {role.mention}"),
             discord.ui.TextDisplay(
-                f"**Paid**\n{fmt(price)} {cur()}\n\n"
-                f"**Remaining in bank**\n{fmt(bank_after)} {cur()}"),
-            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
-            discord.ui.TextDisplay("-# The role is yours permanently. Thank you for shopping!"),
+                f"**Price**\n{fmt(price)} {cur()}\n\n"
+                f"**Bank balance**\n{fmt(bank_after)} {cur()}"),
+            discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay("-# The role is yours permanently."),
             accent_colour=discord.Colour(RECEIPT_COLOR)))
 
 
@@ -122,16 +103,21 @@ async def shop_buy(interaction, item):
 
 
 class ShopButton(discord.ui.Button):
-    def __init__(self, item):
-        super().__init__(style=discord.ButtonStyle.primary, label="Buy")
+    def __init__(self, item, owned):
+        super().__init__(
+            style=discord.ButtonStyle.secondary if owned else discord.ButtonStyle.primary,
+            label="Owned" if owned else "Buy",
+            disabled=owned)
         self.item = item
         self.layout = None
 
     async def callback(self, interaction):
         if await shop_buy(interaction, self.item):
+            self.style = discord.ButtonStyle.secondary
+            self.label = "Owned"
+            self.disabled = True
             try:
-                self.layout.owned.add(self.item[2])
-                self.layout.refresh(user_data(interaction.user.id)["bank"])
+                self.layout.balance.content = balance_text(user_data(interaction.user.id)["bank"])
                 await interaction.message.edit(view=self.layout)
             except Exception as ex:
                 print("Shop: refresh failed:", repr(ex))
@@ -141,50 +127,28 @@ class ShopLayout(discord.ui.LayoutView):
     def __init__(self, owner_id, owned_ids, bank):
         super().__init__(timeout=300)
         self.owner_id = owner_id
-        self.owned = set(owned_ids)
         self.message = None
-        self.rows = []  # (item, text_display, button)
+        self.buttons = []
 
         self.balance = discord.ui.TextDisplay(balance_text(bank))
         parts = [
-            discord.ui.TextDisplay(header_text()),
-            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
             self.balance,
             discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large),
         ]
 
-        for i, item in enumerate(SHOP_ITEMS):
-            text = discord.ui.TextDisplay("-")
-            btn = ShopButton(item)
+        for item in SHOP_ITEMS:
+            name, emoji, rid, price = item
+            btn = ShopButton(item, rid in owned_ids)
             btn.layout = self
-            self.rows.append((item, text, btn))
-            parts.append(discord.ui.Section(text, accessory=btn))
-            if i < len(SHOP_ITEMS) - 1:
-                parts.append(discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small))
+            self.buttons.append(btn)
+            parts.append(discord.ui.Section(
+                f"### {emoji}  <@&{rid}>\n**{fmt(price)}** {cur()}",
+                accessory=btn))
 
-        parts.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
-        parts.append(discord.ui.TextDisplay("-# Need more funds? Use $dep to deposit your cash into the bank."))
+        parts.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        parts.append(discord.ui.TextDisplay("-# Roles are permanent and paid from your bank. Use $dep to deposit."))
 
         self.add_item(discord.ui.Container(*parts, accent_colour=discord.Colour(SHOP_COLOR)))
-        self.refresh(bank)
-
-    def refresh(self, bank):
-        self.balance.content = balance_text(bank)
-        for item, text, btn in self.rows:
-            owned = item[2] in self.owned
-            text.content = item_text(item, owned, bank)
-            if owned:
-                btn.style = discord.ButtonStyle.secondary
-                btn.label = "Owned"
-                btn.disabled = True
-            elif bank >= item[3]:
-                btn.style = discord.ButtonStyle.success
-                btn.label = "Buy"
-                btn.disabled = False
-            else:
-                btn.style = discord.ButtonStyle.secondary
-                btn.label = "Buy"
-                btn.disabled = False
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.owner_id:
@@ -193,7 +157,7 @@ class ShopLayout(discord.ui.LayoutView):
         return True
 
     async def on_timeout(self):
-        for _, _, b in self.rows:
+        for b in self.buttons:
             b.disabled = True
         if self.message:
             try:
