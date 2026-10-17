@@ -4,7 +4,7 @@ from core import *
 # ================= SHOP =================
 SHOP_TITLE = "Amram Casino Shop"
 SHOP_COLOR = 0xDDC9A3
-SHOP_THUMBNAIL = None
+RECEIPT_COLOR = 0x57F287
 
 SHOP_ITEMS = [
     ("Casino Joker",   "🃏", 1554242301927104643, 175_000_000),
@@ -18,6 +18,10 @@ SHOP_ITEMS = [
 SHOP_BUSY = set()
 
 
+def balance_text(bank):
+    return f"## {SHOP_TITLE}\nBank balance: **{fmt(bank)}** {cur()}"
+
+
 async def shop_say(interaction, text):
     if interaction.response.is_done():
         await interaction.followup.send(text, ephemeral=True)
@@ -25,23 +29,37 @@ async def shop_say(interaction, text):
         await interaction.response.send_message(text, ephemeral=True)
 
 
+class ReceiptLayout(discord.ui.LayoutView):
+    def __init__(self, emoji, role, price, bank_after):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(f"## Purchase Complete\n{emoji}  {role.mention}"),
+            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay(
+                f"**Price**\n{fmt(price)} {cur()}\n\n"
+                f"**Bank balance**\n{fmt(bank_after)} {cur()}"),
+            discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay("-# The role is yours permanently."),
+            accent_colour=discord.Colour(RECEIPT_COLOR)))
+
+
 async def shop_buy(interaction, item):
-    """מחזיר True רק אם הקנייה הצליחה."""
+    """Returns True only if the purchase succeeded."""
     name, emoji, role_id, price = item
     member = interaction.user
 
     if interaction.guild is None or not isinstance(member, discord.Member):
-        return await shop_say(interaction, "This only works inside the server.")
+        return await shop_say(interaction, "The shop only works inside the server.")
     if loaded is None or not loaded.is_set():
-        return await shop_say(interaction, "The bot is still starting, try again in a few seconds.")
+        return await shop_say(interaction, "The bot is still starting. Try again in a few seconds.")
 
     role = interaction.guild.get_role(role_id)
     if role is None:
-        return await shop_say(interaction, "This role doesn't exist anymore, tell an admin.")
+        return await shop_say(interaction, "This role no longer exists. Please contact an admin.")
     if role in member.roles:
-        return await shop_say(interaction, f"You already have **{name}**.")
+        return await shop_say(interaction, f"You already own **{name}**.")
     if role >= interaction.guild.me.top_role:
-        return await shop_say(interaction, "I can't assign this role (it's above my role), tell an admin.")
+        return await shop_say(interaction, "I can't assign this role because it's above my highest role. Please contact an admin.")
 
     key = (member.id, role_id)
     if key in SHOP_BUSY:
@@ -51,8 +69,10 @@ async def shop_buy(interaction, item):
     if u["bank"] < price:
         return await shop_say(
             interaction,
-            f"You need **{fmt(price)}** {cur()} **in your bank** for {role.mention}.\n"
-            f"You have {fmt(u['bank'])} {cur()} in the bank. (`$dep` to deposit)")
+            f"Insufficient funds for {role.mention}.\n"
+            f"**Price:** {fmt(price)} {cur()}\n"
+            f"**Your bank:** {fmt(u['bank'])} {cur()}\n"
+            f"Use `$dep` to deposit.")
 
     SHOP_BUSY.add(key)
     try:
@@ -60,7 +80,7 @@ async def shop_buy(interaction, item):
 
         u = user_data(member.id)
         if u["bank"] < price:
-            return await shop_say(interaction, "You don't have enough in your bank anymore.")
+            return await shop_say(interaction, "Your bank balance is no longer sufficient.")
 
         u["bank"] -= price
         save()
@@ -72,48 +92,49 @@ async def shop_buy(interaction, item):
             if not isinstance(ex, Exception):
                 raise
             print("Shop: add_roles failed:", repr(ex))
-            return await shop_say(interaction, "I couldn't give you the role. You were not charged.")
+            return await shop_say(interaction, "I couldn't assign the role. You were not charged.")
+        bank_after = u["bank"]
     finally:
         SHOP_BUSY.discard(key)
 
     log_money(member, "SHOP", f"Bought {name} for {fmt(price)} {cur()}", YELLOW)
-    await shop_say(interaction, f"✅ You bought {role.mention} for **{fmt(price)}** {cur()} (from your bank).")
+    await interaction.followup.send(view=ReceiptLayout(emoji, role, price, bank_after), ephemeral=True)
     return True
 
 
 class ShopButton(discord.ui.Button):
     def __init__(self, item, owned):
         super().__init__(
-            style=discord.ButtonStyle.success if owned else discord.ButtonStyle.primary,
-            label="Owned ✓" if owned else "Buy", disabled=owned)
+            style=discord.ButtonStyle.secondary if owned else discord.ButtonStyle.primary,
+            label="Owned" if owned else "Buy",
+            disabled=owned)
         self.item = item
         self.layout = None
 
     async def callback(self, interaction):
         if await shop_buy(interaction, self.item):
-            self.style = discord.ButtonStyle.success
-            self.label = "Owned ✓"
+            self.style = discord.ButtonStyle.secondary
+            self.label = "Owned"
             self.disabled = True
             try:
+                self.layout.balance.content = balance_text(user_data(interaction.user.id)["bank"])
                 await interaction.message.edit(view=self.layout)
             except Exception as ex:
                 print("Shop: refresh failed:", repr(ex))
 
 
 class ShopLayout(discord.ui.LayoutView):
-    def __init__(self, owner_id, owned_ids, icon):
+    def __init__(self, owner_id, owned_ids, bank):
         super().__init__(timeout=300)
         self.owner_id = owner_id
         self.message = None
         self.buttons = []
 
-        parts = []
-        title = f"## 🎰 {SHOP_TITLE}\nBuy a role once, paid from your **bank**. Use `$dep` to deposit."
-        if icon:
-            parts.append(discord.ui.Section(title, accessory=discord.ui.Thumbnail(media=icon)))
-        else:
-            parts.append(discord.ui.TextDisplay(title))
-        parts.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
+        self.balance = discord.ui.TextDisplay(balance_text(bank))
+        parts = [
+            self.balance,
+            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large),
+        ]
 
         for item in SHOP_ITEMS:
             name, emoji, rid, price = item
@@ -121,14 +142,17 @@ class ShopLayout(discord.ui.LayoutView):
             btn.layout = self
             self.buttons.append(btn)
             parts.append(discord.ui.Section(
-                f"### {emoji} <@&{rid}>\n**{fmt(price)}** {cur()}",
+                f"### {emoji}  <@&{rid}>\n**{fmt(price)}** {cur()}",
                 accessory=btn))
+
+        parts.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+        parts.append(discord.ui.TextDisplay("-# Roles are permanent and paid from your bank. Use $dep to deposit."))
 
         self.add_item(discord.ui.Container(*parts, accent_colour=discord.Colour(SHOP_COLOR)))
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("This is not your shop, type `$shop` to open yours.", ephemeral=True)
+            await interaction.response.send_message("This isn't your shop. Type `$shop` to open your own.", ephemeral=True)
             return False
         return True
 
@@ -145,10 +169,9 @@ class ShopLayout(discord.ui.LayoutView):
 @bot.command(name="shop", usage="shop")
 async def shop(ctx):
     try:
-        icon = ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
-        icon = SHOP_THUMBNAIL or icon
         owned = {r.id for r in ctx.author.roles} if isinstance(ctx.author, discord.Member) else set()
-        view = ShopLayout(ctx.author.id, owned, icon)
+        bank = user_data(ctx.author.id)["bank"]
+        view = ShopLayout(ctx.author.id, owned, bank)
         view.message = await ctx.send(view=view)
     except Exception as ex:
         await ctx.send(f"Shop error: `{type(ex).__name__}: {ex}`"[:1900])
