@@ -6,20 +6,18 @@ SHOP_TITLE = "Amram Casino Shop"
 SHOP_COLOR = 0xDDC9A3
 RECEIPT_COLOR = 0x57F287
 
+# (name, role_id, price)
 SHOP_ITEMS = [
-    ("High Roller",   "🎲", 1554242301927104643, 175_000_000),
-    ("Poker Royale",  "♠️", 1554242805071876116, 225_000_000),
-    ("Whale Player",  "🤑", 1554241846165766225, 350_000_000),
-    ("Action Junkie",  "🪎", 1554239763006099487, 425_000_000),
-    ("APEX Gambling", "🏆", 1554240949213724854, 500_000_000),
-    ("Royale Flush", "🃏", 1554242535369482371, 675_000_000),
+    ("High Roller",   1554242301927104643, 175_000_000),
+    ("Poker Royale",  1554242805071876116, 225_000_000),
+    ("Whale Player",  1554241846165766225, 350_000_000),
+    ("Action Junkie", 1554239763006099487, 425_000_000),
+    ("APEX Gambling", 1554240949213724854, 500_000_000),
+    ("Royale Flush",  1554242535369482371, 675_000_000),
 ]
 
 SHOP_BUSY = set()
-
-
-def balance_text(bank):
-    return f"## {SHOP_TITLE}\nBank balance: **{fmt(bank)}** {cur()}"
+SHOP_REGISTERED = False
 
 
 async def shop_say(interaction, text):
@@ -30,10 +28,10 @@ async def shop_say(interaction, text):
 
 
 class ReceiptLayout(discord.ui.LayoutView):
-    def __init__(self, emoji, role, price, bank_after):
+    def __init__(self, role, price, bank_after):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Container(
-            discord.ui.TextDisplay(f"## Purchase Complete\n{emoji}  {role.mention}"),
+            discord.ui.TextDisplay(f"## Purchase Complete\n{role.mention}"),
             discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
             discord.ui.TextDisplay(
                 f"**Price**\n{fmt(price)} {cur()}\n\n"
@@ -44,8 +42,7 @@ class ReceiptLayout(discord.ui.LayoutView):
 
 
 async def shop_buy(interaction, item):
-    """Returns True only if the purchase succeeded."""
-    name, emoji, role_id, price = item
+    name, role_id, price = item
     member = interaction.user
 
     if interaction.guild is None or not isinstance(member, discord.Member):
@@ -98,80 +95,55 @@ async def shop_buy(interaction, item):
         SHOP_BUSY.discard(key)
 
     log_money(member, "SHOP", f"Bought {name} for {fmt(price)} {cur()}", YELLOW)
-    await interaction.followup.send(view=ReceiptLayout(emoji, role, price, bank_after), ephemeral=True)
+    await interaction.followup.send(view=ReceiptLayout(role, price, bank_after), ephemeral=True)
     return True
 
 
 class ShopButton(discord.ui.Button):
-    def __init__(self, item, owned):
+    def __init__(self, item):
         super().__init__(
-            style=discord.ButtonStyle.secondary if owned else discord.ButtonStyle.primary,
-            label="Owned" if owned else "Buy",
-            disabled=owned)
+            style=discord.ButtonStyle.primary,
+            label="Buy",
+            custom_id=f"shop:buy:{item[1]}")
         self.item = item
-        self.layout = None
 
     async def callback(self, interaction):
-        if await shop_buy(interaction, self.item):
-            self.style = discord.ButtonStyle.secondary
-            self.label = "Owned"
-            self.disabled = True
-            try:
-                self.layout.balance.content = balance_text(user_data(interaction.user.id)["bank"])
-                await interaction.message.edit(view=self.layout)
-            except Exception as ex:
-                print("Shop: refresh failed:", repr(ex))
+        await shop_buy(interaction, self.item)
 
 
 class ShopLayout(discord.ui.LayoutView):
-    def __init__(self, owner_id, owned_ids, bank):
-        super().__init__(timeout=300)
-        self.owner_id = owner_id
-        self.message = None
-        self.buttons = []
+    def __init__(self):
+        super().__init__(timeout=None)
 
-        self.balance = discord.ui.TextDisplay(balance_text(bank))
         parts = [
-            self.balance,
+            discord.ui.TextDisplay(f"## {SHOP_TITLE}\nBuy a role once, paid from your **bank**."),
             discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large),
         ]
 
         for item in SHOP_ITEMS:
-            name, emoji, rid, price = item
-            btn = ShopButton(item, rid in owned_ids)
-            btn.layout = self
-            self.buttons.append(btn)
+            name, rid, price = item
             parts.append(discord.ui.Section(
-                f"### {emoji}  <@&{rid}>\n**{fmt(price)}** {cur()}",
-                accessory=btn))
+                f"### <@&{rid}>\n**{fmt(price)}** {cur()}",
+                accessory=ShopButton(item)))
 
         parts.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
         parts.append(discord.ui.TextDisplay("-# Roles are permanent and paid from your bank. Use $dep to deposit."))
 
         self.add_item(discord.ui.Container(*parts, accent_colour=discord.Colour(SHOP_COLOR)))
 
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("This isn't your shop. Type `$shop` to open your own.", ephemeral=True)
-            return False
-        return True
 
-    async def on_timeout(self):
-        for b in self.buttons:
-            b.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except Exception:
-                pass
+@bot.listen("on_ready")
+async def shop_register_view():
+    """Registers the shop buttons once so they keep working 24/7, even after a restart."""
+    global SHOP_REGISTERED
+    if not SHOP_REGISTERED:
+        bot.add_view(ShopLayout())
+        SHOP_REGISTERED = True
 
 
 @bot.command(name="shop", usage="shop")
 async def shop(ctx):
     try:
-        owned = {r.id for r in ctx.author.roles} if isinstance(ctx.author, discord.Member) else set()
-        bank = user_data(ctx.author.id)["bank"]
-        view = ShopLayout(ctx.author.id, owned, bank)
-        view.message = await ctx.send(view=view)
+        await ctx.send(view=ShopLayout())
     except Exception as ex:
         await ctx.send(f"Shop error: `{type(ex).__name__}: {ex}`"[:1900])
