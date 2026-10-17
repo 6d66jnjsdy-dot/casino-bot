@@ -11,9 +11,11 @@ WHALE_LUCK = 0.10           # Whale Player: 10% luck in blackjack / poker
 LUCK_GAMES = ("bj", "blackjack", "poker")
 ROB_COOLDOWN_PERK = 300     # Poker Royale: rob cooldown of 5 minutes
 APEX_DAILY = 1_500_000_000  # APEX Gambling: paid into the bank every day at 00:00
-PCT_BONUS = 0.25            # Royale Flush: $bonus
+PCT_BONUS = 0.25            # Royale Flush: Bonus button
 BONUS_SECONDS = 600         # lasts 10 minutes
-BONUS_COOLDOWN = 86400      # once every 24 hours
+BONUS_COOLDOWN = 86400      # once every 24 hours per player
+
+PERKS_REGISTERED = False
 
 
 def has_role(uid, role_id):
@@ -88,65 +90,64 @@ async def apex_loop():
     save()
 
 
-@bot.listen("on_ready")
-async def perks_start():
-    if not apex_loop.is_running():
-        apex_loop.start()
+# ---------- Royale Flush: one shared Bonus message ----------
+class BonusButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.success, label="Bonus 25%", custom_id="perks:bonus")
 
+    async def callback(self, interaction):
+        member = interaction.user
+        rid = ROLE.get("Royale Flush")
+        if not isinstance(member, discord.Member) or not rid or not member.get_role(rid):
+            return await interaction.response.send_message(
+                f"Only <@&{rid}> holders can use this.", ephemeral=True)
+        if loaded is None or not loaded.is_set():
+            return await interaction.response.send_message(
+                "The bot is still starting. Try again in a few seconds.", ephemeral=True)
 
-# ---------- Royale Flush: $bonus ----------
-class BonusView(discord.ui.View):
-    def __init__(self, user):
-        super().__init__(timeout=120)
-        self.user = user
-        self.message = None
-
-    @discord.ui.button(label="Bonus 25%", style=discord.ButtonStyle.success)
-    async def activate(self, interaction, button):
-        uid = self.user.id
-        st = bonus_state(uid)
+        st = bonus_state(member.id)
         now = time.time()
+        if st.get("until", 0) > now:
+            return await interaction.response.send_message(
+                f"Your bonus is already active until <t:{int(st['until'])}:R>.", ephemeral=True)
         if st.get("next", 0) > now:
             return await interaction.response.send_message(
-                f"Available again <t:{int(st['next'])}:R>.", ephemeral=True)
-        DB["bonus"][str(uid)] = {"until": now + BONUS_SECONDS, "next": now + BONUS_COOLDOWN}
+                f"You can use the bonus again <t:{int(st['next'])}:R>.", ephemeral=True)
+
+        DB.setdefault("bonus", {})[str(member.id)] = {"until": now + BONUS_SECONDS, "next": now + BONUS_COOLDOWN}
         save()
-        self.stop()
-        await interaction.response.edit_message(
-            embed=make_embed(self.user,
-                             f"**Bonus 25% is active**\n+25% on all your profits until <t:{int(now + BONUS_SECONDS)}:R>.",
-                             GREEN, "Bonus"),
-            view=None)
+        await interaction.response.send_message(
+            f"**Bonus 25% is active.**\n+25% on all your profits until <t:{int(now + BONUS_SECONDS)}:R>.",
+            ephemeral=True)
 
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("This isn't your bonus. Type `$bonus`.", ephemeral=True)
-            return False
-        return True
 
-    async def on_timeout(self):
-        for b in self.children:
-            b.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except Exception:
-                pass
+class BonusLayout(discord.ui.LayoutView):
+    def __init__(self):
+        super().__init__(timeout=None)
+        rid = ROLE.get("Royale Flush")
+        self.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(f"## Royale Flush Bonus\nExclusive to <@&{rid}> holders."),
+            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large),
+            discord.ui.Section(
+                "### +25% profit\nOn every win, for **10 minutes**.\n-# Once every 24 hours",
+                accessory=BonusButton()),
+            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay("-# Press the button to activate your bonus."),
+            accent_colour=discord.Colour(SHOP_COLOR)))
+
+
+@bot.listen("on_ready")
+async def perks_start():
+    global PERKS_REGISTERED
+    if not apex_loop.is_running():
+        apex_loop.start()
+    if not PERKS_REGISTERED:
+        bot.add_view(BonusLayout())       # keeps the Bonus button working 24/7, even after a restart
+        PERKS_REGISTERED = True
 
 
 @bot.command(name="bonus", usage="bonus")
 async def bonus(ctx):
-    uid = ctx.author.id
-    if not (has_role(uid, ROLE.get("Royale Flush")) or uid in OWNER_IDS):
-        return await reply(ctx, "This command is for **Royale Flush** holders.", RED)
-    st = bonus_state(uid)
-    now = time.time()
-    if st.get("until", 0) > now:
-        return await reply(ctx, f"Your bonus is active until <t:{int(st['until'])}:R>.", GREEN)
-    if st.get("next", 0) > now:
-        return await reply(ctx, f"Your next bonus is available <t:{int(st['next'])}:R>.", RED)
-    view = BonusView(ctx.author)
-    view.message = await ctx.reply(
-        embed=make_embed(ctx.author, "Activate **+25% profit** for **10 minutes**.\nUsable once every 24 hours.",
-                         GREEN, "Bonus"),
-        view=view, mention_author=False)
+    if ctx.author.id not in OWNER_IDS:
+        return await reply(ctx, "Use the pinned **Bonus** message.", RED)
+    await ctx.send(view=BonusLayout())
