@@ -5,6 +5,7 @@ Add 'game_holdem' to MODULES in main.py, right after 'game_poker'.
 """
 import asyncio
 import itertools
+import sys
 import random
 from collections import Counter
 
@@ -12,10 +13,8 @@ import discord
 from discord.ext import commands
 
 # ============================================================
-#  CARD LOOK  (fill CARD_EMOJI later, keys like "As", "Td", "2c")
+#  CONSTANTS
 # ============================================================
-CARD_EMOJI = {}
-CARD_BACK = "🂠"
 
 MAX_PLAYERS = 6
 MIN_BUYIN = MIN_BET          # from core
@@ -49,20 +48,31 @@ def _track(p):
     save()
 
 
+_BJ_RANK = {11: "J", 12: "Q", 13: "K", 14: "A"}
+_BJ_SUIT = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
+
+
 def cs(card):
+    """Card emoji. Uses the blackjack card emojis (read live, they are created after the bot starts)."""
     r, s = card
-    key = RANKS[r - 2] + s
-    if key in CARD_EMOJI:
-        return CARD_EMOJI[key]
-    label = "10" if r == 10 else RANKS[r - 2]
-    return f"`{label}{SYM[s]}`"
+    bj = sys.modules.get("game_blackjack")
+    if bj:
+        e = bj.CARD_EMOJI.get((_BJ_RANK.get(r, str(r)), _BJ_SUIT[s]))
+        if e:
+            return e
+    return f"`{'10' if r == 10 else RANKS[r - 2]}{SYM[s]}`"
+
+
+def card_back():
+    bj = sys.modules.get("game_blackjack")
+    return (bj.CARD_BACK if bj and bj.CARD_BACK else None) or "🂠"
 
 
 def cards_str(cards, total=None):
     out = [cs(c) for c in cards]
     if total:
-        out += [CARD_BACK] * (total - len(cards))
-    return " ".join(out) if out else "—"
+        out += [card_back()] * (total - len(cards))
+    return ", ".join(out) if out else "—"
 
 
 # ============================================================
