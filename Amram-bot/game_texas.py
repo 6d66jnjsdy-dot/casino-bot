@@ -294,6 +294,7 @@ class Table:
         self.current_bet = max(p.bet for p in self.players)
         self.min_raise = self.bb
         self.log = f"Blinds posted: {self.sb_p.name} {self.sb:,} · {self.bb_p.name} {self.bb:,}"
+        self.cur = first
         self.message = await self.channel.send(embed=self.table_embed(), view=None)
         await self._proceed(first)
 
