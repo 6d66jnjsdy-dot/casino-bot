@@ -5,7 +5,8 @@ from discord.ext import commands, tasks
 from aiohttp import web
 from core import *
 # ================= CHEST =================
-CHEST = "🪎"                 # if this emoji does not show on your server, use "🧰" instead
+CHEST = "🪎"                 # the chest emoji on the buttons
+CHEST_FALLBACK = "🧰"        # used automatically if Discord rejects the emoji above (it is a very new emoji)
 CHEST_DEAD = "⚰️"
 CHEST_MULTS = [2.5, 1.3, 0, 0, 0]        # one chest x2.5, one x1.3, the other three are dead
 CHEST_LUCKY_MULT = 10                    # the lucky chest that replaces the x2.5 one
@@ -107,13 +108,20 @@ class ChestView(discord.ui.View):
 
 @bot.command(name="chest", aliases=["chests"], usage="chest <amount | half | all>")
 async def chest(ctx, amount: str = None):
+    global CHEST
     bet = await take_bet(ctx, amount, "chest <amount | half | all>", track=True)
     if not bet:
         return
     BUSY.add(ctx.author.id)
     view = ChestView(ctx.author, bet, str(ctx.message.id))
     try:
-        msg = await ctx.send(embed=view.render(), view=view)
+        try:
+            msg = await ctx.send(embed=view.render(), view=view)
+        except discord.HTTPException as ex:
+            print("Chest send failed, retrying with the fallback emoji:", repr(ex))
+            CHEST = CHEST_FALLBACK
+            view = ChestView(ctx.author, bet, str(ctx.message.id))
+            msg = await ctx.send(embed=view.render(), view=view)
     except Exception:
         cancel_game(ctx.author, view.token, bet)
         BUSY.discard(ctx.author.id)
