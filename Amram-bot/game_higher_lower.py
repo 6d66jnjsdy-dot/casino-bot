@@ -10,7 +10,7 @@ HL_RTP = 0.95
 HL_FLOOR = 1.05
 HL_CAP = 25
 HL_SAME = 8
-HL_COLOR = 0099FF
+HL_COLOR = 0x5DADE2
 
 HL_FIXED = {
     (9, "higher"): 4, (9, "lower"): 1.2,
