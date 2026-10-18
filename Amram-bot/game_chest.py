@@ -6,12 +6,12 @@ from aiohttp import web
 from core import *
 # ================= CHEST =================
 CHEST = "🪎"                 # the chest emoji on the buttons
-CHEST_FALLBACK = "🧰"        # used automatically if Discord rejects the emoji above (it is a very new emoji)
+CHEST_FALLBACK = "🪎"        # used automatically if Discord rejects the emoji above (it is a very new emoji)
 CHEST_DEAD = "⚰️"
 CHEST_MULTS = [2.5, 1.3, 0, 0, 0]        # one chest x2.5, one x1.3, the other three are dead
 CHEST_LUCKY_MULT = 10                    # the lucky chest that replaces the x2.5 one
 CHEST_LUCKY_ODDS = 20                    # 1 game out of 20 the x2.5 chest becomes the lucky x10 chest
-CHEST_ICONS = {2.5: "💰", 1.3: "🪙", 10: "🍀"}
+CHEST_ICONS = {2.5: "💰", 1.3: "💰", 10: "💰"}   # every winning chest shows only 💰, the dead ones show ⚰️
 CHEST_SPY_KEY = {0: "bomb", 1.3: "coin", 2.5: "bag", 10: "urn"}   # only used by the owner's $predict
 
 def chest_layout():
