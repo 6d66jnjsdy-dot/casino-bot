@@ -20,6 +20,8 @@ MAX_PLAYERS = 6
 MIN_BUYIN = MIN_BET          # from core
 TURN_SECONDS = 45
 NEXT_HAND_DELAY = 8
+HDR_BOARD = "## "           # board cards are shown big ("# " = huge, "" = normal size)
+HDR_HAND = "# "             # your two cards in My Cards
 LOBBY_SECONDS = 600          # an open table that nobody starts closes after this
 COLOR = 0xB19CD9             # soft purple side bar (change this one line to recolor everything)
 
@@ -148,7 +150,7 @@ TABLES = {}  # channel id -> Table
 
 
 def closed_embed(text):
-    return discord.Embed(title="♠ Texas Hold'em", description=text, color=COLOR)
+    return discord.Embed(description=f"## ♠ Texas Hold'em ♥\n{text}", color=COLOR)
 
 
 class Player:
@@ -216,48 +218,57 @@ class Table:
     def lobby_embed(self, started=False):
         c = cur()
         n = len(self.players)
-        lines = [f"**Buy-in** {self.buyin:,} {c}  ·  **Blinds** {self.sb:,}/{self.bb:,}", ""]
+        lines = ["# ♠ Texas Hold'em ♥", f"-# {self.host.display_name} opened this table", "",
+                 f"> 💰 Buy-in  **{self.buyin:,}** {c}",
+                 f"> 🎯 Blinds  **{self.sb:,} / {self.bb:,}**", "",
+                 f"**Players**  `{n}/{MAX_PLAYERS}`"]
         for p in self.players:
-            lines.append(f"{'👑' if p.user.id == self.host.id else '▸'} {p.user.mention}")
+            lines.append(f"{'👑' if p.user.id == self.host.id else '🔹'} {p.user.mention}")
+        if n < MAX_PLAYERS:
+            free = MAX_PLAYERS - n
+            lines.append(f"▫️ *{free} open seat{'s' if free > 1 else ''}*")
         lines.append("")
         if started:
-            lines.append("**Game started. Good luck!**")
+            lines.append("**Game started — good luck!**")
         else:
-            wait = "waiting for players" if n < 2 else "host can press **Start**"
-            lines.append(f"{n}/{MAX_PLAYERS} seated  ·  {wait}  ·  closes <t:{self.expires}:R>")
-        return discord.Embed(title="♠ Texas Hold'em", description="\n".join(lines), color=COLOR)
+            status = "⏳ Waiting for players" if n < 2 else "✅ Ready — the host can press **Start**"
+            lines.append(f"{status}  ·  closes <t:{self.expires}:R>")
+        return discord.Embed(description="\n".join(lines), color=COLOR)
 
     def table_embed(self):
         c = cur()
         pot = sum(p.total for p in self.players)
-        lines = [f"**{self.street.capitalize()}**  ·  Pot **{pot:,}** {c}", cards_str(self.board, 5), ""]
+        rows = []
         for i, p in enumerate(self.players):
             active = self.in_hand and i == self.cur
+            tags = [t for t, hit in (("D", i == self.dealer % len(self.players)), ("SB", p is self.sb_p), ("BB", p is self.bb_p)) if hit]
             if p.left:
-                lines.append(f"~~{p.name}~~ — left")
-                continue
-            if p.folded:
-                lines.append(f"~~{p.name}~~ — folded")
-                continue
-            tags = []
-            if i == self.dealer % len(self.players):
-                tags.append("D")
-            if p is self.sb_p:
-                tags.append("SB")
-            if p is self.bb_p:
-                tags.append("BB")
-            bits = [f"{p.stack:,}"]
-            if p.allin:
-                bits.append("**all-in**")
-            elif p.bet:
-                bits.append(f"bet {p.bet:,}")
-            if active:
-                to_call = max(0, self.current_bet - p.bet)
-                bits.append(f"**{min(to_call, p.stack):,} to call**" if to_call else "**your move**")
-            name = p.user.mention if active else f"**{p.name}**"
-            lines.append(f"{'▶' if active else '▸'} {name} — {' · '.join(bits)}" + (f"  `{'/'.join(tags)}`" if tags else ""))
+                status = "left"
+            elif p.folded:
+                status = "folded"
+            elif p.allin:
+                status = "ALL-IN"
+            else:
+                status = f"bet {p.bet:,}" if p.bet else ""
+                if active:
+                    to_call = max(0, self.current_bet - p.bet)
+                    status = f"{min(to_call, p.stack):,} to call" if to_call else "your move"
+            if tags:
+                status = (status + " · " if status else "") + "/".join(tags)
+            name = p.name.replace("`", "'")
+            rows.append(("▶" if active else "✕" if (p.folded or p.left) else "▸", name if len(name) <= 10 else name[:9] + "…", f"{p.stack:,}", status))
+        nw = max(len(r[1]) for r in rows)
+        sw = max(len(r[2]) for r in rows)
+        board = "\n".join(f" {m} {n:<{nw}}  {st:>{sw}}  {status}".rstrip() for m, n, st, status in rows)
+        lines = [f"{HDR_BOARD}{cards_str(self.board, 5)}",
+                 f"**{self.street.capitalize()}**  ·  💰 Pot **{pot:,}** {c}",
+                 f"```\n{board}\n```"]
+        if self.in_hand:
+            act = self.players[self.cur]
+            to_call = max(0, self.current_bet - act.bet)
+            lines.append(f"🎯 {act.user.mention} — " + (f"**{min(to_call, act.stack):,}** to call" if to_call else "**check** or bet"))
         if self.log:
-            lines += ["", f"*{self.log}*"]
+            lines.append(f"-# {self.log}")
         e = discord.Embed(color=COLOR, description="\n".join(lines))
         e.set_footer(text=f"Hand #{self.hand_no}  ·  Blinds {self.sb:,}/{self.bb:,}  ·  {TURN_SECONDS}s per turn")
         return e
@@ -521,15 +532,16 @@ class Table:
         if self.timer:
             self.timer.cancel()
             self.timer = None
-        if self.board:
-            lines = [f"**Board**  {cards_str(self.board, 5)}", ""] + lines
+        head = [f"{HDR_BOARD}{cards_str(self.board, 5)}"] if self.board else []
+        head.append(f"### 🏁 Hand #{self.hand_no}")
+        lines = head + lines
         if reveal:
             lines.append("")
             for p in self.players:
                 if not p.folded:
-                    lines.append(f"{'🏆' if id(p) in winset else '▸'} **{p.name}**  {cards_str(p.hole)}  —  {labels.get(id(p), '')}")
+                    lines.append(f"{'🏆' if id(p) in winset else '▸'} **{p.name}**   {cards_str(p.hole)}   *{labels.get(id(p), '')}*")
         e = discord.Embed(color=COLOR, description="\n".join(lines))
-        e.set_footer(text=f"Hand #{self.hand_no}  ·  next hand in a few seconds")
+        e.set_footer(text="Next hand starts in a few seconds")
         await self.post(e, None)
         notes = []
         for p in self.players:
@@ -638,10 +650,10 @@ class TableView(discord.ui.View):
         if not t.in_hand or p.folded:
             return await inter.response.send_message("You're not in this hand.", ephemeral=True)
         cards = p.hole + list(t.board)
-        lines = ["**Your hand**", cards_str(p.hole), ""]
+        lines = [f"{HDR_HAND}{cards_str(p.hole)}", "-# Your hand"]
         if t.board:
-            lines += ["**Board**", cards_str(t.board, 5), ""]
-        lines.append(f"**{hand_name(best_score(cards))}**" if len(cards) >= 5 else "*Waiting for the flop*")
+            lines += ["", f"{HDR_BOARD}{cards_str(t.board, 5)}", "-# Board"]
+        lines += ["", f"### {hand_name(best_score(cards))}" if len(cards) >= 5 else "*Waiting for the flop…*"]
         e = discord.Embed(color=COLOR, description="\n".join(lines))
         e.set_footer(text="Only you can see this message.")
         await inter.response.send_message(embed=e, ephemeral=True)
