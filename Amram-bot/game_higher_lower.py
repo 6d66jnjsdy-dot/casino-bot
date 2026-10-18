@@ -82,15 +82,15 @@ class HigherLower(OwnedView):
             f"**Balance:** `{fmt(cash)} {cur()}`"))
         await interaction.response.edit_message(embed=e, view=None)
 
-    @discord.ui.button(label="Higher", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Higher", style=discord.ButtonStyle.danger)
     async def higher(self, interaction, button):
         await self.guess(interaction, "higher")
 
-    @discord.ui.button(label="Same", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Same", style=discord.ButtonStyle.danger)
     async def same(self, interaction, button):
         await self.guess(interaction, "same")
 
-    @discord.ui.button(label="Lower", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Lower", style=discord.ButtonStyle.danger)
     async def lower(self, interaction, button):
         await self.guess(interaction, "lower")
 
