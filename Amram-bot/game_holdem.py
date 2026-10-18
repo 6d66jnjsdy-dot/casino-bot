@@ -37,7 +37,7 @@ PLUR = {2: "Twos", 3: "Threes", 4: "Fours", 5: "Fives", 6: "Sixes", 7: "Sevens",
 
 GAME_NAMES["holdem"] = "Texas Hold'em"      # nice name in the game log
 
-REFUND_TEXT = "**Everyone left the table.**\nEveryone got their money back to cash."
+REFUND_TEXT = "**Everyone got their money back to cash.**"
 
 
 # ---------- economy (uses core: user_data / save / pending) ----------
@@ -155,7 +155,7 @@ TABLES = {}  # channel id -> Table
 
 
 def closed_embed(text, color=COLOR):
-    return discord.Embed(description=f"## ♠ Texas Hold'em\n{text}", color=color)
+    return discord.Embed(description=f"## ♠ Texas Hold'em\n-# poker\n\n{text}", color=color)
 
 
 def refund_embed(text=REFUND_TEXT):
@@ -174,6 +174,29 @@ async def _view_error(inter, error):
             await inter.response.send_message(msg, ephemeral=True)
     except Exception:
         pass
+
+
+async def _say(inter, text):
+    """Ephemeral reply that works whether or not the interaction was already acknowledged."""
+    if inter.response.is_done():
+        await inter.followup.send(text, ephemeral=True)
+    else:
+        await inter.response.send_message(text, ephemeral=True)
+
+
+def _busy(uid, on):
+    """Uses the bot's own BUSY set, so a seated player cannot start other games (same limit as every other game)."""
+    try:
+        (BUSY.add if on else BUSY.discard)(uid)
+    except NameError:
+        pass
+
+
+def _is_busy(uid):
+    try:
+        return uid in BUSY
+    except NameError:
+        return False
 
 
 class Player:
@@ -250,7 +273,7 @@ class Table:
     def lobby_embed(self, started=False):
         n = len(self.players)
         c = cur()
-        lines = ["## ♠ Texas Hold'em",
+        lines = ["## ♠ Texas Hold'em", "-# poker",
                  f"**Buy-in** {self.buyin:,} {c}  ·  **Blinds** {self.sb:,}/{self.bb:,} {c}",
                  f"-# Blinds go up every {LEVEL_HANDS} hands", ""]
         for p in self.players:
@@ -261,7 +284,9 @@ class Table:
         else:
             status = "waiting for players" if n < 2 else "ready, the host can press **Start**"
             lines.append(f"{n}/{MAX_PLAYERS} seated  ·  {status}  ·  closes <t:{self.expires}:R>")
-        return discord.Embed(description="\n".join(lines), color=COLOR)
+        e = discord.Embed(description="\n".join(lines), color=COLOR)
+        e.set_footer(text="holdem v3")
+        return e
 
     def table_embed(self):
         c = cur()
@@ -327,12 +352,14 @@ class Table:
         pending_done(p.token)
         if p.stack > 0:
             await cash_add(p.user.id, p.stack)
+        _busy(p.user.id, False)             # free again: can play other games
         if log:
             log_game(p.user, "holdem", p.buyin, p.stack - p.buyin)
 
     def seat(self, user):
         p = Player(user, self.buyin, f"holdem:{self.channel.id}:{user.id}")
         self.players.append(p)
+        _busy(user.id, True)                # seated = in an active game
         _track(p)
         return p
 
@@ -492,25 +519,27 @@ class Table:
         return None
 
     async def handle(self, inter, kind, amount=None):
+        if not inter.response.is_done():
+            await inter.response.defer()        # answer Discord first, so the click never times out waiting for the lock
         async with self.lock:
             p = self.player_of(inter.user.id)
             if not p:
-                return await inter.response.send_message(self.nope(inter.user.id), ephemeral=True)
+                return await _say(inter, self.nope(inter.user.id))
             if not self.in_hand or self.players[self.cur] is not p:
-                return await inter.response.send_message("It's not your turn.", ephemeral=True)
+                return await _say(inter, "It's not your turn.")
             err = self._do(p, kind, amount)
             if err:
-                return await inter.response.send_message(err, ephemeral=True)
-            await inter.response.defer()
+                return await _say(inter, err)
             await self._proceed((self.cur + 1) % len(self.players))
 
     async def leave_now(self, inter, p):
-        """Leave button: fold right away and send the chips back to cash (all-in players wait for the hand to end)."""
+        """Leave: fold right away and send the chips back to cash (all-in players wait for the hand to end).
+        The interaction must already be deferred (thinking) before this is called."""
         if p.left:
-            return await inter.response.send_message("You already left this table.", ephemeral=True)
+            return await _say(inter, "You already left this table.")
         if self.in_hand and p.allin and not p.folded:
             p.leaving = True
-            return await inter.response.send_message("You're all-in, so your chips go back to your cash when this hand ends.", ephemeral=True)
+            return await _say(inter, "You're all-in, so your chips go back to your cash when this hand ends.")
         was_turn = self.in_hand and self.players[self.cur] is p
         back = p.stack
         p.leaving = p.left = True
@@ -519,7 +548,7 @@ class Table:
             self.log = f"{p.name} left the table."
         await self.cashout(p)           # chips that are not in the pot go straight back to cash
         p.stack = 0
-        await inter.response.send_message(f"You left the table. **{back:,}** {cur()} went back to your cash.", ephemeral=True)
+        await _say(inter, f"You left the table. **{back:,}** {cur()} went back to your cash.")
         if self.in_hand:
             if not any(not q.left for q in self.players):
                 return await self._everyone_left()
@@ -679,6 +708,10 @@ class TableView(discord.ui.View):
     async def on_error(self, inter, error, item):
         await _view_error(inter, error)
 
+    async def interaction_check(self, inter):
+        print(f"[holdem] table click by {inter.user} ({inter.data.get('custom_id', '?')[:8]})")
+        return True
+
     def _add(self, label, style, row, fn):
         btn = discord.ui.Button(label=label, style=style, row=row)
 
@@ -716,10 +749,11 @@ class TableView(discord.ui.View):
 
     async def _leave(self, inter):
         t = self.t
+        await inter.response.defer(ephemeral=True, thinking=True)     # answer Discord first
         async with t.lock:
             p = t.player_of(inter.user.id)
             if not p:
-                return await inter.response.send_message(t.nope(inter.user.id), ephemeral=True)
+                return await _say(inter, t.nope(inter.user.id))
             await t.leave_now(inter, p)
 
 
@@ -731,64 +765,77 @@ class LobbyView(discord.ui.View):
     async def on_error(self, inter, error, item):
         await _view_error(inter, error)
 
-    async def _refresh(self):
+    async def interaction_check(self, inter):
+        print(f"[holdem] lobby click by {inter.user} ({inter.data.get('custom_id', '?')[:8]})")
+        return True
+
+    # NOTE: these two used to be called _refresh / _start, which clash with internal discord.py View methods
+    async def _redraw(self):
         await self.t.message.edit(embed=self.t.lobby_embed(), view=self)
 
     @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
     async def join_btn(self, inter, button):
         t = self.t
+        await inter.response.defer(ephemeral=True, thinking=True)     # answer Discord first
         async with t.lock:
             if t.state != "lobby":
-                return await inter.response.send_message("This game already started.", ephemeral=True)
+                return await _say(inter, "This game already started.")
+            if inter.user.id == t.host.id:
+                return await _say(inter, "You are the leader.")
             if t.player_of(inter.user.id):
-                return await inter.response.send_message("You already joined.", ephemeral=True)
+                return await _say(inter, "You already joined.")
             if len(t.players) >= MAX_PLAYERS:
-                return await inter.response.send_message("The table is full.", ephemeral=True)
+                return await _say(inter, "The table is full.")
+            if _is_busy(inter.user.id):
+                return await _say(inter, "You're already in an active game. Finish it first.")
             if await cash_get(inter.user.id) < t.buyin:
-                return await inter.response.send_message(f"You need {t.buyin:,} in cash to join.", ephemeral=True)
+                return await _say(inter, f"You need {t.buyin:,} in cash to join.")
             await cash_add(inter.user.id, -t.buyin)
             t.seat(inter.user)
             left = user_data(inter.user.id)["cash"]
-            await inter.response.send_message(
-                f"✅ You're in. **{t.buyin:,}** {cur()} was taken from your cash and is now your stack. Cash left: **{left:,}** {cur()}.",
-                ephemeral=True)
-            await self._refresh()
+            await _say(inter, f"✅ You're in. **{t.buyin:,}** {cur()} was taken from your cash and is now your stack. Cash left: **{left:,}** {cur()}.")
+            await self._redraw()
             if len(t.players) == MAX_PLAYERS:
-                await self._start()
+                await self._begin()
 
     @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
     async def leave_btn(self, inter, button):
         t = self.t
+        await inter.response.defer(ephemeral=True, thinking=True)     # answer Discord first
         async with t.lock:
             p = t.player_of(inter.user.id)
             if t.state != "lobby" or not p:
-                return await inter.response.send_message("You're not in the lobby.", ephemeral=True)
-            if inter.user.id == t.host.id or len(t.players) == 1:
-                # the host left: the table closes for everybody and every buy-in goes back to cash
-                for q in list(t.players):
-                    await t.cashout(q, log=False)
-                t.players.clear()
+                return await _say(inter, "You're not in the lobby.")
+            back = p.stack
+            await t.cashout(p, log=False)           # the buy-in goes straight back to cash
+            t.players.remove(p)
+            if not t.players:
+                # the last player left: close the table (gold message: everybody got their money back)
                 t.state, t.closed = "closed", True
                 TABLES.pop(t.channel.id, None)
                 self.stop()
-                return await inter.response.edit_message(embed=refund_embed(), view=None)
-            await t.cashout(p, log=False)           # the buy-in goes straight back to cash
-            t.players.remove(p)
-            await inter.response.send_message(f"You left the table. **{t.buyin:,}** {cur()} went back to your cash.", ephemeral=True)
-            await self._refresh()
+                try:
+                    await t.message.edit(embed=refund_embed(), view=None)
+                except discord.HTTPException:
+                    pass
+            else:
+                if p.user.id == t.host.id:          # the leader left: the next player becomes the leader
+                    t.host = t.players[0].user
+                await self._redraw()
+            await _say(inter, f"You left the table. **{back:,}** {cur()} went back to your cash.")
 
     @discord.ui.button(label="Start", style=discord.ButtonStyle.primary)
     async def start_btn(self, inter, button):
         t = self.t
+        await inter.response.defer()                # silent: the message stays exactly as it is
         async with t.lock:
             if inter.user.id != t.host.id:
-                return await inter.response.send_message("Only the host can start the game.", ephemeral=True)
+                return await _say(inter, "Only the leader can start the game.")
             if t.state != "lobby" or len(t.players) < 2:
-                return await inter.response.send_message("You need at least 2 players.", ephemeral=True)
-            await inter.response.defer()
-            await self._start()
+                return                              # not enough players: leave the message as it is
+            await self._begin()
 
-    async def _start(self):
+    async def _begin(self):
         t = self.t
         t.state = "playing"
         self.stop()
@@ -830,6 +877,8 @@ async def _holdem(ctx, buyin):
         return await ctx.send(f"Usage: `{ctx.prefix}texas <amount>` - everyone at the table pays the same amount (minimum {fmt(MIN_BUYIN)})")
     if ctx.channel.id in TABLES:
         return await ctx.send("A Hold'em table is already open in this channel.")
+    if _is_busy(ctx.author.id):
+        return await ctx.send("You're already in an active game. Finish it first.")
     if await cash_get(ctx.author.id) < amount:
         return await ctx.send(f"You need {fmt(amount)} {cur()} in cash to open this table.")
     await cash_add(ctx.author.id, -amount)
@@ -844,4 +893,4 @@ async def _holdem(ctx, buyin):
         raise
 
 
-print("game_holdem loaded: command $texas registered")
+print(f"game_holdem v3 loaded (discord.py {discord.__version__}): command $texas registered")
