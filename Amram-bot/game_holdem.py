@@ -7,6 +7,7 @@ import asyncio
 import itertools
 import random
 import sys
+import time
 import traceback
 from collections import Counter
 
@@ -19,6 +20,7 @@ MAX_PLAYERS = 6
 MIN_BUYIN = MIN_BET          # from core
 TURN_SECONDS = 45
 NEXT_HAND_DELAY = 8
+LOBBY_SECONDS = 600          # an open table that nobody starts closes after this
 COLOR = 0xB19CD9             # soft purple side bar (change this one line to recolor everything)
 GOLD = COLOR
 
@@ -191,6 +193,7 @@ class Table:
         self.timer = None
         self.turn_id = 0
         self.sb_p = self.bb_p = None
+        self.expires = int(time.time()) + LOBBY_SECONDS
 
     def player_of(self, uid):
         return next((p for p in self.players if p.user.id == uid and not p.left), None)
@@ -207,21 +210,36 @@ class Table:
         return bool(others) and p.bet + p.stack > self.current_bet
 
     # ---------------- embeds ----------------
-    def lobby_embed(self):
+    def lobby_embed(self, started=False):
         c = cur()
-        e = discord.Embed(title="♠ Texas Hold'em ♥", color=COLOR)
-        e.description = (f"**Buy-in:** {self.buyin:,} {c}\n"
-                         f"**Blinds:** {self.sb:,} / {self.bb:,}\n\n"
-                         "Press **Join** to take a seat. The host presses **Start** when everyone is in.")
+        n = len(self.players)
+        icon = getattr(getattr(self.host, "display_avatar", None), "url", None)
+        e = discord.Embed(title="♠  TEXAS HOLD'EM  ♥", color=COLOR)
+        e.set_author(name=f"{self.host.display_name}'s table", icon_url=icon)
+        if started:
+            e.description = "**The game has started. Good luck!**\nEveryone sat down with the same stack."
+        else:
+            e.description = ("**A new table is open.**\n"
+                             "Take a seat and play with the same stack as everyone else.\n\n"
+                             f"⏳ Closes <t:{self.expires}:R>")
+        e.add_field(name="💰 Buy-in", value=f"**{self.buyin:,}** {c}", inline=True)
+        e.add_field(name="🎯 Blinds", value=f"**{self.sb:,}** / **{self.bb:,}**", inline=True)
+        e.add_field(name="🏆 Prize pool", value=f"**{self.buyin * n:,}** {c}", inline=True)
         seats = []
         for i in range(MAX_PLAYERS):
-            if i < len(self.players):
+            if i < n:
                 p = self.players[i]
-                seats.append(f"`{i + 1}` {'👑 ' if p.user.id == self.host.id else ''}**{p.name}**")
+                seats.append(f"`{i + 1}`  {'👑 ' if p.user.id == self.host.id else ''}{p.user.mention}" + ("  ·  host" if p.user.id == self.host.id else ""))
             else:
-                seats.append(f"`{i + 1}` *open seat*")
-        e.add_field(name=f"Players ({len(self.players)}/{MAX_PLAYERS})", value="\n".join(seats), inline=False)
-        e.set_footer(text="Buy-in comes from your cash. Your chips go back to your cash when you leave or win.")
+                seats.append(f"`{i + 1}`  ▫️ *open seat*")
+        e.add_field(name=f"Seats  ·  {n} / {MAX_PLAYERS}", value="\n".join(seats), inline=False)
+        if not started:
+            if n < 2:
+                status = "⏳ Waiting for at least one more player…"
+            else:
+                status = "✅ Ready — the host can press **Start**."
+            e.add_field(name="\u200b", value=status, inline=False)
+        e.set_footer(text="Your buy-in goes back to your cash if you leave or the table closes.")
         return e
 
     def table_embed(self):
@@ -660,7 +678,7 @@ class TableView(discord.ui.View):
 
 class LobbyView(discord.ui.View):
     def __init__(self, table):
-        super().__init__(timeout=600)
+        super().__init__(timeout=LOBBY_SECONDS)
         self.t = table
 
     async def _refresh(self):
@@ -680,7 +698,10 @@ class LobbyView(discord.ui.View):
                 return await inter.response.send_message(f"You need {t.buyin:,} in cash to join.", ephemeral=True)
             await cash_add(inter.user.id, -t.buyin)
             t.seat(inter.user)
-            await inter.response.defer()
+            left = user_data(inter.user.id)["cash"]
+            await inter.response.send_message(
+                f"✅ You're in. **{t.buyin:,}** {cur()} was taken from your cash and is now your stack. Cash left: **{left:,}** {cur()}.",
+                ephemeral=True)
             await self._refresh()
             if len(t.players) == MAX_PLAYERS:
                 await self._start()
@@ -721,9 +742,7 @@ class LobbyView(discord.ui.View):
         t = self.t
         t.state = "playing"
         self.stop()
-        e = t.lobby_embed()
-        e.title = "♠ Texas Hold'em — game started ♥"
-        await t.message.edit(embed=e, view=None)
+        await t.message.edit(embed=t.lobby_embed(started=True), view=None)
         t.message = None            # hands are posted as new messages
         await t.start_hand()
 
