@@ -79,7 +79,7 @@ class HigherLower(OwnedView):
             f"**Your Choice:** `{choice}`\n\n"
             f"1️⃣: `{self.first}`\n"
             f"2️⃣: `{second}`\n\n"
-            f"**Balance:** `{fmt(cash)} {cur()}`"))
+            f"**Balance:** `{fmt(cash)}` {cur()}"))
         await interaction.response.edit_message(embed=e, view=None)
 
     @discord.ui.button(label="Higher", style=discord.ButtonStyle.danger)
