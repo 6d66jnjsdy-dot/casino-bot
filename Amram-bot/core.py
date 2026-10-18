@@ -28,7 +28,6 @@ ALLOWED_CHANNELS = {
     1555486192559202334,
     1554657850067001405,
     1554652227963060364,
-    1554657850067001405,
     1554651913994117170,
     1554651968478122135,
 }
@@ -48,17 +47,17 @@ MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (ne
 URN_CHANCE = (3, 10)
 # $mines: 12 tiles, 2 bombs, 10 diamonds -> ONE multiplier per diamond found (10 slots, fill in your own).
 # 1 = no profit yet for that click. The 1st number is for the 1st diamond, the 10th for the last one.
-MINES_MULT = [ 1.1, 1.3, 1.7 1.95, 2.3, 2.6, 4.6, 6.8, 8.9, 13,
-    1.1,  # 1st diamond
-    1.3,  # 2nd
-    1.7,  # 3rd
-    1.95  # 4th
-    2.3,  # 5th
-    2.6,  # 6th
-    4.6,  # 7th
-    6.8,  # 8th
-    8.9,  # 9th
-    13,   # 10th (all diamonds)
+MINES_MULT = [
+    1.1,   # 1st diamond
+    1.3,   # 2nd
+    1.7,   # 3rd
+    1.95,  # 4th
+    2.3,   # 5th
+    2.6,   # 6th
+    4.6,   # 7th
+    6.8,   # 8th
+    8.9,   # 9th
+    13,    # 10th (all diamonds)
 ]
 # S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
