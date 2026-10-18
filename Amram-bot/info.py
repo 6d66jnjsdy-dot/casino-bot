@@ -27,9 +27,9 @@ def info_embed(user, title, description, sections, footer=None):
 INFO_SECTIONS = [
     ("BOARD GAMES", [
         ("$gm <bet>", "Find treasure, avoid bombs, cash out any time"),
-        ("$mines <bet>", "One bomb, every diamond raises the profit"),
-        ("S$mines <bet>", "Mines with a choice of board size"),
-        ("$mt <bet>", "Money Tower, climb row by row"),
+        ("$mines <bet>", "2 bombs, every diamond raises the profit, cash out any time"),
+        ("S$mines <bet>", "Mines with a choice of board size (2x2, 4x4, 5x4)"),
+        ("$mt <bet>", "Money Tower, climb row by row, cash out any time (also $moneytower)"),
     ]),
     ("CARDS AND LUCK", [
         ("$bj <bet>", "Blackjack"),
