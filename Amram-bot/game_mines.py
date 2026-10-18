@@ -17,8 +17,8 @@ def gm_board():
     random.shuffle(tiles)
     return tiles
 
-MINES_BOMBS, MINES_SAFE = 2, 10          # $mines board: 12 tiles (3 columns x 4 rows)
-MINES_COLOR = 0xF4A6A6                  # soft white-red side bar of the $mines embed (change this one line to recolor)
+MINES_BOMBS, MINES_SAFE = 2, 10          # $mines board: 12 tiles (4 columns x 3 rows)
+MINES_COLOR = 0xF4A6A6                  # soft white-red side bar of the $mines box (change this one line to recolor)
 BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=MINES_BOMBS, diamond=MINES_SAFE)}
 for _k, (_w, _h, _m, _) in SMINES.items():
     BUILDERS[f"s{_k}"] = lambda m=_m, n=_w * _h: shuffled(bomb=m, diamond=n - m)
@@ -97,16 +97,6 @@ class BoardView(OwnedView):
     def after(self, kind):
         pass
 
-    def play_embed(self):
-        return None             # games that want an embed while playing override this
-
-    def play_kw(self):
-        kw = dict(content=self.header, view=self)
-        e = self.play_embed()
-        if e is not None:       # (embed=None would delete an embed, so only pass it when there is one)
-            kw["embed"] = e
-        return kw
-
     def luck_pool(self, idx):
         return [i for i in range(len(self.board)) if i not in self.revealed and i != idx]
 
@@ -159,7 +149,7 @@ class BoardView(OwnedView):
                 async with self.edit_lock:
                     if self.done:
                         break
-                    await self.edit_ui(interaction, **self.play_kw())
+                    await self.edit_ui(interaction, content=self.header, view=self)
         finally:
             self.flushing = False
 
@@ -184,7 +174,7 @@ class BoardView(OwnedView):
 
     def embed(self, lost):
         got = self.bet + int(self.profit)
-        line = f"-You lost {fmt(self.bet)} {cur()}" if lost else f"+You won and got {fmt(got)} {cur()}"
+        line = f"-You lost {fmt(self.bet)}" if lost else f"+You won and got {fmt(got)}"
         found = sum(1 for i in self.revealed if self.board[i] != "bomb")
         cash = user_data(self.user.id)["cash"]
         return make_embed(self.user, f"```\n{line}\n```\nYou found {found} {EMOJI['diamond']}\nYou now have: {fmt(cash)} {cur()}",
@@ -251,28 +241,165 @@ class GoldMines(BoardView):
             self.marked.add(i)
             self.tiles[i].emoji, self.tiles[i].style = "✅", discord.ButtonStyle.success
 
-class Mines(BoardView):
-    cols = 3
-    header = None               # no text above the embed
-    reveal_on_cashout = False
+class Mines(discord.ui.LayoutView):
+    """$mines: one box with the coloured side bar. The player's profile is on top, the 12 tiles are inside the box."""
+    cols = 4                    # 4 columns x 3 rows = 12 tiles
     game_name = "mines"
     multi_key = "mines"
 
-    def make_board(self):
-        return take(self.user.id, "mines")
+    def __init__(self, user, bet, token=None):
+        super().__init__(timeout=120)
+        self.user, self.bet, self.token = user, bet, token
+        self.board = take(user.id, "mines")
+        self.revealed, self.profit = set(), 0
+        self.done = False
+        self.dirty = self.flushing = False
+        self.edit_lock = asyncio.Lock()
+        self.message = None
+        self.tiles = [self._make_tile(i) for i in range(len(self.board))]
+        self.cash_btn = discord.ui.Button(style=discord.ButtonStyle.success, label="Cashout")
+        self.cash_btn.callback = self.cashout
+        self.profit_btn = discord.ui.Button(style=discord.ButtonStyle.primary, disabled=True, label="Profit: 0", emoji=cur())
+        rows = [discord.ui.ActionRow(*self.tiles[i:i + self.cols]) for i in range(0, len(self.tiles), self.cols)]
+        rows.append(discord.ui.ActionRow(self.cash_btn, self.profit_btn))
+        self.add_item(discord.ui.Container(self._head(), *rows, accent_colour=MINES_COLOR))
+        spy(self)
 
-    def earn(self, kind):
-        # one multiplier per safe tile (MINES_MULT in core.py has MINES_SAFE slots)
+    def _head(self):
+        # the player's profile (name + picture) at the top of the box
+        return discord.ui.Section(discord.ui.TextDisplay(f"**{self.user.name}'s Game**"),
+                                  accessory=discord.ui.Thumbnail(self.user.display_avatar.url))
+
+    def _make_tile(self, idx):
+        b = discord.ui.Button(style=discord.ButtonStyle.secondary, label=EMPTY)
+
+        async def cb(interaction):
+            await self.click(interaction, idx)
+        b.callback = cb
+        return b
+
+    def play_kw(self):
+        return dict(view=self)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.user.id or may_play(interaction, self.user.id):
+            return True
+        await interaction.response.send_message("This is not your game!", ephemeral=True)
+        return False
+
+    def earn(self):
+        # one multiplier per diamond found (MINES_MULT in core.py)
         n = min(len(self.revealed), len(MINES_MULT))
         self.profit = self.bet * (MINES_MULT[n - 1] - 1) if n else 0
 
-    def play_embed(self):
+    def reveal(self, i):
+        kind, t = self.board[i], self.tiles[i]
+        self.revealed.add(i)
+        t.emoji, t.disabled = EMOJI[kind], True
+        if kind == "bomb":
+            t.style = discord.ButtonStyle.danger
+        else:
+            t.style = discord.ButtonStyle.success
+            self.earn()
+            self.profit_btn.label = f"Profit: {fmt(self.profit)}"
+
+    def luck_fix(self, idx):
+        if self.board[idx] != "bomb":
+            return
+        pool = [i for i in range(len(self.board)) if i not in self.revealed and i != idx]
+        for _ in range(luck_attempts(self.user.id) - 1):
+            if not pool:
+                return
+            j = random.choice(pool)
+            if self.board[j] != "bomb":
+                self.board[idx], self.board[j] = self.board[j], "bomb"
+                return
+
+    async def click(self, interaction, idx):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if self.done or idx in self.revealed:
+            return
+        self.luck_fix(idx)
+        kind = self.board[idx]
+        self.reveal(idx)
+        if kind == "bomb":
+            return await self.finish(interaction, True)
+        if sum(1 for i in self.revealed if self.board[i] != "bomb") >= MINES_SAFE:
+            return await self.finish(interaction, False)        # every diamond found: cash out automatically
+        await self.push(interaction)
+
+    async def edit_ui(self, interaction, **kw):
+        # fast clicking can make Discord reject an edit: retry (alternating interaction / message) until it goes through
+        for i in range(8):
+            try:
+                if i % 2 == 0 or not self.message:
+                    return await interaction.edit_original_response(**kw)
+                return await self.message.edit(**kw)
+            except discord.HTTPException:
+                await asyncio.sleep(0.3 * (i + 1))
+
+    async def push(self, interaction):
+        # clicks that arrive while an edit is running only mark the board as dirty, the loop then draws the LATEST board
+        self.dirty = True
+        if self.flushing:
+            return
+        self.flushing = True
+        try:
+            while self.dirty and not self.done:
+                self.dirty = False
+                async with self.edit_lock:
+                    if self.done:
+                        break
+                    await self.edit_ui(interaction, view=self)
+        finally:
+            self.flushing = False
+
+    async def cashout(self, interaction):
+        await self.finish(interaction, False)
+
+    def payout(self):
+        base = int(self.profit)
+        self.profit = base + multi_extra(self.multi_key, base)
+        user_data(self.user.id)["cash"] += self.bet + self.profit
+        save()
+
+    def show_result(self, lost):
+        got = self.bet + int(self.profit)
+        line = f"-You lost {fmt(self.bet)}" if lost else f"+You won and got {fmt(got)}"
         found = sum(1 for i in self.revealed if self.board[i] != "bomb")
-        return make_embed(self.user,
-                          f"**Bet:** `{fmt(self.bet)}` {cur()}\n"
-                          f"{EMOJI['bomb']} {MINES_BOMBS} bombs  ·  {EMOJI['diamond']} {MINES_SAFE} diamonds\n"
-                          f"**Found:** {found}/{MINES_SAFE}",
-                          MINES_COLOR, "Mines")
+        cash = user_data(self.user.id)["cash"]
+        body = discord.ui.TextDisplay(f"```\n{line}\n```\nYou found {found} {EMOJI['diamond']}\nYou now have: {fmt(cash)} {cur()}")
+        self.clear_items()
+        self.add_item(discord.ui.Container(self._head(), body, accent_colour=RED if lost else GREEN))
+
+    async def finish(self, interaction, lost):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if self.done:
+            return
+        self.done = True
+        pending_done(self.token)
+        if not lost:
+            self.payout()
+        else:
+            save()
+        log_game(self.user, self.game_name, self.bet, -self.bet if lost else int(self.profit))
+        self.show_result(lost)
+        async with self.edit_lock:
+            await self.edit_ui(interaction, view=self)
+        self.stop()
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        self.done = True
+        pending_done(self.token)
+        self.payout()
+        log_game(self.user, self.game_name, self.bet, int(self.profit))
+        self.show_result(False)
+        if self.message:
+            await self.message.edit(view=self)
 
 class SMines(BoardView):
     reveal_on_cashout = False
@@ -323,7 +450,7 @@ class MoneyTower(BoardView):
 
     def embed(self, lost):
         got = self.bet + int(self.profit)
-        line = f"-You lost {fmt(self.bet)} {cur()}" if lost else f"+You won and got {fmt(got)} {cur()}"
+        line = f"-You lost {fmt(self.bet)}" if lost else f"+You won and got {fmt(got)}"
         return make_embed(self.user, f"```\n{line}\n```\nYou climbed {self.climbed} rows.",
                           RED if lost else GREEN, None if lost else "💰 You cashed out!")
 
@@ -410,7 +537,8 @@ async def start_board(ctx, cls, amount, usage):
     if bet:
         view = cls(ctx.author, bet, str(ctx.message.id))
         try:
-            view.message = await ctx.reply(**view.play_kw(), mention_author=False)
+            kw = view.play_kw() if hasattr(view, "play_kw") else dict(content=view.header, view=view)
+            view.message = await ctx.reply(**kw, mention_author=False)
         except Exception:
             cancel_game(ctx.author, view.token, bet)
             raise
