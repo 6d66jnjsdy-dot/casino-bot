@@ -223,8 +223,11 @@ async def reply(ctx, desc, color):
 def result_embed(user, won, amt, extra=""):
     line = f"+ You Won {fmt(amt)}!" if won else f"- You Lost {fmt(amt)}!"
     cash = user_data(user.id)["cash"]
-    return make_embed(user, f"{extra}```diff\n{line}\n```\nYou now have {fmt(cash)} {cur()}.",
-                      GREEN if won else RED, "Result")
+    e = make_embed(user, f"{extra}```diff\n{line}\n```\nYou now have {fmt(cash)} {cur()}.",
+                   GREEN if won else RED, "Result")
+    if not won:
+        e.set_thumbnail(url=user.display_avatar.url)   # the user's picture, top right, on losses
+    return e
 
 async def take_bet(ctx, amount, usage, track=False):
     if ctx.author.id in BUSY:
