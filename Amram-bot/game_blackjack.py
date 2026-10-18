@@ -214,7 +214,7 @@ def back_text():
 
 BJ_PLAYING_COLOR = 0x9AD8F5   # side-bar color while the game is running: light blue (תכלת). Use 0xFFFFFF for white.
 CARD_HEADER = "## "   # "" = small inline cards. "## " = bigger (current), "# " = huge.
-BJ_WIDTH = 14         # invisible padding on the title line (makes the embed wider). Keep it short or the title wraps on phones.
+BJ_WIDTH = 24         # invisible padding on the first line = how wide the embed is. If the first line wraps on your phone, lower it.
 
 def cards_text(cards):
     return " ".join(card_text(c) for c in cards)
@@ -318,25 +318,28 @@ class BlackjackView(discord.ui.View):
         self.pay(returned, sum(h["bet"] for h in self.hands))
 
     def render(self):
-        """Big text-only embed: title, spacing, large cards.
+        """Short but wide: no title, no blank lines, the value sits on the label line.
+        The invisible padding on the first line makes the embed wider.
         Light blue side-bar while playing, green / red / yellow when the game ends."""
         c, color = cur(), discord.Color(BJ_PLAYING_COLOR)
-        lines = ["🃏 **Blackjack** 🃏" + "⠀" * BJ_WIDTH, ""]
+        pad, lines = "⠀" * BJ_WIDTH, []
         if self.done:
             color, head = ((GREEN, f"You Won! +{fmt(self.net)} {c}") if self.net > 0 else
                            (RED, f"You Lost! -{fmt(-self.net)} {c}") if self.net < 0 else
                            (YELLOW, f"Push! +0 {c}"))
-            lines += [f"### {head}", ""]
+            lines.append(f"**{head}**{pad}")
+            pad = ""
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
-            lines += [f"**Your Hand{f' {i + 1}' if multi else ''}**{mark}", CARD_HEADER + cards_text(h["cards"]),
-                      f"Value: **{hand_value(h['cards'])}**", ""]
+            lines += [f"**Your Hand{f' {i + 1}' if multi else ''}** · `{hand_value(h['cards'])}`{mark}{pad}",
+                      CARD_HEADER + cards_text(h["cards"])]
+            pad = ""
         if self.done:
             dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
         else:
             dealer_cards, dealer_val = f"{card_text(self.dealer[0])} {back_text()}", card_value(self.dealer[0][0])
-        lines += ["**Dealer**", CARD_HEADER + dealer_cards, f"Value: **{dealer_val}**"]
+        lines += [f"**Dealer** · `{dealer_val}`", CARD_HEADER + dealer_cards]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
         return e
