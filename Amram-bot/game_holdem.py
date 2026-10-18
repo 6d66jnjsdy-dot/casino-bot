@@ -1,6 +1,6 @@
 """game_holdem.py - Texas Hold'em, 2-6 players, clean embed design.
 
-Usage:  $holdem <buy-in>     (the first player sets the buy-in, everyone pays the same)
+Usage:  $texas <amount>     (amount is required; everyone at the table pays the same amount to sit down)
 Needs 'game_holdem' in MODULES in main.py, after 'game_blackjack' (card emojis come from there).
 """
 import asyncio
@@ -193,7 +193,18 @@ class Table:
         self.sb_p = self.bb_p = None
 
     def player_of(self, uid):
-        return next((p for p in self.players if p.user.id == uid), None)
+        return next((p for p in self.players if p.user.id == uid and not p.left), None)
+
+    def nope(self, uid):
+        """Text for someone who is not (or no longer) seated."""
+        if any(p.user.id == uid and p.left for p in self.players):
+            return "You left this table."
+        return "You're not seated at this table."
+
+    def can_raise(self, p):
+        """A raise is only possible if the player has chips beyond the current bet AND someone can still respond."""
+        others = [o for o in self.players if o is not p and not o.folded and not o.allin]
+        return bool(others) and p.bet + p.stack > self.current_bet
 
     # ---------------- embeds ----------------
     def lobby_embed(self):
@@ -239,7 +250,9 @@ class Table:
                 tags.append("`SB`")
             if p is self.bb_p:
                 tags.append("`BB`")
-            if p.folded:
+            if p.left:
+                status = "Left the table"
+            elif p.folded:
                 status = "Folded"
             elif p.allin:
                 status = "**ALL-IN**"
@@ -444,7 +457,7 @@ class Table:
         async with self.lock:
             p = self.player_of(inter.user.id)
             if not p:
-                return await inter.response.send_message("You're not seated at this table.", ephemeral=True)
+                return await inter.response.send_message(self.nope(inter.user.id), ephemeral=True)
             if not self.in_hand or self.players[self.cur] is not p:
                 return await inter.response.send_message("It's not your turn.", ephemeral=True)
             err = self._do(p, kind, amount)
@@ -579,40 +592,53 @@ class RaiseModal(discord.ui.Modal, title="Raise"):
 
 
 class TableView(discord.ui.View):
+    """Buttons follow the rules: Check only when nothing to call, Call only when there is a bet,
+    Bet/Raise and All-in only when a raise is possible. Fold, My Cards and Leave are always there."""
+
     def __init__(self, table):
         super().__init__(timeout=None)
         self.t = table
         p = table.players[table.cur]
         to_call = max(0, table.current_bet - p.bet)
-        self.call_btn.label = "Check" if to_call == 0 else f"Call {_short(min(to_call, p.stack))}"
+        can_raise = table.can_raise(p)
+        S = discord.ButtonStyle
+        if to_call == 0:
+            self._add("Check", S.success, 0, lambda i: table.handle(i, "call"))
+        else:
+            self._add(f"Call {_short(min(to_call, p.stack))}", S.success, 0, lambda i: table.handle(i, "call"))
+        if can_raise:
+            self._add("Bet" if table.current_bet == 0 else "Raise", S.primary, 0, self._raise)
+        self._add("Fold", S.danger, 0, lambda i: table.handle(i, "fold"))
+        if can_raise and p.stack > to_call:
+            self._add("All-in", S.secondary, 0, lambda i: table.handle(i, "allin"))
+        self._add("My Cards", S.secondary, 1, self._cards)
+        self._add("Leave", S.secondary, 1, self._leave)
 
-    @discord.ui.button(label="Check", style=discord.ButtonStyle.success, row=0)
-    async def call_btn(self, inter, button):
-        await self.t.handle(inter, "call")
+    def _add(self, label, style, row, fn):
+        btn = discord.ui.Button(label=label, style=style, row=row)
 
-    @discord.ui.button(label="Raise", style=discord.ButtonStyle.primary, row=0)
-    async def raise_btn(self, inter, button):
+        async def callback(inter):
+            await fn(inter)
+        btn.callback = callback
+        self.add_item(btn)
+
+    async def _raise(self, inter):
         t = self.t
         p = t.player_of(inter.user.id)
-        if not p or not t.in_hand or t.players[t.cur] is not p:
+        if not p:
+            return await inter.response.send_message(t.nope(inter.user.id), ephemeral=True)
+        if not t.in_hand or t.players[t.cur] is not p:
             return await inter.response.send_message("It's not your turn.", ephemeral=True)
-        if p.bet + p.stack <= t.current_bet:
-            return await inter.response.send_message("You can only call or fold.", ephemeral=True)
+        if not t.can_raise(p):
+            return await inter.response.send_message("You can't raise right now.", ephemeral=True)
         await inter.response.send_modal(RaiseModal(t, p))
 
-    @discord.ui.button(label="Fold", style=discord.ButtonStyle.danger, row=0)
-    async def fold_btn(self, inter, button):
-        await self.t.handle(inter, "fold")
-
-    @discord.ui.button(label="All-in", style=discord.ButtonStyle.secondary, row=0)
-    async def allin_btn(self, inter, button):
-        await self.t.handle(inter, "allin")
-
-    @discord.ui.button(label="My Cards", style=discord.ButtonStyle.secondary, row=1)
-    async def cards_btn(self, inter, button):
+    async def _cards(self, inter):
         t = self.t
         p = t.player_of(inter.user.id)
-        if not p or not t.in_hand or p.folded:
+        if not p:
+            return await inter.response.send_message(t.nope(inter.user.id), ephemeral=True)
+        if not t.in_hand or p.folded:
             return await inter.response.send_message("You're not in this hand.", ephemeral=True)
         cards = p.hole + list(t.board)
         lines = ["**Your hand**", cards_str(p.hole), ""]
@@ -623,13 +649,12 @@ class TableView(discord.ui.View):
         e.set_footer(text="Only you can see this message.")
         await inter.response.send_message(embed=e, ephemeral=True)
 
-    @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary, row=1)
-    async def leave_btn(self, inter, button):
+    async def _leave(self, inter):
         t = self.t
         async with t.lock:
             p = t.player_of(inter.user.id)
             if not p:
-                return await inter.response.send_message("You're not seated at this table.", ephemeral=True)
+                return await inter.response.send_message(t.nope(inter.user.id), ephemeral=True)
             await t.leave_now(inter, p)
 
 
@@ -720,8 +745,8 @@ class LobbyView(discord.ui.View):
 # ============================================================
 #  Command
 # ============================================================
-@bot.command(name="holdem", aliases=["texas"])
-async def holdem(ctx, buyin: str = None):
+@bot.command(name="texas", aliases=["holdem"])
+async def texas(ctx, buyin: str = None):
     try:
         await _holdem(ctx, buyin)
     except Exception as ex:      # show the real error in the channel instead of failing silently
@@ -732,7 +757,7 @@ async def holdem(ctx, buyin: str = None):
 async def _holdem(ctx, buyin):
     amount = parse_amount(buyin, user_data(ctx.author.id)["cash"]) if buyin else None
     if amount is None or amount < MIN_BUYIN:
-        return await ctx.send(f"Usage: `{ctx.prefix}holdem <buy-in>` (minimum {fmt(MIN_BUYIN)})")
+        return await ctx.send(f"Usage: `{ctx.prefix}texas <amount>` - everyone at the table pays the same amount (minimum {fmt(MIN_BUYIN)})")
     if ctx.channel.id in TABLES:
         return await ctx.send("A Hold'em table is already open in this channel.")
     if await cash_get(ctx.author.id) < amount:
@@ -749,4 +774,4 @@ async def _holdem(ctx, buyin):
         raise
 
 
-print("game_holdem loaded: command $holdem registered")
+print("game_holdem loaded: command $texas registered")
