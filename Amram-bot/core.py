@@ -46,7 +46,20 @@ EMOJI = {"bomb": "💣", "map": "🗺️", "diamond": "💎", "coin": "🪙", "s
 MULT = {"diamond": 3, "urn": 15, "stone": 1.1, "coin": 2, "bag": 4.5, "map": 1}
 MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (never the urn or the bag)
 URN_CHANCE = (3, 10)
-MINES_MULT = [1.1, 1.3, 1.6, 1.85, 2.2, 4.3, 6.2, 8.35]
+# $mines: 12 tiles, 2 bombs, 10 diamonds -> ONE multiplier per diamond found (10 slots, fill in your own).
+# 1 = no profit yet for that click. The 1st number is for the 1st diamond, the 10th for the last one.
+MINES_MULT = [
+    1,   # 1st diamond
+    1,   # 2nd
+    1,   # 3rd
+    1,   # 4th
+    1,   # 5th
+    1,   # 6th
+    1,   # 7th
+    1,   # 8th
+    1,   # 9th
+    1,   # 10th (all diamonds)
+]
 # S$mines: (columns, rows, mines, multiplier of every click). There is one multiplier for EVERY safe tile
 # (2x2 = 3, 4x4 = 14, 5x4 = 17), so the profit grows on every single click, all the way to the last diamond.
 SMINES = {
