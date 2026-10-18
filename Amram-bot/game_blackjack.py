@@ -18,6 +18,13 @@ def hand_value(cards):
         total, aces = total - 10, aces - 1
     return total
 
+def is_soft(cards):
+    """True when an ace is still counted as 11 (a 'soft' hand)."""
+    total, aces = sum(card_value(r) for r, _ in cards), sum(r == "A" for r, _ in cards)
+    while total > 21 and aces:
+        total, aces = total - 10, aces - 1
+    return aces > 0
+
 # ---------- real playing cards, drawn in code, uploaded once as bot emojis (never sent as images) ----------
 SW, SH = 148, 186         # card size in pixels (width / height like the reference cards)
 _CK = 4                   # supersampling (drawn big, scaled down = smooth edges)
@@ -213,7 +220,7 @@ def back_text():
     return CARD_BACK or "❓"
 
 BJ_PLAYING_COLOR = 0x9AD8F5   # side-bar color while the game is running: light blue (תכלת). Use 0xFFFFFF for white.
-CARD_HEADER = "## "   # "" = small inline cards. "## " = bigger (current), "# " = huge.
+CARD_HEADER = ""      # "" = smallest inline cards (current, fits the embed). "## " = bigger, "# " = huge.
 BJ_WIDTH = 24         # invisible padding on the first line = how wide the embed is. If the first line wraps on your phone, lower it.
 
 def cards_text(cards):
@@ -332,14 +339,17 @@ class BlackjackView(discord.ui.View):
         multi = len(self.hands) > 1
         for i, h in enumerate(self.hands):
             mark = " ◀" if multi and not self.done and i == self.active else ""
-            lines += [f"**Your Hand{f' {i + 1}' if multi else ''}** · `{hand_value(h['cards'])}`{mark}{pad}",
+            soft = " (Soft)" if is_soft(h["cards"]) and hand_value(h["cards"]) <= 21 else ""
+            lines += [f"**Your Hand{f' {i + 1}' if multi else ''}** · `{hand_value(h['cards'])}`{soft}{mark}{pad}",
                       CARD_HEADER + cards_text(h["cards"])]
             pad = ""
+        dealer_soft = ""
         if self.done:
             dealer_cards, dealer_val = cards_text(self.dealer), hand_value(self.dealer)
+            dealer_soft = " (Soft)" if is_soft(self.dealer) else ""
         else:
             dealer_cards, dealer_val = f"{card_text(self.dealer[0])} {back_text()}", card_value(self.dealer[0][0])
-        lines += [f"**Dealer** · `{dealer_val}`", CARD_HEADER + dealer_cards]
+        lines += [f"**Dealer** · `{dealer_val}`{dealer_soft}", CARD_HEADER + dealer_cards]
         e = discord.Embed(description="\n".join(lines), color=color)
         e.set_author(name=f"{self.user.name}'s Game", icon_url=self.user.display_avatar.url)
         return e
