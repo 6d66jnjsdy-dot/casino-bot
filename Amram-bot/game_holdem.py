@@ -22,7 +22,6 @@ TURN_SECONDS = 45
 NEXT_HAND_DELAY = 8
 LOBBY_SECONDS = 600          # an open table that nobody starts closes after this
 COLOR = 0xB19CD9             # soft purple side bar (change this one line to recolor everything)
-GOLD = COLOR
 
 SYM = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
 RANKS = "23456789TJQKA"
@@ -148,6 +147,10 @@ def hand_name(sc):
 TABLES = {}  # channel id -> Table
 
 
+def closed_embed(text):
+    return discord.Embed(title="♠ Texas Hold'em", description=text, color=COLOR)
+
+
 class Player:
     def __init__(self, user, stack, token):
         self.user = user
@@ -213,74 +216,50 @@ class Table:
     def lobby_embed(self, started=False):
         c = cur()
         n = len(self.players)
-        icon = getattr(getattr(self.host, "display_avatar", None), "url", None)
-        e = discord.Embed(title="♠  TEXAS HOLD'EM  ♥", color=COLOR)
-        e.set_author(name=f"{self.host.display_name}'s table", icon_url=icon)
+        lines = [f"**Buy-in** {self.buyin:,} {c}  ·  **Blinds** {self.sb:,}/{self.bb:,}", ""]
+        for p in self.players:
+            lines.append(f"{'👑' if p.user.id == self.host.id else '▸'} {p.user.mention}")
+        lines.append("")
         if started:
-            e.description = "**The game has started. Good luck!**\nEveryone sat down with the same stack."
+            lines.append("**Game started. Good luck!**")
         else:
-            e.description = ("**A new table is open.**\n"
-                             "Take a seat and play with the same stack as everyone else.\n\n"
-                             f"⏳ Closes <t:{self.expires}:R>")
-        e.add_field(name="💰 Buy-in", value=f"**{self.buyin:,}** {c}", inline=True)
-        e.add_field(name="🎯 Blinds", value=f"**{self.sb:,}** / **{self.bb:,}**", inline=True)
-        e.add_field(name="🏆 Prize pool", value=f"**{self.buyin * n:,}** {c}", inline=True)
-        seats = []
-        for i in range(MAX_PLAYERS):
-            if i < n:
-                p = self.players[i]
-                seats.append(f"`{i + 1}`  {'👑 ' if p.user.id == self.host.id else ''}{p.user.mention}" + ("  ·  host" if p.user.id == self.host.id else ""))
-            else:
-                seats.append(f"`{i + 1}`  ▫️ *open seat*")
-        e.add_field(name=f"Seats  ·  {n} / {MAX_PLAYERS}", value="\n".join(seats), inline=False)
-        if not started:
-            if n < 2:
-                status = "⏳ Waiting for at least one more player…"
-            else:
-                status = "✅ Ready — the host can press **Start**."
-            e.add_field(name="\u200b", value=status, inline=False)
-        e.set_footer(text="Your buy-in goes back to your cash if you leave or the table closes.")
-        return e
+            wait = "waiting for players" if n < 2 else "host can press **Start**"
+            lines.append(f"{n}/{MAX_PLAYERS} seated  ·  {wait}  ·  closes <t:{self.expires}:R>")
+        return discord.Embed(title="♠ Texas Hold'em", description="\n".join(lines), color=COLOR)
 
     def table_embed(self):
         c = cur()
         pot = sum(p.total for p in self.players)
-        e = discord.Embed(color=COLOR)
-        e.set_author(name=f"Texas Hold'em  ·  Hand #{self.hand_no}")
-        lines = [f"**{self.street.capitalize()}**", cards_str(self.board, 5), "",
-                 f"**Pot:** {pot:,} {c}"]
-        if self.in_hand:
-            act = self.players[self.cur]
-            to_call = max(0, self.current_bet - act.bet)
-            lines.append(f"**Current bet:** {self.current_bet:,} {c}" if self.current_bet else "**Current bet:** —")
-        lines.append("")
-        if self.log:
-            lines.append(f"*{self.log}*")
-        if self.in_hand:
-            lines.append(f"▶ {act.user.mention} to act — " + ("**check** or bet" if to_call == 0 else f"**{min(to_call, act.stack):,}** to call"))
-        e.description = "\n".join(lines)
+        lines = [f"**{self.street.capitalize()}**  ·  Pot **{pot:,}** {c}", cards_str(self.board, 5), ""]
         for i, p in enumerate(self.players):
             active = self.in_hand and i == self.cur
+            if p.left:
+                lines.append(f"~~{p.name}~~ — left")
+                continue
+            if p.folded:
+                lines.append(f"~~{p.name}~~ — folded")
+                continue
             tags = []
             if i == self.dealer % len(self.players):
-                tags.append("`D`")
+                tags.append("D")
             if p is self.sb_p:
-                tags.append("`SB`")
+                tags.append("SB")
             if p is self.bb_p:
-                tags.append("`BB`")
-            if p.left:
-                status = "Left the table"
-            elif p.folded:
-                status = "Folded"
-            elif p.allin:
-                status = "**ALL-IN**"
+                tags.append("BB")
+            bits = [f"{p.stack:,}"]
+            if p.allin:
+                bits.append("**all-in**")
             elif p.bet:
-                status = f"Bet {p.bet:,}"
-            else:
-                status = "—"
-            e.add_field(name=f"{'▶ ' if active else ''}{p.name}",
-                        value=f"{p.stack:,} {c}\n{status}" + (f"  {' '.join(tags)}" if tags else ""), inline=True)
-        e.set_footer(text=f"Blinds {self.sb:,} / {self.bb:,}  ·  {TURN_SECONDS}s per turn")
+                bits.append(f"bet {p.bet:,}")
+            if active:
+                to_call = max(0, self.current_bet - p.bet)
+                bits.append(f"**{min(to_call, p.stack):,} to call**" if to_call else "**your move**")
+            name = p.user.mention if active else f"**{p.name}**"
+            lines.append(f"{'▶' if active else '▸'} {name} — {' · '.join(bits)}" + (f"  `{'/'.join(tags)}`" if tags else ""))
+        if self.log:
+            lines += ["", f"*{self.log}*"]
+        e = discord.Embed(color=COLOR, description="\n".join(lines))
+        e.set_footer(text=f"Hand #{self.hand_no}  ·  Blinds {self.sb:,}/{self.bb:,}  ·  {TURN_SECONDS}s per turn")
         return e
 
     async def post(self, embed, view):
@@ -542,15 +521,15 @@ class Table:
         if self.timer:
             self.timer.cancel()
             self.timer = None
-        e = discord.Embed(color=GOLD)
-        e.set_author(name=f"Texas Hold'em  ·  Hand #{self.hand_no}  ·  Result")
-        e.description = f"**Board**\n{cards_str(self.board, 5)}\n\n" + "\n".join(lines)
+        if self.board:
+            lines = [f"**Board**  {cards_str(self.board, 5)}", ""] + lines
         if reveal:
+            lines.append("")
             for p in self.players:
                 if not p.folded:
-                    e.add_field(name=f"{'🏆 ' if id(p) in winset else ''}{p.name}",
-                                value=f"{cards_str(p.hole)}\n{labels.get(id(p), '')}", inline=True)
-        e.set_footer(text="Next hand starts in a few seconds")
+                    lines.append(f"{'🏆' if id(p) in winset else '▸'} **{p.name}**  {cards_str(p.hole)}  —  {labels.get(id(p), '')}")
+        e = discord.Embed(color=COLOR, description="\n".join(lines))
+        e.set_footer(text=f"Hand #{self.hand_no}  ·  next hand in a few seconds")
         await self.post(e, None)
         notes = []
         for p in self.players:
@@ -585,9 +564,9 @@ class Table:
         if self.players:
             w = self.players[0]
             await self.cashout(w)
-            e = discord.Embed(title="♠ Table closed", color=GOLD,
-                              description=f"🏆 **{w.name}** takes the table and cashes out **{w.stack:,}** {cur()}.")
-            await self.channel.send(embed=e)
+            await self.channel.send(embed=closed_embed(f"🏆 **{w.name}** takes the table and cashes out **{w.stack:,}** {cur()}."))
+        else:
+            await self.channel.send(embed=closed_embed("**Everyone left the table.**\nThe money went back to cash."))
 
 
 # ============================================================
@@ -713,17 +692,18 @@ class LobbyView(discord.ui.View):
             p = t.player_of(inter.user.id)
             if t.state != "lobby" or not p:
                 return await inter.response.send_message("You're not in the lobby.", ephemeral=True)
-            await t.cashout(p, log=False)           # the buy-in goes straight back to cash
-            t.players.remove(p)
-            if not t.players:
+            if inter.user.id == t.host.id or len(t.players) == 1:
+                # the host left: the table closes for everybody and every buy-in goes back to cash
+                for q in list(t.players):
+                    await t.cashout(q, log=False)
+                t.players.clear()
                 t.state, t.closed = "closed", True
                 TABLES.pop(t.channel.id, None)
                 self.stop()
                 return await inter.response.edit_message(
-                    embed=discord.Embed(title="♠ Table cancelled", description="Everyone left. The buy-in was returned to your cash.", color=COLOR),
-                    view=None)
-            if inter.user.id == t.host.id:
-                t.host = t.players[0]               # the host can leave too: the next player becomes host
+                    embed=closed_embed("**Everyone left the table.**\nThe money went back to cash."), view=None)
+            await t.cashout(p, log=False)           # the buy-in goes straight back to cash
+            t.players.remove(p)
             await inter.response.defer()
             await self._refresh()
 
@@ -756,7 +736,7 @@ class LobbyView(discord.ui.View):
             t.state, t.closed = "closed", True
             TABLES.pop(t.channel.id, None)
             try:
-                await t.message.edit(embed=discord.Embed(title="♠ Table expired", description="Nobody started the game. Everyone's buy-in was returned to their cash.", color=COLOR), view=None)
+                await t.message.edit(embed=closed_embed("**Table expired.**\nNobody started the game. The money went back to cash."), view=None)
             except discord.HTTPException:
                 pass
 
