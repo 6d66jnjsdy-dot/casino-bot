@@ -20,10 +20,13 @@ MAX_PLAYERS = 6
 MIN_BUYIN = MIN_BET          # from core
 TURN_SECONDS = 45
 NEXT_HAND_DELAY = 8
+LEVEL_HANDS = 5              # blinds go up every this many hands
+BLIND_LEVELS = (1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32)   # multipliers of the starting big blind
 HDR_BOARD = "## "           # board cards are shown big ("# " = huge, "" = normal size)
 HDR_HAND = "# "             # your two cards in My Cards
 LOBBY_SECONDS = 600          # an open table that nobody starts closes after this
 COLOR = 0xB19CD9             # soft purple side bar (change this one line to recolor everything)
+GOLD = 0xF1C40F              # gold side bar, used when the money goes back to cash
 
 SYM = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
 RANKS = "23456789TJQKA"
@@ -33,6 +36,8 @@ PLUR = {2: "Twos", 3: "Threes", 4: "Fours", 5: "Fives", 6: "Sixes", 7: "Sevens",
         9: "Nines", 10: "Tens", 11: "Jacks", 12: "Queens", 13: "Kings", 14: "Aces"}
 
 GAME_NAMES["holdem"] = "Texas Hold'em"      # nice name in the game log
+
+REFUND_TEXT = "**Everyone left the table.**\nEveryone got their money back to cash."
 
 
 # ---------- economy (uses core: user_data / save / pending) ----------
@@ -149,8 +154,26 @@ def hand_name(sc):
 TABLES = {}  # channel id -> Table
 
 
-def closed_embed(text):
-    return discord.Embed(description=f"## ♠ Texas Hold'em ♥\n{text}", color=COLOR)
+def closed_embed(text, color=COLOR):
+    return discord.Embed(description=f"## ♠ Texas Hold'em\n{text}", color=color)
+
+
+def refund_embed(text=REFUND_TEXT):
+    """Gold embed shown whenever the table closes and the money goes back to cash."""
+    return closed_embed(text, GOLD)
+
+
+async def _view_error(inter, error):
+    """Never fail silently: print the traceback and tell the player what went wrong."""
+    traceback.print_exception(type(error), error, error.__traceback__)
+    try:
+        msg = f"Something went wrong: `{error!r}`"
+        if inter.response.is_done():
+            await inter.followup.send(msg, ephemeral=True)
+        else:
+            await inter.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
 
 
 class Player:
@@ -179,7 +202,8 @@ class Player:
 class Table:
     def __init__(self, channel, host, buyin):
         self.channel, self.host, self.buyin = channel, host, buyin
-        self.bb = max(2, buyin // 50)
+        self.base_bb = max(2, buyin // 50)      # starting big blind = 2% of the buy-in
+        self.bb = self.base_bb
         self.sb = max(1, self.bb // 2)
         self.players = []
         self.state = "lobby"
@@ -209,6 +233,14 @@ class Table:
             return "You left this table."
         return "You're not seated at this table."
 
+    def _set_blinds(self):
+        """Blind level for the current hand (goes up every LEVEL_HANDS hands, never down)."""
+        lvl = min((self.hand_no - 1) // LEVEL_HANDS, len(BLIND_LEVELS) - 1)
+        bb = max(self.bb, max(2, round(self.base_bb * BLIND_LEVELS[lvl])))
+        up = bb > self.bb
+        self.bb, self.sb = bb, max(1, bb // 2)
+        return up
+
     def can_raise(self, p):
         """A raise is only possible if the player has chips beyond the current bet AND someone can still respond."""
         others = [o for o in self.players if o is not p and not o.folded and not o.allin]
@@ -216,23 +248,19 @@ class Table:
 
     # ---------------- embeds ----------------
     def lobby_embed(self, started=False):
-        c = cur()
         n = len(self.players)
-        lines = ["# ♠ Texas Hold'em ♥", f"-# {self.host.display_name} opened this table", "",
-                 f"> 💰 Buy-in  **{self.buyin:,}** {c}",
-                 f"> 🎯 Blinds  **{self.sb:,} / {self.bb:,}**", "",
-                 f"**Players**  `{n}/{MAX_PLAYERS}`"]
+        c = cur()
+        lines = ["## ♠ Texas Hold'em",
+                 f"**Buy-in** {self.buyin:,} {c}  ·  **Blinds** {self.sb:,}/{self.bb:,} {c}",
+                 f"-# Blinds go up every {LEVEL_HANDS} hands", ""]
         for p in self.players:
             lines.append(f"{'👑' if p.user.id == self.host.id else '🔹'} {p.user.mention}")
-        if n < MAX_PLAYERS:
-            free = MAX_PLAYERS - n
-            lines.append(f"▫️ *{free} open seat{'s' if free > 1 else ''}*")
         lines.append("")
         if started:
-            lines.append("**Game started — good luck!**")
+            lines.append(f"{n}/{MAX_PLAYERS} seated  ·  **game started, good luck!**")
         else:
-            status = "⏳ Waiting for players" if n < 2 else "✅ Ready — the host can press **Start**"
-            lines.append(f"{status}  ·  closes <t:{self.expires}:R>")
+            status = "waiting for players" if n < 2 else "ready, the host can press **Start**"
+            lines.append(f"{n}/{MAX_PLAYERS} seated  ·  {status}  ·  closes <t:{self.expires}:R>")
         return discord.Embed(description="\n".join(lines), color=COLOR)
 
     def table_embed(self):
@@ -315,6 +343,7 @@ class Table:
             return await self.end_game()
         n = len(self.players)
         self.hand_no += 1
+        blinds_up = self._set_blinds()
         for p in self.players:
             p.reset_hand()
         self.dealer = (self.dealer + 1) % n
@@ -332,7 +361,8 @@ class Table:
         self._put(self.bb_p, self.bb)
         self.current_bet = max(p.bet for p in self.players)
         self.min_raise = self.bb
-        self.log = f"Blinds: {self.sb_p.name} {self.sb:,} · {self.bb_p.name} {self.bb:,}"
+        self.log = (f"⬆️ Blinds up to {self.sb:,}/{self.bb:,}! " if blinds_up else "") + \
+                   f"Blinds: {self.sb_p.name} {self.sb:,} · {self.bb_p.name} {self.bb:,}"
         self.cur = first
         self.message = None            # every hand gets a fresh message
         await self._proceed(first)
@@ -491,7 +521,26 @@ class Table:
         p.stack = 0
         await inter.response.send_message(f"You left the table. **{back:,}** {cur()} went back to your cash.", ephemeral=True)
         if self.in_hand:
+            if not any(not q.left for q in self.players):
+                return await self._everyone_left()
             await self._proceed((self.cur + 1) % len(self.players) if was_turn else self.cur)
+
+    async def _everyone_left(self):
+        """Every player left mid-game: close the table and tell the channel that all money is back in cash."""
+        self.closed = True
+        self.in_hand = False
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        TABLES.pop(self.channel.id, None)
+        self.players.clear()
+        try:
+            if self.message is not None:
+                await self.message.edit(embed=refund_embed(), view=None)
+            else:
+                await self.channel.send(embed=refund_embed())
+        except discord.HTTPException:
+            await self.channel.send(embed=refund_embed())
 
     # ---------------- ending a hand ----------------
     def _side_pots(self):
@@ -578,26 +627,30 @@ class Table:
             await self.cashout(w)
             await self.channel.send(embed=closed_embed(f"🏆 **{w.name}** takes the table and cashes out **{w.stack:,}** {cur()}."))
         else:
-            await self.channel.send(embed=closed_embed("**Everyone left the table.**\nThe money went back to cash."))
+            await self.channel.send(embed=refund_embed())
 
 
 # ============================================================
 #  UI
 # ============================================================
 class RaiseModal(discord.ui.Modal, title="Raise"):
-    amount = discord.ui.TextInput(label="Raise to (total bet this round)", placeholder="e.g. 400")
-
     def __init__(self, table, p):
         super().__init__()
         self.t = table
         self.maxamt = p.bet + p.stack
-        self.amount.placeholder = f"min {min(table.current_bet + table.min_raise, p.bet + p.stack):,} · max {p.bet + p.stack:,}"
+        self.amount = discord.ui.TextInput(
+            label="Raise to (total bet this round)",
+            placeholder=f"min {min(table.current_bet + table.min_raise, p.bet + p.stack):,} · max {p.bet + p.stack:,}")
+        self.add_item(self.amount)
 
     async def on_submit(self, inter):
         v = parse_amount(str(self.amount.value), self.maxamt)
         if v is None:
             return await inter.response.send_message("Enter a valid number.", ephemeral=True)
         await self.t.handle(inter, "raise", v)
+
+    async def on_error(self, inter, error):
+        await _view_error(inter, error)
 
 
 class TableView(discord.ui.View):
@@ -622,6 +675,9 @@ class TableView(discord.ui.View):
             self._add("All-in", S.secondary, 0, lambda i: table.handle(i, "allin"))
         self._add("My Cards", S.secondary, 1, self._cards)
         self._add("Leave", S.secondary, 1, self._leave)
+
+    async def on_error(self, inter, error, item):
+        await _view_error(inter, error)
 
     def _add(self, label, style, row, fn):
         btn = discord.ui.Button(label=label, style=style, row=row)
@@ -672,6 +728,9 @@ class LobbyView(discord.ui.View):
         super().__init__(timeout=LOBBY_SECONDS)
         self.t = table
 
+    async def on_error(self, inter, error, item):
+        await _view_error(inter, error)
+
     async def _refresh(self):
         await self.t.message.edit(embed=self.t.lobby_embed(), view=self)
 
@@ -712,11 +771,10 @@ class LobbyView(discord.ui.View):
                 t.state, t.closed = "closed", True
                 TABLES.pop(t.channel.id, None)
                 self.stop()
-                return await inter.response.edit_message(
-                    embed=closed_embed("**Everyone left the table.**\nThe money went back to cash."), view=None)
+                return await inter.response.edit_message(embed=refund_embed(), view=None)
             await t.cashout(p, log=False)           # the buy-in goes straight back to cash
             t.players.remove(p)
-            await inter.response.defer()
+            await inter.response.send_message(f"You left the table. **{t.buyin:,}** {cur()} went back to your cash.", ephemeral=True)
             await self._refresh()
 
     @discord.ui.button(label="Start", style=discord.ButtonStyle.primary)
@@ -745,10 +803,11 @@ class LobbyView(discord.ui.View):
                 return
             for q in t.players:
                 await t.cashout(q, log=False)
+            t.players.clear()
             t.state, t.closed = "closed", True
             TABLES.pop(t.channel.id, None)
             try:
-                await t.message.edit(embed=closed_embed("**Table expired.**\nNobody started the game. The money went back to cash."), view=None)
+                await t.message.edit(embed=refund_embed("**Table expired.**\nNobody started the game. Everyone got their money back to cash."), view=None)
             except discord.HTTPException:
                 pass
 
