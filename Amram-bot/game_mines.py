@@ -17,7 +17,9 @@ def gm_board():
     random.shuffle(tiles)
     return tiles
 
-BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=1, diamond=8)}
+MINES_BOMBS, MINES_SAFE = 2, 10          # $mines board: 12 tiles (3 columns x 4 rows)
+MINES_COLOR = 0xF4A6A6                  # soft white-red side bar of the $mines embed (change this one line to recolor)
+BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=MINES_BOMBS, diamond=MINES_SAFE)}
 for _k, (_w, _h, _m, _) in SMINES.items():
     BUILDERS[f"s{_k}"] = lambda m=_m, n=_w * _h: shuffled(bomb=m, diamond=n - m)
 
@@ -95,6 +97,16 @@ class BoardView(OwnedView):
     def after(self, kind):
         pass
 
+    def play_embed(self):
+        return None             # games that want an embed while playing override this
+
+    def play_kw(self):
+        kw = dict(content=self.header, view=self)
+        e = self.play_embed()
+        if e is not None:       # (embed=None would delete an embed, so only pass it when there is one)
+            kw["embed"] = e
+        return kw
+
     def luck_pool(self, idx):
         return [i for i in range(len(self.board)) if i not in self.revealed and i != idx]
 
@@ -147,7 +159,7 @@ class BoardView(OwnedView):
                 async with self.edit_lock:
                     if self.done:
                         break
-                    await self.edit_ui(interaction, content=self.header, view=self)
+                    await self.edit_ui(interaction, **self.play_kw())
         finally:
             self.flushing = False
 
@@ -241,6 +253,7 @@ class GoldMines(BoardView):
 
 class Mines(BoardView):
     cols = 3
+    header = None               # no text above the embed
     reveal_on_cashout = False
     game_name = "mines"
     multi_key = "mines"
@@ -249,7 +262,17 @@ class Mines(BoardView):
         return take(self.user.id, "mines")
 
     def earn(self, kind):
-        self.profit = self.bet * (MINES_MULT[len(self.revealed) - 1] - 1)
+        # one multiplier per safe tile (MINES_MULT in core.py has MINES_SAFE slots)
+        n = min(len(self.revealed), len(MINES_MULT))
+        self.profit = self.bet * (MINES_MULT[n - 1] - 1) if n else 0
+
+    def play_embed(self):
+        found = sum(1 for i in self.revealed if self.board[i] != "bomb")
+        return make_embed(self.user,
+                          f"**Bet:** `{fmt(self.bet)}` {cur()}\n"
+                          f"{EMOJI['bomb']} {MINES_BOMBS} bombs  ·  {EMOJI['diamond']} {MINES_SAFE} diamonds\n"
+                          f"**Found:** {found}/{MINES_SAFE}",
+                          MINES_COLOR, "Mines")
 
 class SMines(BoardView):
     reveal_on_cashout = False
@@ -387,7 +410,7 @@ async def start_board(ctx, cls, amount, usage):
     if bet:
         view = cls(ctx.author, bet, str(ctx.message.id))
         try:
-            view.message = await ctx.reply(view.header, view=view, mention_author=False)
+            view.message = await ctx.reply(**view.play_kw(), mention_author=False)
         except Exception:
             cancel_game(ctx.author, view.token, bet)
             raise
