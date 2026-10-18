@@ -5,8 +5,8 @@ from discord.ext import commands, tasks
 from aiohttp import web
 from core import *
 # ================= CHEST =================
-# Discord does not know the 🪎 emoji yet (that is why the buttons failed), so the chest is drawn in code
-# and uploaded once as a bot emoji, exactly like the blackjack cards.
+# Discord does not know the 🪎 emoji yet, so the chest is drawn in code and uploaded once as a bot emoji
+# (same idea as the blackjack cards).
 CHEST_EMOJI_NAME = "chest_btn"
 CHEST_FALLBACK = "🧰"        # only used if the bot emoji could not be created
 CHEST_EMOJI = None           # filled by ensure_chest_emoji()
@@ -17,6 +17,13 @@ CHEST_LUCKY_MULT = 10                    # the lucky chest that replaces the x2.
 CHEST_LUCKY_ODDS = 20                    # 1 game out of 20 the x2.5 chest becomes the lucky x10 chest
 CHEST_ICONS = {2.5: "💰", 1.3: "💰", 10: "💰"}   # every winning chest shows only 💰, the dead ones show ⚰️
 CHEST_SPY_KEY = {0: "bomb", 1.3: "coin", 2.5: "bag", 10: "urn"}   # only used by the owner's $predict
+CHEST_WIDTH = 16             # invisible padding on the title line = how wide the embed is (lower it if the title wraps on a phone)
+CHEST_STEP = 0.9             # seconds between the opening frames (3 frames, so about 2.7s of suspense). Lower = faster.
+CHEST_OPENING = [            # the opening frames, {n} = the chest number
+    "🔑 Opening chest {n}...",
+    "🥁 Drum roll... 🥁",
+    "👀 Let's see what's inside... 👀",
+]
 
 def _chest_png():
     K, S = 4, 128 * 4
@@ -98,6 +105,9 @@ class ChestView(discord.ui.View):
         log_game(self.user, "chest", self.bet, self.net)
         BUSY.discard(self.user.id)
 
+    def title(self):
+        return "💰 **Treasure Chests** 💰" + "⠀" * CHEST_WIDTH
+
     def reveal(self):
         for i, b in enumerate(self.children):
             m = self.layout[i]
@@ -107,18 +117,32 @@ class ChestView(discord.ui.View):
             b.style = (discord.ButtonStyle.success if m > 0 else discord.ButtonStyle.danger) if i == self.picked \
                 else discord.ButtonStyle.secondary
 
+    def opening(self, idx, step):
+        text = CHEST_OPENING[step].format(n=idx + 1)
+        return discord.Embed(description=f"{self.title()}\n\n**{text}**\n\n-# Bet: {fmt(self.bet)} {cur()}", color=BLUE)
+
     def render(self):
+        c = cur()
         if not self.done:
-            return discord.Embed(description="choose one chest 🤫", color=BLUE)
-        m, c = self.layout[self.picked], cur()
+            return discord.Embed(description=f"{self.title()}\n\nchoose one chest 🤫\n\n-# Bet: {fmt(self.bet)} {c}", color=BLUE)
+        m = self.layout[self.picked]
         amt = f"{fmt(self.returned)} {c}"
+        sub = f"-# Bet: {fmt(self.bet)} {c}  ·  x{m:g}"
         if m == CHEST_LUCKY_MULT:
-            return discord.Embed(description=f"🍀 You Got Lucky One🍀\nYou got {amt}", color=YELLOW)
-        if m == 2.5:
-            return discord.Embed(description=f"You choose the best chest and got {amt}", color=GREEN)
-        if m > 0:
-            return discord.Embed(description=f"You choose a chest and got {amt}", color=GREEN)
-        return discord.Embed(description="Looser☠️", color=RED)
+            text, color = f"🍀 You Got Lucky One🍀\nYou got {amt}", YELLOW
+        elif m == 2.5:
+            text, color = f"You choose the best chest and got {amt}", GREEN
+        elif m > 0:
+            text, color = f"You choose a chest and got {amt}", GREEN
+        else:
+            text, color = "Looser☠️", RED
+        return discord.Embed(description=f"{self.title()}\n\n**{text}**\n\n{sub}", color=color)
+
+    async def edit(self, interaction, embed):
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.edit_original_response(embed=embed, view=self)
 
     async def pick(self, interaction, idx):
         # luck: a losing chest is re-rolled (same idea as the blackjack luck)
@@ -127,9 +151,21 @@ class ChestView(discord.ui.View):
                 break
             self.layout = chest_layout()
         self.picked = idx
-        self.pay(int(self.bet * self.layout[idx]))
+        self.pay(int(self.bet * self.layout[idx]))       # paid right away, so a second click can never double-play
+        for i, b in enumerate(self.children):            # lock every button, only the chosen one stays blue
+            b.disabled = True
+            b.style = discord.ButtonStyle.primary if i == idx else discord.ButtonStyle.secondary
+        try:
+            for step in range(len(CHEST_OPENING)):       # the suspense: a few quick frames before the reveal
+                await self.edit(interaction, self.opening(idx, step))
+                await asyncio.sleep(CHEST_STEP)
+        except Exception as ex:
+            print("Chest animation failed:", repr(ex))
         self.reveal()
-        await interaction.response.edit_message(embed=self.render(), view=self)
+        try:
+            await self.edit(interaction, self.render())
+        except Exception as ex:
+            print("Chest reveal failed:", repr(ex))
         self.stop()
 
     async def on_timeout(self):
