@@ -48,7 +48,7 @@ MAP_FINDS = ("diamond", "stone", "coin")   # the map can only point at these (ne
 URN_CHANCE = (3, 10)
 # $mines: 12 tiles, 2 bombs, 10 diamonds -> ONE multiplier per diamond found (10 slots, fill in your own).
 # 1 = no profit yet for that click. The 1st number is for the 1st diamond, the 10th for the last one.
-MINES_MULT = [
+MINES_MULT = [ 1.1, 1.3, 1.7 1.95, 2.3, 2.6, 4,6, 6.8, 8.9, 13 ]
     1,   # 1st diamond
     1,   # 2nd
     1,   # 3rd
