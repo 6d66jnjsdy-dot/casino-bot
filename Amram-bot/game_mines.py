@@ -263,9 +263,8 @@ class Mines(discord.ui.LayoutView):
         spy(self)
 
     def _head(self):
-        # the player's profile (name + picture) at the top of the box, during the game
-        return discord.ui.Section(discord.ui.TextDisplay(f"**{self.user.name}'s Game**"),
-                                  accessory=discord.ui.Thumbnail(self.user.display_avatar.url))
+        # one-line title during the game: a picture here would make the box much taller (Discord does not allow shrinking it)
+        return discord.ui.TextDisplay(f"**{self.user.name}'s Game**")
 
     def _make_tile(self, idx):
         b = discord.ui.Button(style=discord.ButtonStyle.secondary, label=EMPTY)
