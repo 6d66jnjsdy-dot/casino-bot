@@ -19,8 +19,8 @@ MAX_PLAYERS = 6
 MIN_BUYIN = MIN_BET          # from core
 TURN_SECONDS = 45
 NEXT_HAND_DELAY = 8
-COLOR = 0x1B5E3A             # table green
-GOLD = 0xF1C40F
+COLOR = 0xB19CD9             # soft purple side bar (change this one line to recolor everything)
+GOLD = COLOR
 
 SYM = {"s": "♠", "h": "♥", "d": "♦", "c": "♣"}
 RANKS = "23456789TJQKA"
