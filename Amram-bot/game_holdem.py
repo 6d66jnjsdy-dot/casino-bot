@@ -19,7 +19,8 @@ import discord
 MAX_PLAYERS = 6
 MIN_BUYIN = MIN_BET          # from core
 TURN_SECONDS = 45
-NEXT_HAND_DELAY = 8
+NEXT_HAND_DELAY = 15         # time between hands: players can press Leave during it
+CASHOUT_SECONDS = 120        # the last player standing has this long to press Cash out (then it is automatic)
 LEVEL_HANDS = 5              # blinds go up every this many hands
 BLIND_LEVELS = (1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32)   # multipliers of the starting big blind
 HDR_BOARD = "## "           # board cards are shown big ("# " = huge, "" = normal size)
@@ -38,6 +39,7 @@ PLUR = {2: "Twos", 3: "Threes", 4: "Fours", 5: "Fives", 6: "Sixes", 7: "Sevens",
 GAME_NAMES["holdem"] = "Texas Hold'em"      # nice name in the game log
 
 REFUND_TEXT = "**Everyone got their money back to cash.**"
+PING = discord.AllowedMentions(users=True, everyone=False, roles=False)
 
 
 # ---------- economy (uses core: user_data / save / pending) ----------
@@ -148,6 +150,82 @@ def hand_name(sc):
     return f"High Card, {SING[sc[1]]}"
 
 
+# what each hand means (shown in My Cards)
+HAND_INFO = {
+    0: "No pair yet. Only your highest card counts.",
+    1: "Beats High Card. Loses to Two Pair or better.",
+    2: "Beats One Pair. Loses to Three of a Kind or better.",
+    3: "Beats Two Pair. Loses to a Straight or better.",
+    4: "Five cards in a row. Beats Three of a Kind.",
+    5: "Five cards of the same suit. Beats a Straight.",
+    6: "Three of a kind plus a pair. Beats a Flush.",
+    7: "Four of the same rank. Only a Straight Flush beats it.",
+    8: "The strongest hand there is.",
+}
+
+
+def _draws(cards):
+    """Draw hints (only before the river)."""
+    out = []
+    suits = Counter(s for _, s in cards)
+    if max(suits.values()) == 4:
+        out.append("🃏 **Flush draw:** 4 cards of one suit, one more makes a Flush.")
+    rs = {r for r, _ in cards}
+    if 14 in rs:
+        rs.add(1)
+    if any(len(rs & set(range(a, a + 5))) == 4 for a in range(1, 11)):
+        out.append("🃏 **Straight draw:** 4 cards in a row, one more makes a Straight.")
+    return out
+
+
+def explain(hole, board):
+    """Full text for My Cards: what you have right now and what it means."""
+    if not board:
+        a, b = sorted((hole[0][0], hole[1][0]), reverse=True)
+        if a == b:
+            return [f"### Pocket {PLUR[a]}", "A pair already in your hand. It only gets better from here."]
+        suited = hole[0][1] == hole[1][1]
+        title = f"### {SING[a]} and {SING[b]}" + (" (suited)" if suited else "")
+        notes = ["No pair yet. Pair one of your cards with the board to make a hand."]
+        if suited:
+            notes.append("Same suit: you can build a Flush.")
+        if a - b == 1:
+            notes.append("Cards next to each other: you can build a Straight.")
+        return [title] + notes
+    cards = hole + list(board)
+    sc = best_score(cards)
+    cat = sc[0]
+    lines = [f"### {hand_name(sc)}", HAND_INFO[cat]]
+    mine = Counter(r for r, _ in hole)
+    if cat == 1:
+        n = mine.get(sc[1], 0)
+        if n == 2:
+            lines.append("**Pocket pair:** both cards are yours.")
+        elif n == 1:
+            lines.append("**You hit the board:** one card is yours, one is on the table.")
+        else:
+            lines.append("**The pair is on the table.** Everyone shares it, so the kicker decides.")
+    elif cat == 2:
+        n = mine.get(sc[1], 0) + mine.get(sc[2], 0)
+        if n == 0:
+            lines.append("**Both pairs are on the table.** Everyone shares them.")
+        else:
+            lines.append("**Your cards are part of it:** this hand is yours, not just the table's.")
+    elif cat == 3:
+        n = mine.get(sc[1], 0)
+        if n == 2:
+            lines.append("**Set:** pocket pair plus one on the table. Strong and hidden.")
+        elif n == 1:
+            lines.append("**Trips:** one card is yours, two are on the table.")
+        else:
+            lines.append("**All three are on the table.** Everyone shares them.")
+    elif cat == 0:
+        lines.append(f"Your best card: **{SING[max(r for r, _ in hole)]}**.")
+    if len(board) < 5 and cat < 5:
+        lines += _draws(cards)
+    return lines
+
+
 # ============================================================
 #  Table state
 # ============================================================
@@ -231,6 +309,7 @@ class Table:
         self.players = []
         self.state = "lobby"
         self.message = None
+        self.ping_msg = None                    # the "your turn" / "winner" tag message
         self.lock = asyncio.Lock()
         self.dealer = -1
         self.hand_no = 0
@@ -269,6 +348,23 @@ class Table:
         others = [o for o in self.players if o is not p and not o.folded and not o.allin]
         return bool(others) and p.bet + p.stack > self.current_bet
 
+    # ---------------- tag messages (these are the ones that actually notify people) ----------------
+    async def _clear_ping(self):
+        old, self.ping_msg = self.ping_msg, None
+        if old:
+            try:
+                await old.delete()
+            except discord.HTTPException:
+                pass
+
+    async def _ping(self, text):
+        """Replace the old tag message with a new one (a new message is what sends the notification)."""
+        await self._clear_ping()
+        try:
+            self.ping_msg = await self.channel.send(text, allowed_mentions=PING)
+        except discord.HTTPException:
+            traceback.print_exc()
+
     # ---------------- embeds ----------------
     def lobby_embed(self, started=False):
         n = len(self.players)
@@ -285,41 +381,41 @@ class Table:
             status = "waiting for players" if n < 2 else "ready, the host can press **Start**"
             lines.append(f"{n}/{MAX_PLAYERS} seated  ·  {status}  ·  closes <t:{self.expires}:R>")
         e = discord.Embed(description="\n".join(lines), color=COLOR)
-        e.set_footer(text="holdem v3")
+        e.set_footer(text="holdem v4")
         return e
+
+    def _seat(self, i):
+        """One player's spot at the table: only the name, an arrow for whose turn it is, and small tags."""
+        p = self.players[i]
+        active = self.in_hand and i == self.cur
+        tags = [t for t, hit in (("D", i == self.dealer % len(self.players)), ("SB", p is self.sb_p), ("BB", p is self.bb_p)) if hit]
+        if p.allin and not p.folded:
+            tags.append("ALL-IN")
+        tag = f" `{'/'.join(tags)}`" if tags else ""
+        if p.left:
+            return f"🚪 ~~{p.name}~~"
+        if p.folded:
+            return f"❌ ~~{p.name}~~{tag}"
+        if active:
+            return f"▶️ **{p.user.mention}**{tag}"
+        return f"🔹 {p.user.mention}{tag}"
 
     def table_embed(self):
         c = cur()
         pot = sum(p.total for p in self.players)
-        rows = []
-        for i, p in enumerate(self.players):
-            active = self.in_hand and i == self.cur
-            tags = [t for t, hit in (("D", i == self.dealer % len(self.players)), ("SB", p is self.sb_p), ("BB", p is self.bb_p)) if hit]
-            if p.left:
-                status = "left"
-            elif p.folded:
-                status = "folded"
-            elif p.allin:
-                status = "ALL-IN"
-            else:
-                status = f"bet {p.bet:,}" if p.bet else ""
-                if active:
-                    to_call = max(0, self.current_bet - p.bet)
-                    status = f"{min(to_call, p.stack):,} to call" if to_call else "your move"
-            if tags:
-                status = (status + " · " if status else "") + "/".join(tags)
-            name = p.name.replace("`", "'")
-            rows.append(("▶" if active else "✕" if (p.folded or p.left) else "▸", name if len(name) <= 10 else name[:9] + "…", f"{p.stack:,}", status))
-        nw = max(len(r[1]) for r in rows)
-        sw = max(len(r[2]) for r in rows)
-        board = "\n".join(f" {m} {n:<{nw}}  {st:>{sw}}  {status}".rstrip() for m, n, st, status in rows)
-        lines = [f"{HDR_BOARD}{cards_str(self.board, 5)}",
-                 f"**{self.street.capitalize()}**  ·  💰 Pot **{pot:,}** {c}",
-                 f"```\n{board}\n```"]
+        n = len(self.players)
+        half = (n + 1) // 2
+        top = [self._seat(i) for i in range(half)]                    # one side of the table
+        bottom = [self._seat(i) for i in range(n - 1, half - 1, -1)]  # the other side (goes around the table)
+        lines = ["   ".join(top), "",
+                 f"{HDR_BOARD}{cards_str(self.board, 5)}",
+                 f"**{self.street.capitalize()}**  ·  💰 Pot **{pot:,}** {c}", ""]
+        if bottom:
+            lines += ["   ".join(bottom), ""]
         if self.in_hand:
             act = self.players[self.cur]
             to_call = max(0, self.current_bet - act.bet)
-            lines.append(f"🎯 {act.user.mention} — " + (f"**{min(to_call, act.stack):,}** to call" if to_call else "**check** or bet"))
+            lines.append(f"### ➡️ {act.user.mention}  " + (f"**{min(to_call, act.stack):,}** to call" if to_call else "**check** or bet"))
         if self.log:
             lines.append(f"-# {self.log}")
         e = discord.Embed(color=COLOR, description="\n".join(lines))
@@ -368,6 +464,11 @@ class Table:
         self.players = [p for p in self.players if p.stack > 0]
         if len(self.players) < 2:
             return await self.end_game()
+        if self.message is not None:        # take the buttons off the finished hand's message
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
         n = len(self.players)
         self.hand_no += 1
         blinds_up = self._set_blinds()
@@ -454,6 +555,8 @@ class Table:
             self.cur = idx
             await self.render()
             self._set_timer()
+            to_call = max(0, self.current_bet - p.bet)
+            await self._ping(f"🎯 {p.user.mention} it's your turn! " + (f"**{min(to_call, p.stack):,}** to call" if to_call else "Check or bet"))
             return
 
     def _set_timer(self):
@@ -534,7 +637,7 @@ class Table:
 
     async def leave_now(self, inter, p):
         """Leave: fold right away and send the chips back to cash (all-in players wait for the hand to end).
-        The interaction must already be deferred (thinking) before this is called."""
+        Also works between hands. The interaction must already be deferred (thinking) before this is called."""
         if p.left:
             return await _say(inter, "You already left this table.")
         if self.in_hand and p.allin and not p.folded:
@@ -553,6 +656,11 @@ class Table:
             if not any(not q.left for q in self.players):
                 return await self._everyone_left()
             await self._proceed((self.cur + 1) % len(self.players) if was_turn else self.cur)
+        else:
+            try:
+                await self.channel.send(f"🚪 **{p.name}** left the table.")
+            except discord.HTTPException:
+                pass
 
     async def _everyone_left(self):
         """Every player left mid-game: close the table and tell the channel that all money is back in cash."""
@@ -561,6 +669,7 @@ class Table:
         if self.timer:
             self.timer.cancel()
             self.timer = None
+        await self._clear_ping()
         TABLES.pop(self.channel.id, None)
         self.players.clear()
         try:
@@ -619,8 +728,13 @@ class Table:
                 if not p.folded:
                     lines.append(f"{'🏆' if id(p) in winset else '▸'} **{p.name}**   {cards_str(p.hole)}   *{labels.get(id(p), '')}*")
         e = discord.Embed(color=COLOR, description="\n".join(lines))
-        e.set_footer(text="Next hand starts in a few seconds")
-        await self.post(e, None)
+        e.set_footer(text=f"Next hand in {NEXT_HAND_DELAY} seconds  ·  press Leave to cash out")
+        winners = [p for p in self.players if id(p) in winset]
+        will_continue = sum(1 for p in self.players if not p.left and not p.leaving and p.stack > 0) >= 2
+        await self.post(e, HandOverView(self) if will_continue else None)
+        # tag the winner(s), and tell everyone they have time to leave
+        tag = " ".join(w.user.mention for w in winners)
+        await self._ping(f"🏆 {tag} won the hand!" + (f"\n-# Next hand in {NEXT_HAND_DELAY} seconds. Press **Leave** if you want to cash out." if will_continue else ""))
         notes = []
         for p in self.players:
             if not p.left:
@@ -628,7 +742,7 @@ class Table:
         for p in list(self.players):
             if p.left:
                 self.players.remove(p)
-            elif p.leaving:
+            elif p.leaving:                 # pressed Leave while all-in: now the hand is over, so cash out
                 await self.cashout(p)
                 notes.append(f"{p.name} left with {p.stack:,} {cur()}.")
                 self.players.remove(p)
@@ -646,15 +760,27 @@ class Table:
         await asyncio.sleep(NEXT_HAND_DELAY)
         async with self.lock:
             if not self.closed:
+                await self._clear_ping()
                 await self.start_hand()
 
     async def end_game(self):
+        """The game is over. The last player is NOT cashed out automatically: they press Cash out
+        (it happens by itself after CASHOUT_SECONDS so the money is never stuck)."""
         self.closed = True
         TABLES.pop(self.channel.id, None)
+        await self._clear_ping()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
         if self.players:
             w = self.players[0]
-            await self.cashout(w)
-            await self.channel.send(embed=closed_embed(f"🏆 **{w.name}** takes the table and cashes out **{w.stack:,}** {cur()}."))
+            view = CashoutView(self, w)
+            embed = closed_embed(f"🏆 **{w.name}** takes the table with **{w.stack:,}** {cur()}.\n"
+                                 f"Press **Cash out** to move it to your cash.\n"
+                                 f"-# It goes back to your cash automatically after {CASHOUT_SECONDS // 60} minutes.")
+            view.message = await self.channel.send(content=w.user.mention, embed=embed, view=view, allowed_mentions=PING)
         else:
             await self.channel.send(embed=refund_embed())
 
@@ -662,6 +788,18 @@ class Table:
 # ============================================================
 #  UI
 # ============================================================
+async def _leave_click(t, inter):
+    """Shared by the Leave button on the turn message and on the between-hands message."""
+    await inter.response.defer(ephemeral=True, thinking=True)     # answer Discord first
+    async with t.lock:
+        if t.closed:
+            return await _say(inter, "This table is closed.")
+        p = t.player_of(inter.user.id)
+        if not p:
+            return await _say(inter, t.nope(inter.user.id))
+        await t.leave_now(inter, p)
+
+
 class RaiseModal(discord.ui.Modal, title="Raise"):
     def __init__(self, table, p):
         super().__init__()
@@ -738,23 +876,75 @@ class TableView(discord.ui.View):
             return await inter.response.send_message(t.nope(inter.user.id), ephemeral=True)
         if not t.in_hand or p.folded:
             return await inter.response.send_message("You're not in this hand.", ephemeral=True)
-        cards = p.hole + list(t.board)
         lines = [f"{HDR_HAND}{cards_str(p.hole)}", "-# Your hand"]
         if t.board:
             lines += ["", f"{HDR_BOARD}{cards_str(t.board, 5)}", "-# Board"]
-        lines += ["", f"### {hand_name(best_score(cards))}" if len(cards) >= 5 else "*Waiting for the flop…*"]
+        lines += [""] + explain(p.hole, t.board)
+        lines += ["", f"-# Your chips: {p.stack:,} {cur()}"]
         e = discord.Embed(color=COLOR, description="\n".join(lines))
         e.set_footer(text="Only you can see this message.")
         await inter.response.send_message(embed=e, ephemeral=True)
 
     async def _leave(self, inter):
-        t = self.t
-        await inter.response.defer(ephemeral=True, thinking=True)     # answer Discord first
-        async with t.lock:
-            p = t.player_of(inter.user.id)
-            if not p:
-                return await _say(inter, t.nope(inter.user.id))
-            await t.leave_now(inter, p)
+        await _leave_click(self.t, inter)
+
+
+class HandOverView(discord.ui.View):
+    """Shown on the finished hand during the pause before the next one: the time to decide to leave."""
+
+    def __init__(self, table):
+        super().__init__(timeout=None)
+        self.t = table
+
+    async def on_error(self, inter, error, item):
+        await _view_error(inter, error)
+
+    @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
+    async def leave_btn(self, inter, button):
+        await _leave_click(self.t, inter)
+
+
+class CashoutView(discord.ui.View):
+    """The last player standing: they choose when to cash out (automatic after CASHOUT_SECONDS)."""
+
+    def __init__(self, table, player):
+        super().__init__(timeout=CASHOUT_SECONDS)
+        self.t, self.p = table, player
+        self.done = False
+        self.message = None
+
+    async def _finish(self):
+        if self.done:
+            return False
+        self.done = True
+        self.stop()
+        await self.t.cashout(self.p)
+        return True
+
+    async def on_error(self, inter, error, item):
+        await _view_error(inter, error)
+
+    @discord.ui.button(label="Cash out", style=discord.ButtonStyle.success)
+    async def cash_btn(self, inter, button):
+        if inter.user.id != self.p.user.id:
+            return await inter.response.send_message("Only the winner can cash out.", ephemeral=True)
+        await inter.response.defer()
+        won = self.p.stack
+        if await self._finish():
+            e = closed_embed(f"🏆 **{self.p.name}** cashed out **{won:,}** {cur()}.", GOLD)
+            try:
+                await inter.message.edit(content=None, embed=e, view=None)
+            except discord.HTTPException:
+                pass
+
+    async def on_timeout(self):
+        won = self.p.stack
+        if await self._finish() and self.message:
+            e = closed_embed(f"🏆 **{self.p.name}** cashed out **{won:,}** {cur()}.", GOLD)
+            try:
+                await self.message.edit(content=None, embed=e, view=None)
+            except discord.HTTPException:
+                pass
 
 
 class LobbyView(discord.ui.View):
@@ -893,4 +1083,4 @@ async def _holdem(ctx, buyin):
         raise
 
 
-print(f"game_holdem v3 loaded (discord.py {discord.__version__}): command $texas registered")
+print(f"game_holdem v4 loaded (discord.py {discord.__version__}): command $texas registered")
