@@ -21,6 +21,7 @@ MIN_BUYIN = MIN_BET          # from core
 TURN_SECONDS = 45
 NEXT_HAND_DELAY = 15         # time between hands: players can press Leave during it
 CASHOUT_SECONDS = 120        # the last player standing has this long to press Cash out (then it is automatic)
+START_BB = 1_000_000         # starting big blind (small blind is half of it)
 LEVEL_HANDS = 5              # blinds go up every this many hands
 BLIND_LEVELS = (1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32)   # multipliers of the starting big blind
 HDR_BOARD = "## "           # board cards are shown big ("# " = huge, "" = normal size)
@@ -303,7 +304,7 @@ class Player:
 class Table:
     def __init__(self, channel, host, buyin):
         self.channel, self.host, self.buyin = channel, host, buyin
-        self.base_bb = max(2, buyin // 50)      # starting big blind = 2% of the buy-in
+        self.base_bb = START_BB                 # starting big blind (fixed)
         self.bb = self.base_bb
         self.sb = max(1, self.bb // 2)
         self.players = []
