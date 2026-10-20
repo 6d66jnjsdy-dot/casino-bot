@@ -17,7 +17,7 @@ def gm_board():
     random.shuffle(tiles)
     return tiles
 
-MINES_BOMBS, MINES_SAFE = 2, 10          # $mines board: 12 tiles (4 columns x 3 rows)
+MINES_BOMBS, MINES_SAFE = 2, 10          # $mines board: 12 tiles (3 columns x 4 rows)
 MINES_COLOR = 0xF4A6A6                  # soft white-red side bar of the $mines box (change this one line to recolor)
 BUILDERS = {"gm": gm_board, "mines": lambda: shuffled(bomb=MINES_BOMBS, diamond=MINES_SAFE)}
 for _k, (_w, _h, _m, _) in SMINES.items():
@@ -240,7 +240,7 @@ class GoldMines(BoardView):
 
 class Mines(discord.ui.LayoutView):
     """$mines: one box with the coloured side bar. The player's profile is on top, the 12 tiles are inside the box."""
-    cols = 4                    # 4 columns x 3 rows = 12 tiles
+    cols = 3                    # 3 columns x 4 rows = 12 tiles (a narrow tower)
     game_name = "mines"
     multi_key = "mines"
 
@@ -259,7 +259,11 @@ class Mines(discord.ui.LayoutView):
         self.profit_btn = discord.ui.Button(style=discord.ButtonStyle.primary, disabled=True, label="Profit: 0", emoji=cur())
         rows = [discord.ui.ActionRow(*self.tiles[i:i + self.cols]) for i in range(0, len(self.tiles), self.cols)]
         rows.append(discord.ui.ActionRow(self.cash_btn, self.profit_btn))
-        self.add_item(discord.ui.Container(self._head(), *rows, accent_colour=MINES_COLOR))
+        self.add_item(discord.ui.Container(
+            self._head(),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            *rows,
+            accent_colour=MINES_COLOR))
         spy(self)
 
     def _head(self):
