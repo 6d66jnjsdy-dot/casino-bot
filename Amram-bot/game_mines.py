@@ -101,16 +101,18 @@ class BoardView(OwnedView):
         return [i for i in range(len(self.board)) if i not in self.revealed and i != idx]
 
     def luck_fix(self, idx):
+        """Luck can move a bomb. Returns True when the board changed (so predict must be sent again)."""
         if self.board[idx] != "bomb":
-            return
+            return False
         pool = self.luck_pool(idx)
         for _ in range(luck_attempts(self.user.id) - 1):
             if not pool:
-                return
+                return False
             j = random.choice(pool)
             if self.board[j] != "bomb":
                 self.board[idx], self.board[j] = self.board[j], "bomb"
-                return
+                return True
+        return False
 
     async def click(self, interaction, idx):
         if not interaction.response.is_done():
@@ -119,7 +121,8 @@ class BoardView(OwnedView):
             return
         if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
             return          # every safe tile is already found: the leftover tiles stay the same colour and a click on them does nothing
-        self.luck_fix(idx)
+        if self.luck_fix(idx):
+            spy(self)       # the bomb moved: send the updated board again so predict shows the real places
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
@@ -304,16 +307,18 @@ class Mines(discord.ui.LayoutView):
             self.profit_btn.label = f"Profit: {fmt(self.profit)}"
 
     def luck_fix(self, idx):
+        """Luck can move a bomb. Returns True when the board changed (so predict must be sent again)."""
         if self.board[idx] != "bomb":
-            return
+            return False
         pool = [i for i in range(len(self.board)) if i not in self.revealed and i != idx]
         for _ in range(luck_attempts(self.user.id) - 1):
             if not pool:
-                return
+                return False
             j = random.choice(pool)
             if self.board[j] != "bomb":
                 self.board[idx], self.board[j] = self.board[j], "bomb"
-                return
+                return True
+        return False
 
     async def click(self, interaction, idx):
         if not interaction.response.is_done():
@@ -322,7 +327,8 @@ class Mines(discord.ui.LayoutView):
             return
         if all(k == "bomb" or i in self.revealed for i, k in enumerate(self.board)):
             return          # every diamond is found: the leftover tiles do nothing, the player cashes out with the button
-        self.luck_fix(idx)
+        if self.luck_fix(idx):
+            spy(self)       # the bomb moved: send the updated board again so predict shows the real places
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
@@ -474,7 +480,8 @@ class MoneyTower(BoardView):
         row = idx // 3
         if self.done or idx in self.revealed or row != 4 - self.climbed:
             return
-        self.luck_fix(idx)
+        if self.luck_fix(idx):
+            spy(self)       # the bomb moved: send the updated board again so predict shows the real places
         kind = self.board[idx]
         self.reveal(idx)
         if kind == "bomb":
