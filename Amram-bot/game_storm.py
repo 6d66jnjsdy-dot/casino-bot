@@ -1,28 +1,38 @@
-import discord, random, json, os, asyncio, io, signal, math, time, base64, re, datetime
+import discord, random, json, os, asyncio, io, signal, math, time, base64, re, datetime, sys
 from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 from discord.ext import commands, tasks
 from aiohttp import web
 from core import *
 # ================= STORM (frozen event games) =================
-# Usage:  owner:   $stormset on [duration]   /   $stormset off
-#         players: $storm <roulette|mines|keno|mt|gm> <amount | half | all> [roulette bet]
-# Everything you may want to tune is in the CONFIG block right below.
+# Owner:    $stormset on [duration]   /   $stormset off
+#           - with a duration: players can play once every STORM_COOLDOWN
+#           - WITHOUT a duration: the Storm never ends and nobody has any limit
+# Players:  $storm  -> a panel opens, pick the game with a button
+# The owner never has a limit. Everything you may want to tune is in the CONFIG block below.
 
 # ---------- CONFIG ----------
 STORM_COLOR = 0x8FD3F4
 EMOJI.setdefault("ice", "🧊")
 SNOW = "❄️"
 
-STORM_GAMES = {"roulette": "roulette", "mines": "mines", "keno": "keno", "mt": "mt", "tower": "mt",
-               "moneytower": "mt", "gm": "gm", "goldmines": "gm"}
-STORM_ONCE = {"roulette"}               # games a player can use only once per Storm activation
+STORM_COOLDOWN = 3 * 3600                                   # one Storm game every 3 hours per player
+STORM_LIMITED = {"roulette", "mines", "keno", "mt", "gm"}   # games that count for the limit (remove one to make it free)
+
+STORM_INFO = {                                              # key: (emoji, button label, title)
+    "roulette": ("🎰", "Roulette", "Roulette - Frozen Rescue"),
+    "mines": ("💣", "Mines", "Mines Frozen"),
+    "keno": ("🎯", "Keno", "Keno Snow"),
+    "mt": ("🥶", "Money Tower", "Money Tower Frozen"),
+    "gm": ("⛏️", "Gold Mines", "Gold Mines Snow"),
+}
 
 # Roulette - Frozen Rescue: (weight, kind, label). The bet is ALWAYS returned, the bonus comes on top of it.
 ROUL_RESCUE = [(50, "x2", "Bet doubled"), (30, "cash", "Cash bonus"), (20, "gift", "Random gift")]
 
-# Mines Frozen: 3x3, 1 bomb, 2 frozen tiles (always diamonds, each hides a bonus). One multiplier per diamond (8).
-STORM_MINES_MULT = [1.02, 1.05, 1.12, 1.25, 1.5, 1.9, 2.8, 5]
+# Mines Frozen: 3x4 (like $mines), 1 bomb, 2 frozen tiles (always diamonds, each hides a bonus).
+# One multiplier per diamond (11). The first 2 are the frozen ones, so they are tiny.
+STORM_MINES_MULT = [1.01, 1.02, 1.05, 1.15, 1.31, 1.53, 1.84, 2.3, 3.07, 4.6, 9.2]
 
 # Keno Snow: 5x4 board, 6 clicks, 4 random frozen tiles (a frozen tile can be a bomb OR a diamond).
 KENO_BOMBS, KENO_CLICKS, KENO_FROZEN = 5, 6, 4
@@ -62,12 +72,30 @@ def storm_active():
         return False
     return True
 
-def storm_used(uid, game):
-    return game in DB.get("storm", {}).get("used", {}).get(str(uid), [])
+def storm_limited(uid, game=None):
+    """True when this player is under the Storm limit (the owner and a Storm without an end time are never limited)."""
+    if uid in OWNER_IDS:
+        return False
+    s = DB.get("storm") or {}
+    if not s.get("until"):
+        return False
+    return game is None or game in STORM_LIMITED
+
+def storm_limit_left(uid, game=None):
+    if not storm_limited(uid, game):
+        return 0
+    last = DB.get("storm_last", {}).get(str(uid), 0)
+    return max(0, int(last + STORM_COOLDOWN - time.time()))
 
 def storm_mark(uid, game):
-    DB.setdefault("storm", {}).setdefault("used", {}).setdefault(str(uid), []).append(game)
-    save()
+    if storm_limited(uid, game):
+        DB.setdefault("storm_last", {})[str(uid)] = int(time.time())
+        save()
+
+def storm_wait_text(seconds):
+    h, r = divmod(int(seconds), 3600)
+    m, s = divmod(r, 60)
+    return " ".join(f"{v}{u}" for v, u in ((h, "h"), (m, "m"), (s, "s")) if v) or "0s"
 
 def storm_take_mult(uid, game):
     d = DB.get("storm_mult", {}).get(str(uid), {})
@@ -97,6 +125,25 @@ def storm_reward(user, bet):
     log_event(user, "Storm | Bonus", text.replace("*", ""), BLUE)
     return f"{EMOJI['ice']} {text}"
 
+def storm_take_bet(user, amount_text, token, busy=True):
+    """Same rules as take_bet, but for a modal. Returns (bet, error_text)."""
+    if busy and user.id in BUSY:
+        return None, BUSY_MSG
+    u = user_data(user.id)
+    bet = parse_amount((amount_text or "").strip(), u["cash"])
+    if bet is None:
+        return None, f"Enter a valid amount (min {MIN_BET})."
+    if bet < MIN_BET:
+        return None, f"The minimum bet is {MIN_BET}{cur()}!"
+    if bet > u["cash"]:
+        return None, "You don't have that much money."
+    u["cash"] -= bet
+    DB.setdefault("pending", {})[token] = {"uid": str(user.id), "bet": bet}
+    if busy:
+        BUSY.add(user.id)
+    save()
+    return bet, None
+
 # ---------- Mines: the "next game" multiplier from the Storm is applied here ----------
 _mines_init, _mines_payout = Mines.__init__, Mines.payout
 
@@ -111,6 +158,25 @@ def _storm_mines_payout(self):
     _mines_payout(self)
 
 Mines.__init__, Mines.payout = _storm_mines_init, _storm_mines_payout
+
+# ---------- animation ----------
+def snow_art(rows=3, cols=9):
+    return "\n".join(" ".join(random.choice((SNOW, "⠀", "⠀", "✦")) for _ in range(cols)) for _ in range(rows))
+
+async def storm_anim(interaction, title, steps=("Gathering the clouds...", "Freezing the board...", "The Storm arrives...")):
+    """Short snowfall on the panel message. The first frame is the answer to the interaction."""
+    first = True
+    for s in steps:
+        e = discord.Embed(color=STORM_COLOR, description=f"{snow_art()}\n\n**{SNOW} {title}**\n{s}")
+        try:
+            if first:
+                await interaction.response.edit_message(content=None, embed=e, view=None)
+            else:
+                await interaction.edit_original_response(embed=e)
+        except discord.HTTPException:
+            pass
+        first = False
+        await asyncio.sleep(0.6)
 
 # ---------- shared embed ----------
 def storm_result(view, lost, lines):
@@ -184,20 +250,9 @@ class FreezePick(OwnedView):
         if self.message:
             await self.message.edit(embed=discord.Embed(description="Timed out, your bet was returned.", color=RED), view=None)
 
-async def start_picker(ctx, amount, usage, ttl, hint, cols, rows, same_row, launch):
-    bet = await take_bet(ctx, amount, usage, track=True)
-    if not bet:
-        return
-    view = FreezePick(ctx.author, bet, str(ctx.message.id), ttl, hint, cols, rows, same_row, launch)
-    try:
-        view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
-    except Exception:
-        cancel_game(ctx.author, view.token, bet)
-        raise
-
 # ================= 💣 MINES FROZEN =================
 class StormMines(StormMixin, BoardView):
-    cols = 3
+    cols = 3                         # 3 columns x 4 rows = 12 tiles, like $mines
     game_name = "Storm Mines"
     multi_key = "mines"
 
@@ -212,8 +267,8 @@ class StormMines(StormMixin, BoardView):
             self.tiles[i].emoji = SNOW
 
     def make_board(self):
-        board = ["diamond"] * 9
-        board[random.choice([i for i in range(9) if i not in self.frozen])] = "bomb"   # the bomb is never under a freeze
+        board = ["diamond"] * 12
+        board[random.choice([i for i in range(12) if i not in self.frozen])] = "bomb"   # never under a freeze
         for i in self.frozen:
             board[i] = "ice"
         return board
@@ -373,106 +428,233 @@ class StormGM(GoldMines):
     def embed(self, lost):
         return storm_result(self, lost, [f"{EMOJI['ice']} Snow tile: x{m}" for m in self.ice_hits])
 
-# ================= 🎰 ROULETTE - FROZEN RESCUE =================
-class FreezeModal(discord.ui.Modal, title="Freeze 2 numbers"):
-    nums = discord.ui.TextInput(label="Two numbers (0-36), for example: 3 7", max_length=12)
+# ================= 🎰 ROULETTE - FROZEN RESCUE (the normal 30 second round) =================
+# A Storm bet joins the SAME round as every other roulette bet (ROUNDS / ROUL_WAIT from game_roulette.py).
+# The only difference: the bet carries "frozen" numbers. This runner replaces run_roulette (patched below),
+# it behaves exactly like the original for normal bets.
+def rescue_bonus(bet):
+    _, kind, label = random.choices(ROUL_RESCUE, weights=[p[0] for p in ROUL_RESCUE])[0]
+    extra = {"x2": bet, "cash": int(bet * random.uniform(0.25, 0.75)), "gift": int(bet * random.uniform(1.0, 2.0))}[kind]
+    return max(1, extra), label
 
-    def __init__(self, parent):
-        super().__init__()
-        self.parent = parent
-
-    async def on_submit(self, interaction):
-        found = [int(x) for x in re.findall(r"\d+", str(self.nums.value))]
-        if len(found) != 2 or found[0] == found[1] or any(n > 36 for n in found):
-            return await interaction.response.send_message("Choose 2 different numbers between 0 and 36.", ephemeral=True)
-        if self.parent.pick[0].isdigit() and int(self.parent.pick[0]) in found:
-            return await interaction.response.send_message("You can't freeze the number you bet on.", ephemeral=True)
-        await self.parent.spin(interaction, found)
-
-class RouletteFreeze(OwnedView):
-    touch = False
-
-    def __init__(self, user, bet, token, pick):
-        super().__init__(timeout=90)
-        self.user, self.bet, self.token, self.pick = user, bet, token, pick
-        self.spun, self.message = False, None
-        b = discord.ui.Button(style=discord.ButtonStyle.primary, label="Freeze 2 numbers", emoji=SNOW)
-        b.callback = self.open_modal
-        self.add_item(b)
-
-    def embed(self):
-        return discord.Embed(color=ROUL_COLOR, title=f"🎰 Roulette - Frozen Rescue {SNOW}", description=(
-            f"You bet **{fmt(self.bet)}** {cur()} on **{self.pick[0]}**.\n\n"
-            "Freeze **2 numbers**. If the ball lands on one of them and your bet loses, "
-            "you are rescued: you get your bet back plus a bonus.\n\nTap the button to choose."))
-
-    async def open_modal(self, interaction):
-        if self.spun:
-            return await interaction.response.defer()
-        await interaction.response.send_modal(FreezeModal(self))
-
-    async def spin(self, interaction, frozen):
-        if self.spun:
-            return await interaction.response.defer()
-        self.spun = True
-        self.stop()
-        storm_mark(self.user.id, "roulette")
+async def storm_run_roulette(cid, rnd):
+    try:
+        await asyncio.sleep(max(0, rnd["end"] - time.time()))
+        if ROUNDS.get(cid) is rnd:
+            ROUNDS.pop(cid, None)
+        bets = rnd["bets"]
         winner = random.randint(0, 36)
         for _ in range(luck_attempts(0) - 1):
-            if self.pick[1](winner) or winner in frozen:
+            if any(b["pick"][1](winner) for b in bets):
                 break
             winner = random.randint(0, 36)
-        hit = self.pick[1](winner)
-        bet, lines = self.bet, f"🎰 The ball landed on **{winner} ({roul_color(winner)})**\n{SNOW} Frozen: **{frozen[0]}, {frozen[1]}**\n"
-        if hit:
-            win = bet * self.pick[2]
-            net = win - bet
-            win += multi_extra("roulette", net)
-            net = win - bet
-        elif winner in frozen:
-            _, kind, label = random.choices(ROUL_RESCUE, weights=[p[0] for p in ROUL_RESCUE])[0]
-            extra = {"x2": bet, "cash": int(bet * random.uniform(0.25, 0.75)),
-                     "gift": int(bet * random.uniform(1.0, 2.0))}[kind]
-            win, net = bet + extra, extra
-            lines += f"{SNOW} **Frozen Rescue!** {label}: +{fmt(extra)} {cur()}\n"
-        else:
-            win, net = 0, -bet
-        pending_done(self.token)
-        user_data(self.user.id)["cash"] += win
+        color_name = roul_color(winner)
+        lines = []
+        for b in bets:
+            hit = b["pick"][1](winner)
+            fr = b.get("frozen")
+            rescued = (not hit) and bool(fr) and winner in fr
+            extra = 0
+            if hit:
+                win = b["per"] * b["pick"][2]
+            elif rescued:
+                extra, _ = rescue_bonus(b["per"])
+                win = b["per"] + extra
+            else:
+                win = 0
+            net = win - b["per"]
+            if hit and net > 0:
+                win += multi_extra("roulette", net)
+                net = win - b["per"]
+            DB.get("pending", {}).pop(b["token"], None)
+            user_data(b["user"].id)["cash"] += win
+            log_game(b["user"], "Storm Roulette" if fr else "roulette", b["per"], net)
+            if hit:
+                lines.append(f"🏆 {b['user'].mention} Won - {fmt(win)} {cur()}")
+            elif rescued:
+                lines.append(f"{SNOW} {b['user'].mention} Frozen Rescue - {fmt(win)} {cur()} (+{fmt(extra)})")
+            else:
+                lines.append(f"❌ {b['user'].mention} Lost")
         save()
-        log_game(self.user, "Storm Roulette", bet, net)
-        await interaction.response.edit_message(embed=result_embed(self.user, net > 0, abs(net), lines), view=None)
+        frozen_all = sorted({n for b in bets for n in (b.get("frozen") or [])})
+        frozen_line = f"\n{SNOW} Frozen numbers: {', '.join(map(str, frozen_all))}" if frozen_all else ""
+        e = discord.Embed(color=ROUL_COLOR, title="Roulette Results", description=(
+            f"The ball landed on **{winner} ({color_name.capitalize()})**{frozen_line}\n\n**Results**\n" + "\n".join(lines)))
+        await rnd["channel"].send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+    except Exception as ex:
+        print("Roulette failed:", repr(ex))
+        if ROUNDS.get(cid) is rnd:
+            ROUNDS.pop(cid, None)
+        for b in rnd["bets"]:
+            if DB.get("pending", {}).pop(b["token"], None) is not None:
+                user_data(b["user"].id)["cash"] += b["per"]
+        save()
+
+try:
+    sys.modules["game_roulette"].run_roulette = storm_run_roulette
+except Exception as _ex:
+    print("Storm: could not patch run_roulette:", repr(_ex))
+
+# ================= PANEL ($storm) =================
+def storm_limit_text(uid):
+    left = storm_limit_left(uid)
+    if not storm_limited(uid):
+        return "✨ No limit for you right now."
+    return f"⏳ Your next Storm game in **{storm_wait_text(left)}**." if left else "✅ Your Storm is ready."
+
+def panel_embed(uid):
+    return discord.Embed(color=STORM_COLOR, title=f"{SNOW} The Storm {SNOW}", description=(
+        "Choose a game below. Every game has a frozen twist.\n\n"
+        "🎰 **Roulette** - freeze 2 numbers and get rescued if the ball lands on one\n"
+        "💣 **Mines** - freeze 2 tiles, they hide bonuses\n"
+        "🎯 **Keno** - 6 clicks and 4 random freezes\n"
+        "🥶 **Money Tower** - freeze 2 tiles in one row\n"
+        "⛏️ **Gold Mines** - snow tiles instead of bombs\n\n"
+        f"{storm_limit_text(uid)}"))
+
+class StormModal(discord.ui.Modal):
+    def __init__(self, panel, game):
+        super().__init__(title=STORM_INFO[game][2])
+        self.panel, self.game = panel, game
+        self.amount = discord.ui.TextInput(label="Bet amount (or all / half)", placeholder="1000", max_length=15)
+        self.add_item(self.amount)
+        if game == "roulette":
+            self.pick = discord.ui.TextInput(label="Your bet: 0-36, red, black, even, odd", placeholder="red", max_length=20)
+            self.frozen = discord.ui.TextInput(label="Freeze 2 numbers (0-36)", placeholder="3 7", max_length=12)
+            self.add_item(self.pick)
+            self.add_item(self.frozen)
+
+    async def on_submit(self, interaction):
+        await self.panel.submit(interaction, self)
+
+class StormPanel(OwnedView):
+    touch = False
+
+    def __init__(self, user):
+        super().__init__(timeout=120)
+        self.user, self.started, self.message = user, False, None
+        for key, (emoji, label, _) in STORM_INFO.items():
+            b = discord.ui.Button(style=discord.ButtonStyle.primary, label=label, emoji=emoji)
+            b.callback = self.opener(key)
+            self.add_item(b)
+
+    def opener(self, game):
+        async def cb(interaction):
+            if self.started:
+                return await interaction.response.send_message("Already started.", ephemeral=True)
+            if not storm_active():
+                return await interaction.response.send_message(f"{SNOW} The Storm is not active right now.", ephemeral=True)
+            left = storm_limit_left(self.user.id, game)
+            if left:
+                return await interaction.response.send_message(
+                    f"{SNOW} You can play again in **{storm_wait_text(left)}**.", ephemeral=True)
+            await interaction.response.send_modal(StormModal(self, game))
+        return cb
 
     async def on_timeout(self):
-        if self.spun:
+        if self.started or not self.message:
             return
-        pending_done(self.token)
-        user_data(self.user.id)["cash"] += self.bet
-        save()
-        log_money(self.user, "STORM | TIMEOUT", f"Bet of {fmt(self.bet)} {cur()} was returned", YELLOW)
-        if self.message:
-            await self.message.edit(embed=discord.Embed(description="Timed out, your bet was returned.", color=RED), view=None)
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            pass
 
-async def storm_roulette(ctx, amount, picktext):
-    usage = "storm roulette <amount | half | all> <bet: 0-36, red, black, even, odd, 1-12...>"
-    if amount is None:
-        return await ctx.reply(f"The minimum bet is {MIN_BET}{cur()}!")
-    pick = parse_roul_pick(picktext)
-    if pick is None:
-        return await reply(ctx, f"Usage: `${usage}`", RED)
-    if storm_used(ctx.author.id, "roulette"):
-        return await reply(ctx, f"{SNOW} You already used Frozen Rescue in this Storm.", BLUE)
-    bet = await take_bet(ctx, amount, usage, track=True)
-    if not bet:
-        return
-    view = RouletteFreeze(ctx.author, bet, str(ctx.message.id), pick)
-    try:
-        view.message = await ctx.reply(embed=view.embed(), view=view, mention_author=False)
-    except Exception:
-        cancel_game(ctx.author, view.token, bet)
-        raise
+    async def submit(self, interaction, modal):
+        game, user = modal.game, self.user
+
+        async def no(text):
+            await interaction.response.send_message(text, ephemeral=True)
+
+        if self.started:
+            return await no("Already started.")
+        if not storm_active():
+            return await no(f"{SNOW} The Storm is not active right now.")
+        left = storm_limit_left(user.id, game)
+        if left:
+            return await no(f"{SNOW} You can play again in **{storm_wait_text(left)}**.")
+        pick = nums = None
+        if game == "roulette":
+            pick = parse_roul_pick(modal.pick.value)
+            nums = [int(x) for x in re.findall(r"\d+", modal.frozen.value)]
+            if pick is None:
+                return await no("Invalid bet. Use 0-36, red, black, even, odd, 1-12...")
+            if len(nums) != 2 or nums[0] == nums[1] or any(n > 36 for n in nums):
+                return await no("Freeze 2 different numbers between 0 and 36.")
+            if pick[0].isdigit() and int(pick[0]) in nums:
+                return await no("You can't freeze the number you bet on.")
+        token = str(interaction.id) + (":0" if game == "roulette" else "")
+        bet, err = storm_take_bet(user, modal.amount.value, token, busy=(game != "roulette"))
+        if err:
+            return await no(err)
+        self.started = True
+        self.stop()
+        storm_mark(user.id, game)
+        title = STORM_INFO[game][2]
+        if game == "roulette":
+            return await self.start_roulette(interaction, bet, pick, nums, token, title)
+        try:
+            await storm_anim(interaction, title)
+            if game in ("gm", "keno"):
+                view = (StormGM if game == "gm" else StormKeno)(user, bet, token)
+                view.message = await interaction.original_response()
+                await interaction.edit_original_response(content=view.header, embed=None, view=view)
+            else:
+                mines = game == "mines"
+                hint = ("Tap **2 tiles** to freeze them. Frozen tiles are always diamonds and hide a bonus. "
+                        "The bomb is somewhere else." if mines else
+                        "Tap **2 tiles in one row** to freeze them (the bottom row is the first). "
+                        "If the bomb is under a freeze it gets frozen: you keep climbing without a multiplier, "
+                        "with a small bonus.")
+                picker = FreezePick(user, bet, token, title, hint, 3, 4 if mines else 5, not mines,
+                                    _launch_mines if mines else _launch_tower)
+                picker.message = await interaction.original_response()
+                await interaction.edit_original_response(embed=picker.embed(), view=picker)
+        except Exception:
+            cancel_game(user, token, bet)
+            raise
+
+    async def start_roulette(self, interaction, bet, pick, nums, token, title):
+        user, cid = self.user, interaction.channel.id
+        rnd = ROUNDS.get(cid)
+        opened = rnd is None or rnd["end"] <= time.time()
+        if opened:
+            rnd = {"end": int(time.time()) + ROUL_WAIT, "bets": [], "channel": interaction.channel}
+            ROUNDS[cid] = rnd
+        entry = {"user": user, "per": bet, "pick": pick, "token": token, "frozen": nums}
+        rnd["bets"].append(entry)
+        none = discord.AllowedMentions.none()
+        try:
+            await storm_anim(interaction, title)
+            await interaction.edit_original_response(embed=discord.Embed(color=ROUL_COLOR, title=f"🎰 {title} {SNOW}", description=(
+                f"Bet: **{fmt(bet)}** {cur()} on **{pick[0]}**\n{SNOW} Frozen: **{nums[0]}, {nums[1]}**\n\n"
+                f"The ball rolls <t:{rnd['end']}:R>.")), view=None)
+            if opened:
+                e = roul_embed(rnd)
+                e.description += f"\n{SNOW} Frozen Rescue is on: numbers can be frozen for a second chance."
+                await interaction.followup.send(embed=e, allowed_mentions=none)
+        except Exception:
+            if entry in rnd["bets"]:
+                rnd["bets"].remove(entry)
+            if DB.get("pending", {}).pop(token, None) is not None:
+                user_data(user.id)["cash"] += bet
+            save()
+            if opened and ROUNDS.get(cid) is rnd:
+                ROUNDS.pop(cid, None)
+            raise
+        if opened:
+            bg(storm_run_roulette(cid, rnd))
 
 # ================= COMMANDS =================
+@bot.command(name="storm", usage="storm")
+async def storm(ctx):
+    if not storm_active():
+        return await reply(ctx, f"{SNOW} The Storm is not active right now.", BLUE)
+    view = StormPanel(ctx.author)
+    msg = await ctx.reply(embed=discord.Embed(color=STORM_COLOR, description=(
+        f"{snow_art()}\n\n**{SNOW} The Storm is rising...**")), mention_author=False)
+    await asyncio.sleep(1.0)
+    view.message = await msg.edit(embed=panel_embed(ctx.author.id), view=view)
+
 @bot.command(name="stormset", usage="stormset <on [duration] | off>")
 async def stormset(ctx, mode: str = None, *, duration: str = None):
     if ctx.author.id not in OWNER_IDS:
@@ -482,35 +664,13 @@ async def stormset(ctx, mode: str = None, *, duration: str = None):
         secs = parse_duration(duration) if duration else None
         if duration and secs is None:
             return await reply(ctx, "Usage: `$stormset on [duration]` (for example `2h`, `1d`, `30m`)", RED)
-        DB["storm"] = {"until": int(time.time() + secs) if secs else 0, "used": {}}
+        DB["storm"] = {"until": int(time.time() + secs) if secs else 0}
         save()
-        return await reply(ctx, f"{SNOW} **Storm is ON** ({fmt_left(DB['storm']['until'])}).", BLUE)
+        note = f"{fmt_left(DB['storm']['until'])}, one game every 3 hours per player" if secs else "no end time, no limits for anyone"
+        return await reply(ctx, f"{SNOW} **Storm is ON** ({note}).", BLUE)
     if mode == "off":
         DB.pop("storm", None)
         save()
         return await reply(ctx, f"{SNOW} Storm is OFF.", BLUE)
     state = f"ON ({fmt_left(DB['storm']['until'])})" if storm_active() else "OFF"
     await reply(ctx, f"{SNOW} Storm is **{state}**. Usage: `$stormset on [duration]` / `$stormset off`", BLUE)
-
-@bot.command(name="storm", usage="storm <roulette | mines | keno | mt | gm> <amount | half | all>")
-async def storm(ctx, game: str = None, amount: str = None, *, extra: str = None):
-    usage = "storm <roulette | mines | keno | mt | gm> <amount | half | all>"
-    if not storm_active():
-        return await reply(ctx, f"{SNOW} The Storm is not active right now.", BLUE)
-    g = STORM_GAMES.get((game or "").lower())
-    if g is None:
-        return await reply(ctx, f"Usage: `${usage}`", RED)
-    if g == "roulette":
-        return await storm_roulette(ctx, amount, extra)
-    if g == "gm":
-        return await start_board(ctx, StormGM, amount, usage)
-    if g == "keno":
-        return await start_board(ctx, StormKeno, amount, usage)
-    if g == "mines":
-        return await start_picker(ctx, amount, usage, "Mines Frozen",
-                                  "Tap **2 tiles** to freeze them. Frozen tiles are always diamonds and hide a bonus. "
-                                  "The bomb is somewhere else.", 3, 3, False, _launch_mines)
-    await start_picker(ctx, amount, usage, "Money Tower Frozen",
-                       "Tap **2 tiles in one row** to freeze them (the bottom row is the first). "
-                       "If the bomb is under a freeze it gets frozen: you keep climbing without a multiplier, "
-                       "with a small bonus.", 3, 5, True, _launch_tower)
